@@ -1,0 +1,1 @@
+{"delegates":["did:key:z6MktwkohCx8aHZ1QCjVZUiLmX92oPZFxRiFZkbq32Tk5Tkm"],"payload":{"xyz.radicle.project":{"defaultBranch":"main","description":"A Radicle Collaborative Object (COB) for content-addressed release artifacts and their discovery locations","name":"radicle-artifact"}},"threshold":1}
