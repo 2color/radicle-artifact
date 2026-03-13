@@ -18,7 +18,7 @@
 //! #
 //! # use radicle_artifact::{Cid, Releases};
 //! #
-//! # fn commit(repo: &Repository) -> Oid {
+//! # fn commit(repo: &Repository, message: &str) -> Oid {
 //! #     let tree = {
 //! #         let tree = repo.treebuilder(None).unwrap();
 //! #         let oid = tree.write().unwrap();
@@ -26,7 +26,7 @@
 //! #     };
 //! #
 //! #     let author = repo.signature().unwrap();
-//! #     repo.commit(None, &author, &author, "Test Commit", &tree, &[])
+//! #     repo.commit(None, &author, &author, message, &tree, &[])
 //! #         .unwrap()
 //! #         .into()
 //! # }
@@ -34,7 +34,7 @@
 //! # let test::setup::NodeWithRepo {
 //! #     node: alice, repo, ..
 //! # } = test::setup::NodeWithRepo::default();
-//! # let oid = commit(&repo.backend);
+//! # let oid = commit(&repo.backend, "Test Commit");
 //! # let repo = (&*repo).clone();
 //! let mut releases = Releases::open(repo).unwrap();
 //! let mut release = releases.create(oid, &alice.signer).unwrap();
@@ -53,7 +53,7 @@ use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
 
 use indexmap::IndexMap;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use radicle::cob::store::Cob;
 use radicle::cob::{self, store, EntryId, Evaluate, ObjectId, Op, TypeName};
 use radicle::crypto;
@@ -70,8 +70,8 @@ pub mod display;
 pub mod error;
 
 /// Type name of an artifact release.
-pub static TYPENAME: Lazy<TypeName> =
-    Lazy::new(|| FromStr::from_str("org.radworks.artifact").expect("type name is valid"));
+pub static TYPENAME: LazyLock<TypeName> =
+    LazyLock::new(|| FromStr::from_str("org.radworks.artifact").expect("type name is valid"));
 
 /// The identifier for a given [`Release`] collaborative object.
 ///
@@ -91,7 +91,7 @@ impl ReleaseId {
 
 impl fmt::Display for ReleaseId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0.to_string())
+        self.0.fmt(f)
     }
 }
 
@@ -370,7 +370,7 @@ impl<R: ReadRepository> Evaluate<R> for Release {
 ///
 /// The read-only operations for [`Releases`] are:
 ///
-///   - [`Releases::counts`]
+///   - [`Releases::count`]
 ///   - [`Releases::get`]
 ///
 /// The write operations for [`Releases`] are:
@@ -402,7 +402,9 @@ where
     }
 
     /// Return the number of [`Release`]s in the store.
-    pub fn counts(&self) -> Result<usize, store::Error> {
+    ///
+    /// Note: this deserializes every COB, so it is O(n).
+    pub fn count(&self) -> Result<usize, store::Error> {
         Ok(self.all()?.count())
     }
 
@@ -444,16 +446,17 @@ impl Iterator for FindByOid<'_> {
     type Item = Result<(ReleaseId, Release), cob::store::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let release = self.releases.next()?;
-        release
-            .and_then(|(id, release)| {
-                if self.wanted(&release) {
-                    Ok(Some((ReleaseId::from(id), release)))
-                } else {
-                    self.next().transpose()
+        // Use a loop instead of recursion to avoid stack overflow on large stores.
+        loop {
+            let result = self.releases.next()?;
+            match result {
+                Ok((id, release)) if self.wanted(&release) => {
+                    return Some(Ok((ReleaseId::from(id), release)));
                 }
-            })
-            .transpose()
+                Ok(_) => continue,
+                Err(err) => return Some(Err(err)),
+            }
+        }
     }
 }
 
@@ -527,15 +530,6 @@ impl<'a, 'g, R> ReleaseMut<'a, 'g, R>
 where
     R: WriteRepository + cob::Store<Namespace = NodeId>,
 {
-    /// Create a new `ReleaseMut`.
-    pub fn new(id: ReleaseId, release: Release, store: &'g mut Releases<'a, R>) -> Self {
-        Self {
-            id,
-            release,
-            store,
-        }
-    }
-
     /// The COB identifier for the underlying [`Release`].
     pub fn id(&self) -> &ReleaseId {
         &self.id
@@ -698,7 +692,7 @@ mod test {
 
     use crate::{Cid, Releases};
 
-    fn commit(repo: &Repository) -> Oid {
+    fn commit(repo: &Repository, message: &str) -> Oid {
         let tree = {
             let tree = repo.treebuilder(None).unwrap();
             let oid = tree.write().unwrap();
@@ -706,7 +700,7 @@ mod test {
         };
 
         let author = repo.signature().unwrap();
-        repo.commit(None, &author, &author, "Test Commit", &tree, &[])
+        repo.commit(None, &author, &author, message, &tree, &[])
             .unwrap()
             .into()
     }
@@ -716,7 +710,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend);
+        let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
 
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
@@ -779,7 +773,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend);
+        let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let r1 = {
             let r1 = releases.create(oid, &alice.signer).unwrap();
@@ -790,6 +784,7 @@ mod test {
             r2.id
         };
 
+        // COB store deduplicates: same OID + same signer = same release.
         assert_eq!(r1, r2);
         assert_eq!(releases.get(&r1).unwrap(), releases.get(&r2).unwrap());
     }
@@ -799,7 +794,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend);
+        let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
 
@@ -822,7 +817,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend);
+        let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
 
@@ -834,5 +829,105 @@ mod test {
             .unwrap();
 
         assert!(release.artifact(&cid).is_none());
+    }
+
+    #[test]
+    fn find_by_oid_returns_matching_releases() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid1 = commit(&repo.backend, "Commit A");
+        let oid2 = commit(&repo.backend, "Commit B");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let id1 = releases.create(oid1, &alice.signer).unwrap().id;
+        let _id2 = releases.create(oid2, &alice.signer).unwrap().id;
+
+        // find_by_oid should return only the release matching oid1.
+        let results: Vec<_> = releases
+            .find_by_oid(oid1)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, id1);
+        assert_eq!(results[0].1.oid(), &oid1);
+    }
+
+    #[test]
+    fn find_by_oid_returns_empty_for_no_match() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Commit A");
+        let other_oid = commit(&repo.backend, "Commit B");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        releases.create(oid, &alice.signer).unwrap();
+
+        let results: Vec<_> = releases
+            .find_by_oid(other_oid)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn remove_location_for_node_that_never_added_is_noop() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = Cid::from("bafytest");
+        release
+            .add_artifact(cid.clone(), "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        let url = Url::parse("https://example.com/file.tar.gz").unwrap();
+        // Bob never added a location, so removing should be a no-op.
+        release
+            .remove_location(cid.clone(), url, &bob.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert!(artifact.locations().is_empty());
+    }
+
+    #[test]
+    fn reload_refreshes_from_store() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = Cid::from("bafytest");
+        release
+            .add_artifact(cid.clone(), "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        // Reload from store and verify the artifact is still present.
+        release.reload().unwrap();
+        assert!(release.artifact(&cid).is_some());
+        assert_eq!(release.artifact(&cid).unwrap().name(), "test artifact");
+    }
+
+    #[test]
+    fn get_mut_not_found() {
+        let test::setup::NodeWithRepo {
+            node: _alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let oid: radicle::cob::ObjectId = test::arbitrary::oid().into();
+        let fake_id = crate::ReleaseId::from(oid);
+        let result = releases.get_mut(&fake_id);
+        assert!(result.is_err());
     }
 }

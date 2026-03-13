@@ -187,8 +187,10 @@ fn add_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let (id, release) = find_by_oid(oid, releases)?;
-    let mut release = ReleaseMut::new(id, release, releases);
+    let id = find_unique_by_oid(oid, releases)?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::Add::Store { id, err })?;
     release
         .add_artifact(cid.clone(), name, signer)
         .map_err(|err| error::Add::Store { id, err })?;
@@ -204,8 +206,10 @@ fn locate_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let (id, release) = find_by_oid(oid, releases)?;
-    let mut release = ReleaseMut::new(id, release, releases);
+    let id = find_unique_by_oid(oid, releases)?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::Locate::Store { id, err })?;
     release
         .add_location(cid, url, signer)
         .map_err(|err| error::Locate::Store { id, err })?;
@@ -220,8 +224,10 @@ fn remove_location<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let (id, release) = find_by_oid(oid, releases)?;
-    let mut release = ReleaseMut::new(id, release, releases);
+    let id = find_unique_by_oid(oid, releases)?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::RemoveLocation::Store { id, err })?;
     release
         .remove_location(cid, url, signer)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
@@ -232,7 +238,11 @@ fn show_release(
     command::Show { pretty, oid }: command::Show,
     releases: &Releases<Repository>,
 ) -> Result<(), error::Show> {
-    let (id, release) = find_by_oid(oid, releases)?;
+    let id = find_unique_by_oid(oid, releases)?;
+    let release = releases
+        .get(&id)
+        .map_err(|err| error::Find::FindOid { oid, err })?
+        .ok_or(error::Find::NoRelease(oid))?;
     let show = radicle_artifact::display::Release::new(id, &release);
     if pretty {
         println!("{}", show.pretty());
@@ -273,16 +283,25 @@ fn list_releases(
     Ok(())
 }
 
-fn find_by_oid(
+/// Find the unique release for a given OID. Errors if none or more than one exist.
+fn find_unique_by_oid(
     oid: Oid,
     releases: &Releases<Repository>,
-) -> Result<(ReleaseId, Release), error::Find> {
-    releases
+) -> Result<ReleaseId, error::Find> {
+    let mut iter = releases
         .find_by_oid(oid)
-        .map_err(|err| error::Find::FindOid { oid, err })?
+        .map_err(|err| error::Find::FindOid { oid, err })?;
+    let (id, _release) = iter
         .next()
         .ok_or(error::Find::NoRelease(oid))?
-        .map_err(|err| error::Find::FindOid { oid, err })
+        .map_err(|err| error::Find::FindOid { oid, err })?;
+
+    // Check for ambiguity — multiple releases for the same OID.
+    if iter.next().is_some() {
+        return Err(error::Find::Ambiguous(oid));
+    }
+
+    Ok(id)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -472,6 +491,8 @@ mod error {
     pub enum Find {
         #[error("no release was found for the commit {0}")]
         NoRelease(Oid),
+        #[error("multiple releases found for the commit {0}, use a release ID to disambiguate")]
+        Ambiguous(Oid),
         #[error("failed to find a release for the commit {oid}")]
         FindOid {
             oid: Oid,

@@ -12,7 +12,7 @@ decentralized mirroring.
 
 ## COB type
 
-`xyz.radworks.artifact`
+`org.radworks.artifact`
 
 ## Data model
 

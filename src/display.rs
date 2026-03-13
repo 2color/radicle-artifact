@@ -9,6 +9,12 @@ use url::Url;
 
 use crate::{Cid, ReleaseId};
 
+/// Append a line to a string buffer.
+fn push_line(s: &mut String, line: String) {
+    s.push_str(&line);
+    s.push('\n');
+}
+
 /// A set of [`Release`]s sorted by their [`ReleaseId`].
 #[derive(Serialize)]
 pub struct Releases {
@@ -35,14 +41,9 @@ impl Releases {
 
     /// Pretty print the set of [`Releases`] and their count.
     pub fn pretty(&self) -> String {
-        fn line(s: &mut String, line: String) {
-            s.push_str(&line);
-            s.push('\n');
-        }
-
         let mut s = String::new();
 
-        line(&mut s, format!("count: {}", self.count));
+        push_line(&mut s, format!("count: {}", self.count));
         for shown in self.releases.iter() {
             s.push_str(&shown.pretty());
             s.push('\n');
@@ -101,26 +102,21 @@ impl Release {
 
     /// Pretty print a release.
     pub fn pretty(&self) -> String {
-        fn line(s: &mut String, line: String) {
-            s.push_str(&line);
-            s.push('\n');
-        }
-
         let mut s = String::new();
 
-        line(
+        push_line(
             &mut s,
             format!("release {} (commit {})", self.release_id, self.oid),
         );
         for artifact in self.artifacts.iter() {
-            line(
+            push_line(
                 &mut s,
                 format!("  artifact {} ({})", artifact.cid, artifact.name),
             );
             for node_locs in artifact.locations.iter() {
-                line(&mut s, format!("    node {}", node_locs.node_id));
+                push_line(&mut s, format!("    node {}", node_locs.node_id));
                 for url in node_locs.urls.iter() {
-                    line(&mut s, format!("      {url}"));
+                    push_line(&mut s, format!("      {url}"));
                 }
             }
         }
