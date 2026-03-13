@@ -39,9 +39,9 @@
 //! let mut releases = Releases::open(repo).unwrap();
 //! let mut release = releases.create(oid, &alice.signer).unwrap();
 //!
-//! let cid = Cid::from("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+//! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse().unwrap();
 //! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
-//! release.add_artifact(cid.clone(), "linux-amd64 binary".into(), &alice.signer).unwrap();
+//! release.add_artifact(cid, "linux-amd64 binary".into(), &alice.signer).unwrap();
 //! release.add_location(cid, url, &alice.signer).unwrap();
 //! ```
 
@@ -65,6 +65,11 @@ use radicle::storage::{RepositoryError, SignRepository, WriteRepository};
 use radicle::{cob::store::CobAction, git::Oid};
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+// Re-export cid::Cid as the content identifier type.
+// A Cid has both a binary representation (the struct itself) and a string
+// representation (multibase-encoded, used for Display/FromStr/JSON serde).
+pub use cid::Cid;
 
 pub mod display;
 pub mod error;
@@ -112,46 +117,6 @@ impl From<ReleaseId> for ObjectId {
 impl From<ObjectId> for ReleaseId {
     fn from(oid: ObjectId) -> Self {
         Self(oid)
-    }
-}
-
-/// A content identifier for an artifact.
-///
-/// Wraps a string to allow any content-addressing scheme (CIDv1, sha256, etc.).
-/// No format validation is performed — callers produce CIDs however they want.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Cid(String);
-
-impl Cid {
-    /// Get the inner string value.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for Cid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl FromStr for Cid {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_owned()))
-    }
-}
-
-impl From<&str> for Cid {
-    fn from(s: &str) -> Self {
-        Self(s.to_owned())
-    }
-}
-
-impl From<String> for Cid {
-    fn from(s: String) -> Self {
-        Self(s)
     }
 }
 
@@ -692,6 +657,16 @@ mod test {
 
     use crate::{Cid, Releases};
 
+    /// Create a valid CIDv1 (raw codec, sha2-256) from a distinguishing byte.
+    fn test_cid(n: u8) -> Cid {
+        use cid::multihash::Multihash;
+        let mut digest = [0u8; 32];
+        digest[0] = n;
+        // 0x12 = sha2-256 hash code, 0x55 = raw codec
+        let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
+        Cid::new_v1(0x55, mh)
+    }
+
     fn commit(repo: &Repository, message: &str) -> Oid {
         let tree = {
             let tree = repo.treebuilder(None).unwrap();
@@ -717,22 +692,22 @@ mod test {
         let mut release = releases.create(oid, &alice.signer).unwrap();
 
         // Alice adds an artifact.
-        let cid = Cid::from("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        let cid = test_cid(1);
         release
-            .add_artifact(cid.clone(), "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         // Alice adds a location for the artifact.
         let alice_url =
             Url::parse("https://alice.example.com/artifacts/linux-amd64.tar.gz").unwrap();
         release
-            .add_location(cid.clone(), alice_url.clone(), &alice.signer)
+            .add_location(cid, alice_url.clone(), &alice.signer)
             .unwrap();
 
         // Bob adds a mirror location for the same artifact.
         let bob_url = Url::parse("https://bob.example.com/mirror/linux-amd64.tar.gz").unwrap();
         release
-            .add_location(cid.clone(), bob_url.clone(), &bob.signer)
+            .add_location(cid, bob_url.clone(), &bob.signer)
             .unwrap();
 
         // Verify the artifact exists with both locations.
@@ -749,7 +724,7 @@ mod test {
 
         // Alice removes her location.
         release
-            .remove_location(cid.clone(), alice_url, &alice.signer)
+            .remove_location(cid, alice_url, &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -798,13 +773,13 @@ mod test {
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
 
-        let cid = Cid::from("bafytest");
+        let cid = test_cid(1);
         release
-            .add_artifact(cid.clone(), "first name".into(), &alice.signer)
+            .add_artifact(cid, "first name".into(), &alice.signer)
             .unwrap();
         // Second add with different name is ignored — first name wins.
         release
-            .add_artifact(cid.clone(), "second name".into(), &alice.signer)
+            .add_artifact(cid, "second name".into(), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -821,11 +796,11 @@ mod test {
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
 
-        let cid = Cid::from("nonexistent");
+        let cid = test_cid(99);
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
         // Should succeed but have no effect since the CID doesn't exist.
         release
-            .add_location(cid.clone(), url, &alice.signer)
+            .add_location(cid, url, &alice.signer)
             .unwrap();
 
         assert!(release.artifact(&cid).is_none());
@@ -883,15 +858,15 @@ mod test {
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
 
-        let cid = Cid::from("bafytest");
+        let cid = test_cid(1);
         release
-            .add_artifact(cid.clone(), "test artifact".into(), &alice.signer)
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
         // Bob never added a location, so removing should be a no-op.
         release
-            .remove_location(cid.clone(), url, &bob.signer)
+            .remove_location(cid, url, &bob.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -907,9 +882,9 @@ mod test {
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
 
-        let cid = Cid::from("bafytest");
+        let cid = test_cid(1);
         release
-            .add_artifact(cid.clone(), "test artifact".into(), &alice.signer)
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
         // Reload from store and verify the artifact is still present.

@@ -192,7 +192,7 @@ where
         .get_mut(&id)
         .map_err(|err| error::Add::Store { id, err })?;
     release
-        .add_artifact(cid.clone(), name, signer)
+        .add_artifact(cid, name, signer)
         .map_err(|err| error::Add::Store { id, err })?;
     println!("{cid}");
     Ok(())

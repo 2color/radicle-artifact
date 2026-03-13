@@ -84,7 +84,7 @@ impl Release {
                     .collect();
                 locations.sort_by_cached_key(|l| l.node_id);
                 Artifact {
-                    cid: cid.clone(),
+                    cid: *cid,
                     name: artifact.name().to_owned(),
                     locations,
                 }
