@@ -1,0 +1,838 @@
+//! Radicle "artifact COB".
+//!
+//! A [`Release`] records content-addressed artifacts associated with a Git
+//! commit or annotated tag, along with discovery locations where each artifact
+//! can be retrieved.
+//!
+//! Each artifact is identified by a [`Cid`] (content identifier) and has a
+//! human-readable name. Multiple nodes can contribute discovery [`Url`]s for
+//! any artifact, enabling decentralized mirroring.
+//!
+//! # Example
+//!
+//! ```
+//! # use radicle::crypto::Signer;
+//! # use radicle::git::{raw::Repository, Oid};
+//! # use radicle::test;
+//! # use url::Url;
+//! #
+//! # use radicle_artifact::{Cid, Releases};
+//! #
+//! # fn commit(repo: &Repository) -> Oid {
+//! #     let tree = {
+//! #         let tree = repo.treebuilder(None).unwrap();
+//! #         let oid = tree.write().unwrap();
+//! #         repo.find_tree(oid).unwrap()
+//! #     };
+//! #
+//! #     let author = repo.signature().unwrap();
+//! #     repo.commit(None, &author, &author, "Test Commit", &tree, &[])
+//! #         .unwrap()
+//! #         .into()
+//! # }
+//! #
+//! # let test::setup::NodeWithRepo {
+//! #     node: alice, repo, ..
+//! # } = test::setup::NodeWithRepo::default();
+//! # let oid = commit(&repo.backend);
+//! # let repo = (&*repo).clone();
+//! let mut releases = Releases::open(repo).unwrap();
+//! let mut release = releases.create(oid, &alice.signer).unwrap();
+//!
+//! let cid = Cid::from("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+//! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
+//! release.add_artifact(cid.clone(), "linux-amd64 binary".into(), &alice.signer).unwrap();
+//! release.add_location(cid, url, &alice.signer).unwrap();
+//! ```
+
+#![deny(missing_docs)]
+
+use std::collections::HashMap;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::str::FromStr;
+
+use indexmap::IndexMap;
+use once_cell::sync::Lazy;
+use radicle::cob::store::Cob;
+use radicle::cob::{self, store, EntryId, Evaluate, ObjectId, Op, TypeName};
+use radicle::crypto;
+use radicle::crypto::signature::Signer;
+use radicle::node::device::Device;
+use radicle::node::NodeId;
+use radicle::prelude::ReadRepository;
+use radicle::storage::{RepositoryError, SignRepository, WriteRepository};
+use radicle::{cob::store::CobAction, git::Oid};
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+pub mod display;
+pub mod error;
+
+/// Type name of an artifact release.
+pub static TYPENAME: Lazy<TypeName> =
+    Lazy::new(|| FromStr::from_str("org.radworks.artifact").expect("type name is valid"));
+
+/// The identifier for a given [`Release`] collaborative object.
+///
+/// When a [`Release`] is created, through [`Releases::create`], the identifier
+/// is also returned as part of [`ReleaseMut::id`].
+///
+/// Identifiers can be used to retrieve a [`Release`] or [`ReleaseMut`] through
+/// [`Releases::get`] and [`Releases::get_mut`], respectively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ReleaseId(ObjectId);
+
+impl ReleaseId {
+    fn as_object_id(&self) -> &ObjectId {
+        &self.0
+    }
+}
+
+impl fmt::Display for ReleaseId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0.to_string())
+    }
+}
+
+impl FromStr for ReleaseId {
+    type Err = <ObjectId as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        ObjectId::from_str(s).map(Self)
+    }
+}
+
+impl From<ReleaseId> for ObjectId {
+    fn from(ReleaseId(oid): ReleaseId) -> Self {
+        oid
+    }
+}
+
+impl From<ObjectId> for ReleaseId {
+    fn from(oid: ObjectId) -> Self {
+        Self(oid)
+    }
+}
+
+/// A content identifier for an artifact.
+///
+/// Wraps a string to allow any content-addressing scheme (CIDv1, sha256, etc.).
+/// No format validation is performed — callers produce CIDs however they want.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Cid(String);
+
+impl Cid {
+    /// Get the inner string value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Cid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for Cid {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+impl From<&str> for Cid {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl From<String> for Cid {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+/// A `Release` groups content-addressed artifacts under a single Git OID
+/// (annotated tag or commit).
+///
+/// Multiple artifacts can exist per release, and multiple nodes can announce
+/// discovery locations for each artifact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Release {
+    oid: Oid,
+    artifacts: IndexMap<Cid, Artifact>,
+}
+
+/// A single artifact identified by its [`Cid`].
+///
+/// Each artifact has a human-readable `name` describing what it is, and a set
+/// of discovery locations contributed by various nodes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Artifact {
+    name: String,
+    locations: HashMap<NodeId, Vec<Url>>,
+}
+
+impl Artifact {
+    /// Get the human-readable name of this artifact.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the discovery locations, keyed by the node that contributed them.
+    pub fn locations(&self) -> &HashMap<NodeId, Vec<Url>> {
+        &self.locations
+    }
+
+    /// Get all unique discovery URLs across all nodes.
+    pub fn all_locations(&self) -> Vec<&Url> {
+        self.locations.values().flatten().collect()
+    }
+
+    /// Get the discovery URLs contributed by a specific node.
+    pub fn locations_of(&self, node: &NodeId) -> Option<&Vec<Url>> {
+        self.locations.get(node)
+    }
+}
+
+/// The collaborative object actions for artifact releases.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Action {
+    /// Create a [`Release`] for the given [`Oid`].
+    ///
+    /// Must be the first action. Subsequent `Create` actions are ignored.
+    Create {
+        /// The commit or annotated tag OID this release corresponds to.
+        oid: Oid,
+    },
+    /// Add an artifact to the release.
+    ///
+    /// Idempotent — ignored if the CID already exists.
+    AddArtifact {
+        /// The content identifier for this artifact.
+        cid: Cid,
+        /// A human-readable description of the artifact.
+        name: String,
+    },
+    /// Add a discovery location for an existing artifact.
+    ///
+    /// The authoring node is recorded as the contributor of this location.
+    /// Ignored if the CID does not exist in the release.
+    AddLocation {
+        /// The content identifier of the artifact.
+        cid: Cid,
+        /// A URL where the artifact can be retrieved.
+        location: Url,
+    },
+    /// Remove a discovery location previously added by this node.
+    ///
+    /// No-op if the location or CID is not found.
+    RemoveLocation {
+        /// The content identifier of the artifact.
+        cid: Cid,
+        /// The URL to remove.
+        location: Url,
+    },
+}
+
+impl CobAction for Action {
+    fn parents(&self) -> Vec<radicle::git::Oid> {
+        match self {
+            Action::Create { oid } => vec![*oid],
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl Release {
+    /// Construct a new [`Release`].
+    fn new(oid: Oid) -> Self {
+        Self {
+            oid,
+            artifacts: IndexMap::new(),
+        }
+    }
+
+    /// Get the [`Oid`] this release is associated with.
+    pub fn oid(&self) -> &Oid {
+        &self.oid
+    }
+
+    /// Get all artifacts in this release.
+    pub fn artifacts(&self) -> &IndexMap<Cid, Artifact> {
+        &self.artifacts
+    }
+
+    /// Get a specific artifact by its [`Cid`].
+    pub fn artifact(&self, cid: &Cid) -> Option<&Artifact> {
+        self.artifacts.get(cid)
+    }
+
+    /// Apply an action to the release state.
+    fn action(&mut self, node: NodeId, action: Action) {
+        match action {
+            // Subsequent Create actions are ignored after initialization.
+            Action::Create { .. } => {}
+            Action::AddArtifact { cid, name } => {
+                // Idempotent: only insert if CID is new.
+                self.artifacts.entry(cid).or_insert_with(|| Artifact {
+                    name,
+                    locations: HashMap::new(),
+                });
+            }
+            Action::AddLocation { cid, location } => {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                    let locs = artifact.locations.entry(node).or_default();
+                    if !locs.contains(&location) {
+                        locs.push(location);
+                    }
+                }
+            }
+            Action::RemoveLocation { cid, location } => {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                    if let Some(locs) = artifact.locations.get_mut(&node) {
+                        locs.retain(|l| l != &location);
+                        // Clean up empty entries.
+                        if locs.is_empty() {
+                            artifact.locations.remove(&node);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl store::CobWithType for Release {
+    fn type_name() -> &'static TypeName {
+        &TYPENAME
+    }
+}
+
+impl store::Cob for Release {
+    type Action = Action;
+    type Error = error::Build;
+
+    fn from_root<R: ReadRepository>(op: Op<Self::Action>, repo: &R) -> Result<Self, Self::Error> {
+        let mut actions = op.actions.into_iter();
+        let Some(Action::Create { oid }) = actions.next() else {
+            return Err(error::Build::Initial);
+        };
+        repo.commit(oid)
+            .map_err(|err| error::Build::MissingCommit { oid, err })?;
+        let mut release = Self::new(oid);
+        for action in actions {
+            release.action(op.author, action);
+        }
+        Ok(release)
+    }
+
+    fn op<'a, R: ReadRepository, I: IntoIterator<Item = &'a radicle::cob::Entry>>(
+        &mut self,
+        op: Op<Self::Action>,
+        _concurrent: I,
+        _repo: &R,
+    ) -> Result<(), Self::Error> {
+        for action in op.actions {
+            self.action(op.author, action);
+        }
+        Ok(())
+    }
+}
+
+impl<R: ReadRepository> Evaluate<R> for Release {
+    type Error = error::Apply;
+
+    fn init(entry: &radicle::cob::Entry, store: &R) -> Result<Self, Self::Error> {
+        let op = Op::try_from(entry)?;
+        let object = Release::from_root(op, store)?;
+        Ok(object)
+    }
+
+    fn apply<'a, I: Iterator<Item = (&'a Oid, &'a radicle::cob::Entry)>>(
+        &mut self,
+        entry: &radicle::cob::Entry,
+        concurrent: I,
+        store: &R,
+    ) -> Result<(), Self::Error> {
+        let op = Op::try_from(entry)?;
+        self.op(op, concurrent.map(|(_, e)| e), store)
+            .map_err(error::Apply::from)
+    }
+}
+
+/// The storage for all [`Release`] items.
+///
+/// To get a handle for [`Releases`] use [`Releases::open`].
+///
+/// The read-only operations for [`Releases`] are:
+///
+///   - [`Releases::counts`]
+///   - [`Releases::get`]
+///
+/// The write operations for [`Releases`] are:
+///
+///   - [`Releases::create`]
+///   - [`Releases::get_mut`]
+pub struct Releases<'a, R> {
+    raw: store::Store<'a, Release, R>,
+}
+
+impl<'a, R> Deref for Releases<'a, R> {
+    type Target = store::Store<'a, Release, R>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.raw
+    }
+}
+
+impl<'a, R> Releases<'a, R>
+where
+    R: ReadRepository + cob::Store<Namespace = NodeId>,
+{
+    /// Open a releases store.
+    pub fn open(repository: &'a R) -> Result<Self, RepositoryError> {
+        let identity = repository.identity_head()?;
+        let raw = store::Store::open(repository)?.identity(identity);
+
+        Ok(Self { raw })
+    }
+
+    /// Return the number of [`Release`]s in the store.
+    pub fn counts(&self) -> Result<usize, store::Error> {
+        Ok(self.all()?.count())
+    }
+
+    /// Get a [`Release`], given its [`ReleaseId`] identifier.
+    pub fn get(&self, id: &ReleaseId) -> Result<Option<Release>, store::Error> {
+        self.raw.get(id.as_object_id())
+    }
+
+    /// Find the [`Release`]s that are associated with the `wanted` commit.
+    pub fn find_by_oid(&self, wanted: Oid) -> Result<FindByOid<'a>, store::Error> {
+        FindByOid::new(self, wanted)
+    }
+}
+
+/// [`Iterator`] for finding each [`Release`] where the [`Release::oid`] matches
+/// the wanted commit. See [`Releases::find_by_oid`].
+pub struct FindByOid<'a> {
+    releases: Box<dyn Iterator<Item = Result<(ObjectId, Release), cob::store::Error>> + 'a>,
+    needle: Oid,
+}
+
+impl<'a> FindByOid<'a> {
+    fn new<R>(releases: &Releases<'a, R>, needle: Oid) -> Result<Self, cob::store::Error>
+    where
+        R: ReadRepository + cob::Store<Namespace = NodeId>,
+    {
+        Ok(Self {
+            releases: Box::new(releases.all()?),
+            needle,
+        })
+    }
+
+    fn wanted(&self, release: &Release) -> bool {
+        self.needle == *release.oid()
+    }
+}
+
+impl Iterator for FindByOid<'_> {
+    type Item = Result<(ReleaseId, Release), cob::store::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let release = self.releases.next()?;
+        release
+            .and_then(|(id, release)| {
+                if self.wanted(&release) {
+                    Ok(Some((ReleaseId::from(id), release)))
+                } else {
+                    self.next().transpose()
+                }
+            })
+            .transpose()
+    }
+}
+
+impl<'a, R> Releases<'a, R>
+where
+    R: ReadRepository + SignRepository + cob::Store<Namespace = NodeId>,
+{
+    /// Get a [`ReleaseMut`], given its [`ReleaseId`] identifier.
+    pub fn get_mut<'g>(
+        &'g mut self,
+        id: &ReleaseId,
+    ) -> Result<ReleaseMut<'a, 'g, R>, store::Error> {
+        let release = self
+            .raw
+            .get(id.as_object_id())?
+            .ok_or_else(move || store::Error::NotFound(TYPENAME.clone(), (*id).into()))?;
+
+        Ok(ReleaseMut {
+            id: *id,
+            release,
+            store: self,
+        })
+    }
+
+    /// Create a new [`Release`] in the repository.
+    pub fn create<'g, G>(
+        &'g mut self,
+        oid: Oid,
+        signer: &Device<G>,
+    ) -> Result<ReleaseMut<'a, 'g, R>, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        let (id, release) = store::Transaction::initial::<_, _, Transaction<R>>(
+            "Create release",
+            &mut self.raw,
+            signer,
+            |tx, _| {
+                tx.create(oid)?;
+                Ok(())
+            },
+        )?;
+
+        Ok(ReleaseMut {
+            id: id.into(),
+            release,
+            store: self,
+        })
+    }
+}
+
+/// A `ReleaseMut` is a [`Release`] where the underlying `Release` can be
+/// mutated by applying actions to it.
+pub struct ReleaseMut<'a, 'g, R> {
+    /// The COB identifier for this release.
+    pub id: ReleaseId,
+
+    release: Release,
+    store: &'g mut Releases<'a, R>,
+}
+
+impl<R> Deref for ReleaseMut<'_, '_, R> {
+    type Target = Release;
+
+    fn deref(&self) -> &Self::Target {
+        &self.release
+    }
+}
+
+impl<'a, 'g, R> ReleaseMut<'a, 'g, R>
+where
+    R: WriteRepository + cob::Store<Namespace = NodeId>,
+{
+    /// Create a new `ReleaseMut`.
+    pub fn new(id: ReleaseId, release: Release, store: &'g mut Releases<'a, R>) -> Self {
+        Self {
+            id,
+            release,
+            store,
+        }
+    }
+
+    /// The COB identifier for the underlying [`Release`].
+    pub fn id(&self) -> &ReleaseId {
+        &self.id
+    }
+
+    /// Reload the [`Release`] data from underlying storage.
+    pub fn reload(&mut self) -> Result<(), store::Error> {
+        self.release = self
+            .store
+            .get(&self.id)?
+            .ok_or_else(|| store::Error::NotFound(TYPENAME.clone(), *self.id.as_object_id()))?;
+
+        Ok(())
+    }
+
+    /// Add an artifact to the release.
+    pub fn add_artifact<G>(
+        &mut self,
+        cid: Cid,
+        name: String,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Add artifact", signer, |tx| tx.add_artifact(cid, name))
+    }
+
+    /// Add a discovery location for an artifact.
+    pub fn add_location<G>(
+        &mut self,
+        cid: Cid,
+        location: Url,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Add location", signer, |tx| tx.add_location(cid, location))
+    }
+
+    /// Remove a discovery location for an artifact.
+    pub fn remove_location<G>(
+        &mut self,
+        cid: Cid,
+        location: Url,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Remove location", signer, |tx| {
+            tx.remove_location(cid, location)
+        })
+    }
+
+    /// Apply COB operations to a `ReleaseMut`.
+    fn transaction<G, F>(
+        &mut self,
+        message: &str,
+        signer: &Device<G>,
+        operations: F,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+        F: FnOnce(&mut Transaction<R>) -> Result<(), store::Error>,
+    {
+        let mut tx = Transaction::default();
+        operations(&mut tx)?;
+
+        let (release, commit) =
+            tx.0.commit(message, self.id.into(), &mut self.store.raw, signer)?;
+        self.release = release;
+
+        Ok(commit)
+    }
+}
+
+/// An update for the `Release` COB.
+struct Transaction<R: ReadRepository>(store::Transaction<Release, R>);
+
+impl<R> From<store::Transaction<Release, R>> for Transaction<R>
+where
+    R: ReadRepository,
+{
+    fn from(tx: store::Transaction<Release, R>) -> Self {
+        Self(tx)
+    }
+}
+
+impl<R> From<Transaction<R>> for store::Transaction<Release, R>
+where
+    R: ReadRepository,
+{
+    fn from(Transaction(tx): Transaction<R>) -> Self {
+        tx
+    }
+}
+
+impl<R> Default for Transaction<R>
+where
+    R: ReadRepository,
+{
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<R> Deref for Transaction<R>
+where
+    R: ReadRepository,
+{
+    type Target = store::Transaction<Release, R>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<R> DerefMut for Transaction<R>
+where
+    R: ReadRepository,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<R> Transaction<R>
+where
+    R: ReadRepository,
+{
+    /// Add a create operation to the transaction.
+    fn create(&mut self, oid: Oid) -> Result<(), store::Error> {
+        self.0.push(Action::Create { oid })
+    }
+
+    /// Add an artifact to the transaction.
+    fn add_artifact(&mut self, cid: Cid, name: String) -> Result<(), store::Error> {
+        self.0.push(Action::AddArtifact { cid, name })
+    }
+
+    /// Add a location for an artifact.
+    fn add_location(&mut self, cid: Cid, location: Url) -> Result<(), store::Error> {
+        self.0.push(Action::AddLocation { cid, location })
+    }
+
+    /// Remove a location for an artifact.
+    fn remove_location(&mut self, cid: Cid, location: Url) -> Result<(), store::Error> {
+        self.0.push(Action::RemoveLocation { cid, location })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod test {
+    use radicle::git::{raw::Repository, Oid};
+    use radicle::test;
+    use url::Url;
+
+    use crate::{Cid, Releases};
+
+    fn commit(repo: &Repository) -> Oid {
+        let tree = {
+            let tree = repo.treebuilder(None).unwrap();
+            let oid = tree.write().unwrap();
+            repo.find_tree(oid).unwrap()
+        };
+
+        let author = repo.signature().unwrap();
+        repo.commit(None, &author, &author, "Test Commit", &tree, &[])
+            .unwrap()
+            .into()
+    }
+
+    #[test]
+    fn e2e() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend);
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        // Alice adds an artifact.
+        let cid = Cid::from("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        release
+            .add_artifact(cid.clone(), "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        // Alice adds a location for the artifact.
+        let alice_url =
+            Url::parse("https://alice.example.com/artifacts/linux-amd64.tar.gz").unwrap();
+        release
+            .add_location(cid.clone(), alice_url.clone(), &alice.signer)
+            .unwrap();
+
+        // Bob adds a mirror location for the same artifact.
+        let bob_url = Url::parse("https://bob.example.com/mirror/linux-amd64.tar.gz").unwrap();
+        release
+            .add_location(cid.clone(), bob_url.clone(), &bob.signer)
+            .unwrap();
+
+        // Verify the artifact exists with both locations.
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.name(), "linux-amd64 binary");
+        assert_eq!(
+            artifact.locations_of(alice.signer.public_key()),
+            Some(&vec![alice_url.clone()])
+        );
+        assert_eq!(
+            artifact.locations_of(bob.signer.public_key()),
+            Some(&vec![bob_url])
+        );
+
+        // Alice removes her location.
+        release
+            .remove_location(cid.clone(), alice_url, &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert!(artifact.locations_of(alice.signer.public_key()).is_none());
+        assert!(artifact.locations_of(bob.signer.public_key()).is_some());
+    }
+
+    #[test]
+    fn missing_commit() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let mut releases = Releases::open(&*repo).unwrap();
+        let oid = test::arbitrary::oid();
+        let release = releases.create(oid, &alice.signer);
+        assert!(release.is_err());
+    }
+
+    #[test]
+    fn idempotent_create() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend);
+        let mut releases = Releases::open(&*repo).unwrap();
+        let r1 = {
+            let r1 = releases.create(oid, &alice.signer).unwrap();
+            r1.id
+        };
+        let r2 = {
+            let r2 = releases.create(oid, &alice.signer).unwrap();
+            r2.id
+        };
+
+        assert_eq!(r1, r2);
+        assert_eq!(releases.get(&r1).unwrap(), releases.get(&r2).unwrap());
+    }
+
+    #[test]
+    fn idempotent_add_artifact() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend);
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = Cid::from("bafytest");
+        release
+            .add_artifact(cid.clone(), "first name".into(), &alice.signer)
+            .unwrap();
+        // Second add with different name is ignored — first name wins.
+        release
+            .add_artifact(cid.clone(), "second name".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.name(), "first name");
+        assert_eq!(release.artifacts().len(), 1);
+    }
+
+    #[test]
+    fn add_location_for_missing_cid_is_noop() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend);
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = Cid::from("nonexistent");
+        let url = Url::parse("https://example.com/file.tar.gz").unwrap();
+        // Should succeed but have no effect since the CID doesn't exist.
+        release
+            .add_location(cid.clone(), url, &alice.signer)
+            .unwrap();
+
+        assert!(release.artifact(&cid).is_none());
+    }
+}
