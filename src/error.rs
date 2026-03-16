@@ -26,7 +26,7 @@ pub enum Build {
         oid: git::Oid,
         /// The underlying error from Git that occurred.
         #[source]
-        err: git::Error,
+        err: git::raw::Error,
     },
 }
 

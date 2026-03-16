@@ -91,8 +91,11 @@ fn open_releases(repo: &Repository) -> Result<Releases<'_, Repository>, error::R
 fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
     let mut node = Node::new(profile.home.socket());
 
+    // Check seed sync status for the local node's namespace, matching the
+    // behavior of the deprecated `seeds()` method which passed `[self.nid()]`.
+    let local_id = *profile.id();
     let (synced, unsynced) = node
-        .seeds(repo_id)
+        .seeds_for(repo_id, [local_id])
         .map_err(error::Announce::Seeds)?
         .iter()
         .fold(
@@ -116,7 +119,8 @@ fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
     ))
     .map_err(error::Announce::Announcer)?;
 
-    node.announce(repo_id, TIMEOUT, announcer, |_, _| ())
+    // Announce refs for the local node's namespace only.
+    node.announce(repo_id, [local_id], TIMEOUT, announcer, |_, _| ())
         .map_err(error::Announce::Announcement)?;
 
     Ok(())
