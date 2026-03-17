@@ -3,10 +3,10 @@
 A Radicle [Collaborative Object][cob] (COB) for recording content-addressed
 release artifacts and their discovery locations.
 
-A **Release** is associated with a Git OID (annotated tag or commit) and
-contains one or more **Artifacts**, each identified by a content identifier
-(CID). Multiple nodes can announce discovery URLs for any artifact, enabling
-decentralized mirroring.
+A **Release** is associated with a Git OID (annotated tag or commit) and an
+author (the NodeId of the creating node). It contains one or more **Artifacts**,
+each identified by a content identifier (CID). Each node can announce a single
+discovery URL for any artifact, enabling decentralized mirroring.
 
 [cob]: https://radicle.xyz/guides/protocol#collaborative-objects
 
@@ -19,15 +19,16 @@ decentralized mirroring.
 ```
 Release
 ├── oid: Oid                          # git commit or annotated tag
+├── author: NodeId                    # node that created this release
 └── artifacts: Map<Cid, Artifact>
     └── Artifact
         ├── name: String              # human-readable description
-        └── locations: Map<NodeId, Vec<Url>>
+        └── locations: Map<NodeId, Url>
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
 - **Locations** — plain URLs (`https://`, `ipfs://`, `iroh://`, etc.)
-- Multiple nodes can contribute locations for the same artifact
+- Each node contributes a single URL per artifact; announcing a new URL replaces the previous one
 
 ## Actions
 
