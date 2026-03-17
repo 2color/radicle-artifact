@@ -80,10 +80,12 @@ impl Release {
                     })
                     .collect();
                 locations.sort_by_key(|l| l.node_id);
+                let attestations: Vec<_> = artifact.attestations().iter().copied().collect();
                 Artifact {
                     cid: *cid,
                     name: artifact.name().to_owned(),
                     locations,
+                    attestations,
                 }
             })
             .collect();
@@ -117,6 +119,13 @@ impl Release {
                     format!("    node {} {}", node_loc.node_id, node_loc.url),
                 );
             }
+            if !artifact.attestations.is_empty() {
+                let nodes: Vec<_> = artifact.attestations.iter().map(|n| n.to_string()).collect();
+                push_line(
+                    &mut s,
+                    format!("    attestations: {}", nodes.join(", ")),
+                );
+            }
         }
 
         s
@@ -128,6 +137,7 @@ struct Artifact {
     cid: Cid,
     name: String,
     locations: Vec<NodeLocation>,
+    attestations: Vec<NodeId>,
 }
 
 #[derive(Serialize)]

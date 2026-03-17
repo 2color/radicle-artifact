@@ -6,9 +6,17 @@ release artifacts and their discovery locations.
 A **Release** is associated with a Git OID (annotated tag or commit) and an
 author (the NodeId of the creating node). It contains one or more **Artifacts**,
 each identified by a content identifier (CID). Each node can announce a single
-discovery URL for any artifact, enabling decentralized mirroring.
+discovery URL for any artifact, enabling decentralized mirroring. Nodes can also
+**attest** to an artifact, recording that they independently verified the CID
+matches a build from the same commit.
 
-[cob]: https://radicle.xyz/guides/protocol#collaborative-objects
+## Workflow
+
+1. **Tag** — Create a canonical reference with an annotated tag for the release
+2. **Build** — Build the release artifacts and compute their content identifiers (CIDs)
+3. **Publish** — Create the release COB and add artifacts using the CLI
+4. **Host** — Upload artifacts to any server or IPFS and register discovery locations per node
+5. **Verify** — Other delegates check out the tagged version, build independently, and attest artifacts whose CIDs match. Attestation can be limited to the artifacts a delegate is able to reproduce locally
 
 ## COB type
 
@@ -23,7 +31,8 @@ Release
 └── artifacts: Map<Cid, Artifact>
     └── Artifact
         ├── name: String              # human-readable description
-        └── locations: Map<NodeId, Url>
+        ├── locations: Map<NodeId, Url>
+        └── attestations: Set<NodeId>   # nodes that verified the CID
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
@@ -38,6 +47,7 @@ Release
 | `AddArtifact`    | Add an artifact (CID + name) to release  |
 | `AddLocation`    | Announce a discovery URL for an artifact |
 | `RemoveLocation` | Retract a previously announced URL       |
+| `Attest`         | Record independent verification of a CID |
 
 ## CLI usage
 
@@ -46,6 +56,7 @@ rad-artifact create <OID>                        # create release
 rad-artifact add <OID> <CID> <NAME>              # add artifact
 rad-artifact locate <OID> <CID> <URL>            # add discovery URL
 rad-artifact remove-location <OID> <CID> <URL>   # remove discovery URL
+rad-artifact attest <OID> <CID>                  # attest to an artifact
 rad-artifact show <OID> [--pretty]               # show release
 rad-artifact list [--pretty] [--verbose]          # list all releases
 ```
@@ -86,3 +97,5 @@ what will happen. To preview just the changelog: `git cliff --tag 0.3.0`
 ## License
 
 MIT OR Apache-2.0
+
+[cob]: https://radicle.xyz/guides/protocol#collaborative-objects

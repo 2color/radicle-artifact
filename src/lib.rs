@@ -47,7 +47,7 @@
 
 #![deny(missing_docs)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
@@ -141,6 +141,9 @@ pub struct Release {
 pub struct Artifact {
     name: String,
     locations: HashMap<NodeId, Url>,
+    /// Nodes that have independently verified this artifact's CID.
+    #[serde(default)]
+    attestations: BTreeSet<NodeId>,
 }
 
 impl Artifact {
@@ -162,6 +165,16 @@ impl Artifact {
     /// Get the discovery URL contributed by a specific node.
     pub fn location_of(&self, node: &NodeId) -> Option<&Url> {
         self.locations.get(node)
+    }
+
+    /// Get the set of nodes that have attested to this artifact.
+    pub fn attestations(&self) -> &BTreeSet<NodeId> {
+        &self.attestations
+    }
+
+    /// Check whether a specific node has attested to this artifact.
+    pub fn is_attested_by(&self, node: &NodeId) -> bool {
+        self.attestations.contains(node)
     }
 }
 
@@ -202,6 +215,14 @@ pub enum Action {
         cid: Cid,
         /// The URL to remove.
         location: Url,
+    },
+    /// Attest that this node has independently verified the artifact.
+    ///
+    /// Idempotent — attesting the same CID twice from the same node is a no-op.
+    /// Silent no-op if the CID does not exist in the release.
+    Attest {
+        /// The content identifier of the artifact to attest.
+        cid: Cid,
     },
 }
 
@@ -254,6 +275,7 @@ impl Release {
                 self.artifacts.entry(cid).or_insert_with(|| Artifact {
                     name,
                     locations: HashMap::new(),
+                    attestations: BTreeSet::new(),
                 });
             }
             Action::AddLocation { cid, location } => {
@@ -268,6 +290,11 @@ impl Release {
                     if artifact.locations.get(&node) == Some(&location) {
                         artifact.locations.remove(&node);
                     }
+                }
+            }
+            Action::Attest { cid } => {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                    artifact.attestations.insert(node);
                 }
             }
         }
@@ -554,6 +581,18 @@ where
         })
     }
 
+    /// Attest that this node has independently verified an artifact.
+    pub fn attest<G>(
+        &mut self,
+        cid: Cid,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Attest artifact", signer, |tx| tx.attest(cid))
+    }
+
     /// Apply COB operations to a `ReleaseMut`.
     fn transaction<G, F>(
         &mut self,
@@ -648,6 +687,11 @@ where
     /// Remove a location for an artifact.
     fn remove_location(&mut self, cid: Cid, location: Url) -> Result<(), store::Error> {
         self.0.push(Action::RemoveLocation { cid, location })
+    }
+
+    /// Attest to an artifact.
+    fn attest(&mut self, cid: Cid) -> Result<(), store::Error> {
+        self.0.push(Action::Attest { cid })
     }
 }
 
@@ -897,6 +941,94 @@ mod test {
         release.reload().unwrap();
         assert!(release.artifact(&cid).is_some());
         assert_eq!(release.artifact(&cid).unwrap().name(), "test artifact");
+    }
+
+    #[test]
+    fn multi_delegate_attestation() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: carol, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        // All three delegates attest to the artifact.
+        release.attest(cid, &alice.signer).unwrap();
+        release.attest(cid, &bob.signer).unwrap();
+        release.attest(cid, &carol.signer).unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.attestations().len(), 3);
+        assert!(artifact.is_attested_by(alice.signer.public_key()));
+        assert!(artifact.is_attested_by(bob.signer.public_key()));
+        assert!(artifact.is_attested_by(carol.signer.public_key()));
+    }
+
+    #[test]
+    fn idempotent_attestation() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        // Attesting twice from the same node should be a no-op.
+        release.attest(cid, &alice.signer).unwrap();
+        release.attest(cid, &alice.signer).unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.attestations().len(), 1);
+    }
+
+    #[test]
+    fn attest_missing_cid_is_noop() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        // Attest a CID that doesn't exist in the release.
+        let cid = test_cid(99);
+        release.attest(cid, &alice.signer).unwrap();
+
+        assert!(release.artifact(&cid).is_none());
+    }
+
+    #[test]
+    fn attestation_persists_through_reload() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+        release.attest(cid, &alice.signer).unwrap();
+
+        // Reload and verify attestation is still present.
+        release.reload().unwrap();
+        let artifact = release.artifact(&cid).unwrap();
+        assert!(artifact.is_attested_by(alice.signer.public_key()));
+        assert_eq!(artifact.attestations().len(), 1);
     }
 
     #[test]

@@ -161,6 +161,13 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
+        Command::Attest(cmd) => {
+            let signer = profile.signer().map_err(error::Signer)?;
+            attest_artifact(cmd, &mut releases, &signer)?;
+            if !args.no_sync {
+                announce(&profile, repo.id)?;
+            }
+        }
         Command::Show(cmd) => show_release(cmd, &releases)?,
         Command::List(cmd) => list_releases(cmd, &releases)?,
     }
@@ -220,6 +227,24 @@ where
     Ok(())
 }
 
+fn attest_artifact<G>(
+    command::Attest { oid, cid }: command::Attest,
+    releases: &mut Releases<Repository>,
+    signer: &Device<G>,
+) -> Result<(), error::Attest>
+where
+    G: Signer<crypto::Signature>,
+{
+    let id = find_unique_by_oid(oid, releases)?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::Attest::Store { id, err })?;
+    release
+        .attest(cid, signer)
+        .map_err(|err| error::Attest::Store { id, err })?;
+    Ok(())
+}
+
 fn remove_location<G>(
     command::RemoveLocation { oid, cid, url }: command::RemoveLocation,
     releases: &mut Releases<Repository>,
@@ -245,7 +270,7 @@ fn show_release(
     let id = find_unique_by_oid(oid, releases)?;
     let release = releases
         .get(&id)
-        .map_err(|err| error::Find::FindOid { oid, err })?
+        .map_err(|err| error::Find::Lookup { oid, err })?
         .ok_or(error::Find::NoRelease(oid))?;
     let show = radicle_artifact::display::Release::new(id, &release);
     if pretty {
@@ -294,11 +319,11 @@ fn find_unique_by_oid(
 ) -> Result<ReleaseId, error::Find> {
     let mut iter = releases
         .find_by_oid(oid)
-        .map_err(|err| error::Find::FindOid { oid, err })?;
+        .map_err(|err| error::Find::Lookup { oid, err })?;
     let (id, _release) = iter
         .next()
         .ok_or(error::Find::NoRelease(oid))?
-        .map_err(|err| error::Find::FindOid { oid, err })?;
+        .map_err(|err| error::Find::Lookup { oid, err })?;
 
     // Check for ambiguity — multiple releases for the same OID.
     if iter.next().is_some() {
@@ -332,6 +357,8 @@ enum RadArtifactError {
     Locate(#[from] error::Locate),
     #[error(transparent)]
     RemoveLocation(#[from] error::RemoveLocation),
+    #[error(transparent)]
+    Attest(#[from] error::Attest),
 }
 
 mod command {
@@ -347,6 +374,7 @@ mod command {
         Add(Add),
         Locate(Locate),
         RemoveLocation(RemoveLocation),
+        Attest(Attest),
         Show(Show),
         List(List),
     }
@@ -384,6 +412,18 @@ mod command {
         pub cid: Cid,
         /// URL where the artifact can be retrieved.
         pub url: Url,
+    }
+
+    /// Attest that this node has independently verified an artifact.
+    ///
+    /// Records that the signing node built from the same commit and
+    /// obtained the same CID. Idempotent — attesting twice is a no-op.
+    #[derive(Parser)]
+    pub struct Attest {
+        /// Git object id the release is associated with.
+        pub oid: Oid,
+        /// Content identifier for the artifact to attest.
+        pub cid: Cid,
     }
 
     /// Remove a discovery location for an artifact.
@@ -480,6 +520,18 @@ mod error {
     }
 
     #[derive(Debug, Error)]
+    pub enum Attest {
+        #[error(transparent)]
+        Find(#[from] Find),
+        #[error("failed to attest artifact in release {id}")]
+        Store {
+            id: ReleaseId,
+            #[source]
+            err: cob::store::Error,
+        },
+    }
+
+    #[derive(Debug, Error)]
     pub enum RemoveLocation {
         #[error(transparent)]
         Find(#[from] Find),
@@ -498,7 +550,7 @@ mod error {
         #[error("multiple releases found for the commit {0}, use a release ID to disambiguate")]
         Ambiguous(Oid),
         #[error("failed to find a release for the commit {oid}")]
-        FindOid {
+        Lookup {
             oid: Oid,
             #[source]
             err: cob::store::Error,
