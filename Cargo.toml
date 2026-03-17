@@ -5,7 +5,7 @@ homepage = "https://radicle.xyz"
 repository = "https://app.radicle.xyz/nodes/iris.radicle.xyz/rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv"
 authors = ["Daniel Norman <daniel@norman.life>"]
 license = "MIT OR Apache-2.0"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.84.0"
 

@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "radicle-artifact"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cid",
  "clap",
