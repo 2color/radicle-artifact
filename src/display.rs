@@ -74,16 +74,12 @@ impl Release {
                 let mut locations: Vec<_> = artifact
                     .locations()
                     .iter()
-                    .map(|(node_id, urls)| {
-                        let mut urls = urls.clone();
-                        urls.sort();
-                        NodeLocations {
-                            node_id: *node_id,
-                            urls,
-                        }
+                    .map(|(node_id, url)| NodeLocation {
+                        node_id: *node_id,
+                        url: url.clone(),
                     })
                     .collect();
-                locations.sort_by_cached_key(|l| l.node_id);
+                locations.sort_by_key(|l| l.node_id);
                 Artifact {
                     cid: *cid,
                     name: artifact.name().to_owned(),
@@ -115,11 +111,11 @@ impl Release {
                 &mut s,
                 format!("  artifact {} ({})", artifact.cid, artifact.name),
             );
-            for node_locs in artifact.locations.iter() {
-                push_line(&mut s, format!("    node {}", node_locs.node_id));
-                for url in node_locs.urls.iter() {
-                    push_line(&mut s, format!("      {url}"));
-                }
+            for node_loc in artifact.locations.iter() {
+                push_line(
+                    &mut s,
+                    format!("    node {} {}", node_loc.node_id, node_loc.url),
+                );
             }
         }
 
@@ -131,11 +127,11 @@ impl Release {
 struct Artifact {
     cid: Cid,
     name: String,
-    locations: Vec<NodeLocations>,
+    locations: Vec<NodeLocation>,
 }
 
 #[derive(Serialize)]
-struct NodeLocations {
+struct NodeLocation {
     node_id: NodeId,
-    urls: Vec<Url>,
+    url: Url,
 }

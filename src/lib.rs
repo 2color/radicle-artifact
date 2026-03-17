@@ -5,8 +5,8 @@
 //! can be retrieved.
 //!
 //! Each artifact is identified by a [`Cid`] (content identifier) and has a
-//! human-readable name. Multiple nodes can contribute discovery [`Url`]s for
-//! any artifact, enabling decentralized mirroring.
+//! human-readable name. Each node can contribute a single discovery [`Url`]
+//! for any artifact, enabling decentralized mirroring.
 //!
 //! # Example
 //!
@@ -135,12 +135,12 @@ pub struct Release {
 
 /// A single artifact identified by its [`Cid`].
 ///
-/// Each artifact has a human-readable `name` describing what it is, and a set
-/// of discovery locations contributed by various nodes.
+/// Each artifact has a human-readable `name` describing what it is, and an
+/// optional discovery location per node.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
     name: String,
-    locations: HashMap<NodeId, Vec<Url>>,
+    locations: HashMap<NodeId, Url>,
 }
 
 impl Artifact {
@@ -150,17 +150,17 @@ impl Artifact {
     }
 
     /// Get the discovery locations, keyed by the node that contributed them.
-    pub fn locations(&self) -> &HashMap<NodeId, Vec<Url>> {
+    pub fn locations(&self) -> &HashMap<NodeId, Url> {
         &self.locations
     }
 
-    /// Get all unique discovery URLs across all nodes.
+    /// Get all discovery URLs across all nodes.
     pub fn all_locations(&self) -> Vec<&Url> {
-        self.locations.values().flatten().collect()
+        self.locations.values().collect()
     }
 
-    /// Get the discovery URLs contributed by a specific node.
-    pub fn locations_of(&self, node: &NodeId) -> Option<&Vec<Url>> {
+    /// Get the discovery URL contributed by a specific node.
+    pub fn location_of(&self, node: &NodeId) -> Option<&Url> {
         self.locations.get(node)
     }
 }
@@ -258,20 +258,15 @@ impl Release {
             }
             Action::AddLocation { cid, location } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    let locs: &mut Vec<Url> = artifact.locations.entry(node).or_default();
-                    if !locs.contains(&location) {
-                        locs.push(location);
-                    }
+                    // Upsert: replaces any previous URL for this node.
+                    artifact.locations.insert(node, location);
                 }
             }
             Action::RemoveLocation { cid, location } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    if let Some(locs) = artifact.locations.get_mut(&node) {
-                        locs.retain(|l| l != &location);
-                        // Clean up empty entries.
-                        if locs.is_empty() {
-                            artifact.locations.remove(&node);
-                        }
+                    // Only remove if the stored URL matches.
+                    if artifact.locations.get(&node) == Some(&location) {
+                        artifact.locations.remove(&node);
                     }
                 }
             }
@@ -725,12 +720,12 @@ mod test {
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.name(), "linux-amd64 binary");
         assert_eq!(
-            artifact.locations_of(alice.signer.public_key()),
-            Some(&vec![alice_url.clone()])
+            artifact.location_of(alice.signer.public_key()),
+            Some(&alice_url)
         );
         assert_eq!(
-            artifact.locations_of(bob.signer.public_key()),
-            Some(&vec![bob_url])
+            artifact.location_of(bob.signer.public_key()),
+            Some(&bob_url)
         );
 
         // Alice removes her location.
@@ -739,8 +734,8 @@ mod test {
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        assert!(artifact.locations_of(alice.signer.public_key()).is_none());
-        assert!(artifact.locations_of(bob.signer.public_key()).is_some());
+        assert!(artifact.location_of(alice.signer.public_key()).is_none());
+        assert!(artifact.location_of(bob.signer.public_key()).is_some());
     }
 
     #[test]
