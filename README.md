@@ -69,15 +69,18 @@ Requires [cargo-release](https://github.com/crate-ci/cargo-release) and
 [git-cliff](https://git-cliff.org/).
 
 ```
-cargo release 0.2.0
+cargo release minor --execute
 ```
 
+You can use `minor`, `major`, or `patch` and cargo-release will automatically
+calculate the next version number. You can also pass an explicit version like
+`cargo release 0.3.0 --execute` if needed.
+
 This will bump the version in `Cargo.toml`, generate the changelog via git-cliff,
-commit, tag as `releases/0.2.0`, and publish to crates.io.
+commit, tag, and publish to crates.io.
 
-To dry-run first: `cargo release 0.2.0 --dry-run`
-
-To preview the changelog without releasing: `git cliff --tag 0.2.0`
+By default, `cargo release` runs in dry-run mode — omit `--execute` to preview
+what will happen. To preview just the changelog: `git cliff --tag 0.3.0`
 
 ## License
 
