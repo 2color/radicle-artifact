@@ -10,6 +10,8 @@ discovery URL for any artifact, enabling decentralized mirroring. Nodes can also
 **attest** to an artifact, recording that they independently verified the CID
 matches a build from the same commit.
 
+> **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
+
 ## Workflow
 
 1. **Tag** — Create a canonical reference with an annotated tag for the release
