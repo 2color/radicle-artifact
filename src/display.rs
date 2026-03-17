@@ -59,6 +59,7 @@ impl Releases {
 #[derive(Serialize)]
 pub struct Release {
     release_id: ReleaseId,
+    author: NodeId,
     oid: Oid,
     artifacts: Vec<Artifact>,
 }
@@ -95,6 +96,7 @@ impl Release {
 
         Self {
             release_id,
+            author: *release.author(),
             oid: *release.oid(),
             artifacts,
         }
@@ -106,7 +108,7 @@ impl Release {
 
         push_line(
             &mut s,
-            format!("release {} (commit {})", self.release_id, self.oid),
+            format!("release {} by {} (commit {})", self.release_id, self.author, self.oid),
         );
         for artifact in self.artifacts.iter() {
             push_line(

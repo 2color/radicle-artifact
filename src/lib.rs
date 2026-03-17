@@ -127,6 +127,8 @@ impl From<ObjectId> for ReleaseId {
 /// discovery locations for each artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
+    /// The node that created this release.
+    author: NodeId,
     oid: Oid,
     artifacts: IndexMap<Cid, Artifact>,
 }
@@ -214,11 +216,17 @@ impl CobAction for Action {
 
 impl Release {
     /// Construct a new [`Release`].
-    fn new(oid: Oid) -> Self {
+    fn new(oid: Oid, author: NodeId) -> Self {
         Self {
+            author,
             oid,
             artifacts: IndexMap::new(),
         }
+    }
+
+    /// Get the [`NodeId`] of the node that created this release.
+    pub fn author(&self) -> &NodeId {
+        &self.author
     }
 
     /// Get the [`Oid`] this release is associated with.
@@ -250,7 +258,7 @@ impl Release {
             }
             Action::AddLocation { cid, location } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    let locs = artifact.locations.entry(node).or_default();
+                    let locs: &mut Vec<Url> = artifact.locations.entry(node).or_default();
                     if !locs.contains(&location) {
                         locs.push(location);
                     }
@@ -288,7 +296,7 @@ impl store::Cob for Release {
         };
         repo.commit(oid)
             .map_err(|err| error::Build::MissingCommit { oid, err })?;
-        let mut release = Self::new(oid);
+        let mut release = Self::new(oid, op.author);
         for action in actions {
             release.action(op.author, action);
         }
@@ -690,6 +698,9 @@ mod test {
 
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        // The release author should be Alice.
+        assert_eq!(release.author(), alice.signer.public_key());
 
         // Alice adds an artifact.
         let cid = test_cid(1);
