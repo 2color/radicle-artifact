@@ -74,12 +74,15 @@ impl Release {
                 let mut locations: Vec<_> = artifact
                     .locations()
                     .iter()
-                    .map(|(did, url)| Location {
-                        did: *did,
-                        url: url.clone(),
+                    .flat_map(|(did, urls)| {
+                        urls.iter().map(move |url| Location {
+                            did: *did,
+                            url: url.clone(),
+                        })
                     })
                     .collect();
-                locations.sort_by_key(|l| l.did);
+                // Sort by (did, url) for deterministic output.
+                locations.sort_by_key(|l| (l.did, l.url.to_string()));
                 let attestations: Vec<_> = artifact.attestations().iter().copied().collect();
                 Artifact {
                     cid: *cid,

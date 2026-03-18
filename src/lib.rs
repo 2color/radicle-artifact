@@ -5,8 +5,8 @@
 //! can be retrieved.
 //!
 //! Each artifact is identified by a [`Cid`] (content identifier) and has a
-//! human-readable name. Each user can contribute a single discovery [`Url`]
-//! for any artifact, enabling decentralized mirroring.
+//! human-readable name. Each user can contribute multiple discovery [`Url`]s for
+//! any artifact, enabling decentralized mirroring.
 //!
 //! # Example
 //!
@@ -53,18 +53,18 @@ use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
 
 use indexmap::IndexMap;
-use std::sync::LazyLock;
 use radicle::cob::store::Cob;
 use radicle::cob::{self, store, EntryId, Evaluate, ObjectId, Op, TypeName};
 use radicle::crypto;
 use radicle::crypto::signature::Signer;
-use radicle::node::device::Device;
 use radicle::identity::Did;
+use radicle::node::device::Device;
 use radicle::node::NodeId;
 use radicle::prelude::ReadRepository;
 use radicle::storage::{RepositoryError, SignRepository, WriteRepository};
 use radicle::{cob::store::CobAction, git::Oid};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use url::Url;
 
 // Re-export cid::Cid as the content identifier type.
@@ -136,13 +136,13 @@ pub struct Release {
 
 /// A single artifact identified by its [`Cid`].
 ///
-/// Each artifact has a human-readable `name` describing what it is, and an
-/// optional discovery location per user.
+/// Each artifact has a human-readable `name` describing what it is, and a set
+/// of discovery locations contributed by various users identified by their DIDs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
     name: String,
-    locations: HashMap<Did, Url>,
-    /// Users that have independently verified this artifact's CID.
+    locations: HashMap<Did, BTreeSet<Url>>,
+    /// Nodes that have independently verified this artifact's CID.
     #[serde(default)]
     attestations: BTreeSet<Did>,
 }
@@ -154,17 +154,17 @@ impl Artifact {
     }
 
     /// Get the discovery locations, keyed by the DID that contributed them.
-    pub fn locations(&self) -> &HashMap<Did, Url> {
+    pub fn locations(&self) -> &HashMap<Did, BTreeSet<Url>> {
         &self.locations
     }
 
-    /// Get all discovery URLs across all users.
+    /// Get all unique discovery URLs across all users.
     pub fn all_locations(&self) -> Vec<&Url> {
-        self.locations.values().collect()
+        self.locations.values().flatten().collect()
     }
 
-    /// Get the discovery URL contributed by a specific DID.
-    pub fn location_of(&self, user: &Did) -> Option<&Url> {
+    /// Get the discovery URLs contributed by a specific DID.
+    pub fn locations_of(&self, user: &Did) -> Option<&BTreeSet<Url>> {
         self.locations.get(user)
     }
 
@@ -281,15 +281,17 @@ impl Release {
             }
             Action::AddLocation { cid, location } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    // Upsert: replaces any previous URL for this user.
-                    artifact.locations.insert(user, location);
+                    artifact.locations.entry(user).or_default().insert(location);
                 }
             }
             Action::RemoveLocation { cid, location } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    // Only remove if the stored URL matches.
-                    if artifact.locations.get(&user) == Some(&location) {
-                        artifact.locations.remove(&user);
+                    if let Some(urls) = artifact.locations.get_mut(&user) {
+                        urls.remove(&location);
+                        // Clean up empty entries.
+                        if urls.is_empty() {
+                            artifact.locations.remove(&user);
+                        }
                     }
                 }
             }
@@ -585,11 +587,7 @@ where
     }
 
     /// Attest that this user has independently verified an artifact.
-    pub fn attest<G>(
-        &mut self,
-        cid: Cid,
-        signer: &Device<G>,
-    ) -> Result<EntryId, store::Error>
+    pub fn attest<G>(&mut self, cid: Cid, signer: &Device<G>) -> Result<EntryId, store::Error>
     where
         G: Signer<crypto::Signature>,
     {
@@ -767,14 +765,12 @@ mod test {
         // Verify the artifact exists with both locations.
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.name(), "linux-amd64 binary");
-        assert_eq!(
-            artifact.location_of(&Did::from(alice.signer.public_key())),
-            Some(&alice_url)
-        );
-        assert_eq!(
-            artifact.location_of(&Did::from(bob.signer.public_key())),
-            Some(&bob_url)
-        );
+        assert!(artifact
+            .locations_of(&Did::from(alice.signer.public_key()))
+            .is_some_and(|urls| urls.contains(&alice_url)));
+        assert!(artifact
+            .locations_of(&Did::from(bob.signer.public_key()))
+            .is_some_and(|urls| urls.contains(&bob_url)));
 
         // Alice removes her location.
         release
@@ -782,8 +778,12 @@ mod test {
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        assert!(artifact.location_of(&Did::from(alice.signer.public_key())).is_none());
-        assert!(artifact.location_of(&Did::from(bob.signer.public_key())).is_some());
+        assert!(artifact
+            .locations_of(&Did::from(alice.signer.public_key()))
+            .is_none());
+        assert!(artifact
+            .locations_of(&Did::from(bob.signer.public_key()))
+            .is_some());
     }
 
     #[test]
@@ -853,9 +853,7 @@ mod test {
         let cid = test_cid(99);
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
         // Should succeed but have no effect since the CID doesn't exist.
-        release
-            .add_location(cid, url, &alice.signer)
-            .unwrap();
+        release.add_location(cid, url, &alice.signer).unwrap();
 
         assert!(release.artifact(&cid).is_none());
     }
@@ -903,6 +901,58 @@ mod test {
     }
 
     #[test]
+    fn multiple_locations_per_node() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        // Alice adds two different URLs for the same artifact.
+        let url1 = Url::parse("https://alice.example.com/primary/linux-amd64.tar.gz").unwrap();
+        let url2 = Url::parse("https://alice.example.com/mirror/linux-amd64.tar.gz").unwrap();
+        release
+            .add_location(cid, url1.clone(), &alice.signer)
+            .unwrap();
+        release
+            .add_location(cid, url2.clone(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let urls = artifact
+            .locations_of(&Did::from(alice.signer.public_key()))
+            .unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&url1));
+        assert!(urls.contains(&url2));
+
+        // Adding the same URL again is a no-op.
+        release
+            .add_location(cid, url1.clone(), &alice.signer)
+            .unwrap();
+        let artifact = release.artifact(&cid).unwrap();
+        let urls = artifact
+            .locations_of(&Did::from(alice.signer.public_key()))
+            .unwrap();
+        assert_eq!(urls.len(), 2);
+
+        // Removing one URL leaves the other intact.
+        release.remove_location(cid, url1, &alice.signer).unwrap();
+        let artifact = release.artifact(&cid).unwrap();
+        let urls = artifact
+            .locations_of(&Did::from(alice.signer.public_key()))
+            .unwrap();
+        assert_eq!(urls.len(), 1);
+        assert!(urls.contains(&url2));
+    }
+
+    #[test]
     fn remove_location_for_node_that_never_added_is_noop() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
@@ -919,9 +969,7 @@ mod test {
 
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
         // Bob never added a location, so removing should be a no-op.
-        release
-            .remove_location(cid, url, &bob.signer)
-            .unwrap();
+        release.remove_location(cid, url, &bob.signer).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert!(artifact.locations().is_empty());
