@@ -1,1 +1,1 @@
-{"base":"69c8717a31f5ff77c9ae1d91994cf4ffcc06959c","description":"Rename NodeLocation to Location with did field\n\nThe struct and field names now reflect that locations are keyed by DID,\nnot NodeId, following the recent Did migration.","oid":"fe158fae7973b4de3a8126bd076b37d91f8f6339","type":"revision"}
+{"base":"69c8717a31f5ff77c9ae1d91994cf4ffcc06959c","description":"Use user instead of node for consistency\n\nDIDs identify users, not network nodes; update comments and parameter\nnames to reflect this.","oid":"8b405ffc90463ea0f8898357f3f0bb95da6db65b","type":"revision"}
