@@ -59,6 +59,7 @@ use radicle::cob::{self, store, EntryId, Evaluate, ObjectId, Op, TypeName};
 use radicle::crypto;
 use radicle::crypto::signature::Signer;
 use radicle::node::device::Device;
+use radicle::identity::Did;
 use radicle::node::NodeId;
 use radicle::prelude::ReadRepository;
 use radicle::storage::{RepositoryError, SignRepository, WriteRepository};
@@ -127,8 +128,8 @@ impl From<ObjectId> for ReleaseId {
 /// discovery locations for each artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
-    /// The node that created this release.
-    author: NodeId,
+    /// The DID of the node that created this release.
+    author: Did,
     oid: Oid,
     artifacts: IndexMap<Cid, Artifact>,
 }
@@ -140,10 +141,10 @@ pub struct Release {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
     name: String,
-    locations: HashMap<NodeId, Url>,
+    locations: HashMap<Did, Url>,
     /// Nodes that have independently verified this artifact's CID.
     #[serde(default)]
-    attestations: BTreeSet<NodeId>,
+    attestations: BTreeSet<Did>,
 }
 
 impl Artifact {
@@ -152,8 +153,8 @@ impl Artifact {
         &self.name
     }
 
-    /// Get the discovery locations, keyed by the node that contributed them.
-    pub fn locations(&self) -> &HashMap<NodeId, Url> {
+    /// Get the discovery locations, keyed by the DID that contributed them.
+    pub fn locations(&self) -> &HashMap<Did, Url> {
         &self.locations
     }
 
@@ -162,18 +163,18 @@ impl Artifact {
         self.locations.values().collect()
     }
 
-    /// Get the discovery URL contributed by a specific node.
-    pub fn location_of(&self, node: &NodeId) -> Option<&Url> {
+    /// Get the discovery URL contributed by a specific DID.
+    pub fn location_of(&self, node: &Did) -> Option<&Url> {
         self.locations.get(node)
     }
 
-    /// Get the set of nodes that have attested to this artifact.
-    pub fn attestations(&self) -> &BTreeSet<NodeId> {
+    /// Get the set of DIDs that have attested to this artifact.
+    pub fn attestations(&self) -> &BTreeSet<Did> {
         &self.attestations
     }
 
-    /// Check whether a specific node has attested to this artifact.
-    pub fn is_attested_by(&self, node: &NodeId) -> bool {
+    /// Check whether a specific DID has attested to this artifact.
+    pub fn is_attested_by(&self, node: &Did) -> bool {
         self.attestations.contains(node)
     }
 }
@@ -237,7 +238,7 @@ impl CobAction for Action {
 
 impl Release {
     /// Construct a new [`Release`].
-    fn new(oid: Oid, author: NodeId) -> Self {
+    fn new(oid: Oid, author: Did) -> Self {
         Self {
             author,
             oid,
@@ -245,8 +246,8 @@ impl Release {
         }
     }
 
-    /// Get the [`NodeId`] of the node that created this release.
-    pub fn author(&self) -> &NodeId {
+    /// Get the [`Did`] of the node that created this release.
+    pub fn author(&self) -> &Did {
         &self.author
     }
 
@@ -266,7 +267,7 @@ impl Release {
     }
 
     /// Apply an action to the release state.
-    fn action(&mut self, node: NodeId, action: Action) {
+    fn action(&mut self, node: Did, action: Action) {
         match action {
             // Subsequent Create actions are ignored after initialization.
             Action::Create { .. } => {}
@@ -318,9 +319,10 @@ impl store::Cob for Release {
         };
         repo.commit(oid)
             .map_err(|err| error::Build::MissingCommit { oid, err })?;
-        let mut release = Self::new(oid, op.author);
+        let author = Did::from(op.author);
+        let mut release = Self::new(oid, author);
         for action in actions {
-            release.action(op.author, action);
+            release.action(author, action);
         }
         Ok(release)
     }
@@ -331,8 +333,9 @@ impl store::Cob for Release {
         _concurrent: I,
         _repo: &R,
     ) -> Result<(), Self::Error> {
+        let author = Did::from(op.author);
         for action in op.actions {
-            self.action(op.author, action);
+            self.action(author, action);
         }
         Ok(())
     }
@@ -699,6 +702,7 @@ where
 #[allow(clippy::unwrap_used)]
 mod test {
     use radicle::git::{raw::Repository, Oid};
+    use radicle::identity::Did;
     use radicle::test;
     use url::Url;
 
@@ -739,7 +743,7 @@ mod test {
         let mut release = releases.create(oid, &alice.signer).unwrap();
 
         // The release author should be Alice.
-        assert_eq!(release.author(), alice.signer.public_key());
+        assert_eq!(release.author(), &Did::from(alice.signer.public_key()));
 
         // Alice adds an artifact.
         let cid = test_cid(1);
@@ -764,11 +768,11 @@ mod test {
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.name(), "linux-amd64 binary");
         assert_eq!(
-            artifact.location_of(alice.signer.public_key()),
+            artifact.location_of(&Did::from(alice.signer.public_key())),
             Some(&alice_url)
         );
         assert_eq!(
-            artifact.location_of(bob.signer.public_key()),
+            artifact.location_of(&Did::from(bob.signer.public_key())),
             Some(&bob_url)
         );
 
@@ -778,8 +782,8 @@ mod test {
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        assert!(artifact.location_of(alice.signer.public_key()).is_none());
-        assert!(artifact.location_of(bob.signer.public_key()).is_some());
+        assert!(artifact.location_of(&Did::from(alice.signer.public_key())).is_none());
+        assert!(artifact.location_of(&Did::from(bob.signer.public_key())).is_some());
     }
 
     #[test]
@@ -966,9 +970,9 @@ mod test {
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.attestations().len(), 3);
-        assert!(artifact.is_attested_by(alice.signer.public_key()));
-        assert!(artifact.is_attested_by(bob.signer.public_key()));
-        assert!(artifact.is_attested_by(carol.signer.public_key()));
+        assert!(artifact.is_attested_by(&Did::from(alice.signer.public_key())));
+        assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
+        assert!(artifact.is_attested_by(&Did::from(carol.signer.public_key())));
     }
 
     #[test]
@@ -1027,7 +1031,7 @@ mod test {
         // Reload and verify attestation is still present.
         release.reload().unwrap();
         let artifact = release.artifact(&cid).unwrap();
-        assert!(artifact.is_attested_by(alice.signer.public_key()));
+        assert!(artifact.is_attested_by(&Did::from(alice.signer.public_key())));
         assert_eq!(artifact.attestations().len(), 1);
     }
 

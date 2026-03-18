@@ -3,7 +3,7 @@
 //! These can be used in tools that wish to display data, such as the
 //! `rad-artifact` CLI tool.
 
-use radicle::{git::Oid, node::NodeId};
+use radicle::{git::Oid, identity::Did};
 use serde::Serialize;
 use url::Url;
 
@@ -59,7 +59,7 @@ impl Releases {
 #[derive(Serialize)]
 pub struct Release {
     release_id: ReleaseId,
-    author: NodeId,
+    author: Did,
     oid: Oid,
     artifacts: Vec<Artifact>,
 }
@@ -137,11 +137,11 @@ struct Artifact {
     cid: Cid,
     name: String,
     locations: Vec<NodeLocation>,
-    attestations: Vec<NodeId>,
+    attestations: Vec<Did>,
 }
 
 #[derive(Serialize)]
 struct NodeLocation {
-    node_id: NodeId,
+    node_id: Did,
     url: Url,
 }
