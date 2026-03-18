@@ -5,7 +5,7 @@
 //! can be retrieved.
 //!
 //! Each artifact is identified by a [`Cid`] (content identifier) and has a
-//! human-readable name. Each node can contribute a single discovery [`Url`]
+//! human-readable name. Each user can contribute a single discovery [`Url`]
 //! for any artifact, enabling decentralized mirroring.
 //!
 //! # Example
@@ -124,11 +124,11 @@ impl From<ObjectId> for ReleaseId {
 /// A `Release` groups content-addressed artifacts under a single Git OID
 /// (annotated tag or commit).
 ///
-/// Multiple artifacts can exist per release, and multiple nodes can announce
+/// Multiple artifacts can exist per release, and multiple users can announce
 /// discovery locations for each artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
-    /// The DID of the node that created this release.
+    /// The DID of the user that created this release.
     author: Did,
     oid: Oid,
     artifacts: IndexMap<Cid, Artifact>,
@@ -137,12 +137,12 @@ pub struct Release {
 /// A single artifact identified by its [`Cid`].
 ///
 /// Each artifact has a human-readable `name` describing what it is, and an
-/// optional discovery location per node.
+/// optional discovery location per user.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
     name: String,
     locations: HashMap<Did, Url>,
-    /// Nodes that have independently verified this artifact's CID.
+    /// Users that have independently verified this artifact's CID.
     #[serde(default)]
     attestations: BTreeSet<Did>,
 }
@@ -158,14 +158,14 @@ impl Artifact {
         &self.locations
     }
 
-    /// Get all discovery URLs across all nodes.
+    /// Get all discovery URLs across all users.
     pub fn all_locations(&self) -> Vec<&Url> {
         self.locations.values().collect()
     }
 
     /// Get the discovery URL contributed by a specific DID.
-    pub fn location_of(&self, node: &Did) -> Option<&Url> {
-        self.locations.get(node)
+    pub fn location_of(&self, user: &Did) -> Option<&Url> {
+        self.locations.get(user)
     }
 
     /// Get the set of DIDs that have attested to this artifact.
@@ -174,8 +174,8 @@ impl Artifact {
     }
 
     /// Check whether a specific DID has attested to this artifact.
-    pub fn is_attested_by(&self, node: &Did) -> bool {
-        self.attestations.contains(node)
+    pub fn is_attested_by(&self, user: &Did) -> bool {
+        self.attestations.contains(user)
     }
 }
 
@@ -200,7 +200,7 @@ pub enum Action {
     },
     /// Add a discovery location for an existing artifact.
     ///
-    /// The authoring node is recorded as the contributor of this location.
+    /// The authoring user is recorded as the contributor of this location.
     /// Ignored if the CID does not exist in the release.
     AddLocation {
         /// The content identifier of the artifact.
@@ -208,7 +208,7 @@ pub enum Action {
         /// A URL where the artifact can be retrieved.
         location: Url,
     },
-    /// Remove a discovery location previously added by this node.
+    /// Remove a discovery location previously added by this user.
     ///
     /// No-op if the location or CID is not found.
     RemoveLocation {
@@ -217,9 +217,9 @@ pub enum Action {
         /// The URL to remove.
         location: Url,
     },
-    /// Attest that this node has independently verified the artifact.
+    /// Attest that this user has independently verified the artifact.
     ///
-    /// Idempotent — attesting the same CID twice from the same node is a no-op.
+    /// Idempotent — attesting the same CID twice from the same user is a no-op.
     /// Silent no-op if the CID does not exist in the release.
     Attest {
         /// The content identifier of the artifact to attest.
@@ -246,7 +246,7 @@ impl Release {
         }
     }
 
-    /// Get the [`Did`] of the node that created this release.
+    /// Get the [`Did`] of the user that created this release.
     pub fn author(&self) -> &Did {
         &self.author
     }
@@ -584,7 +584,7 @@ where
         })
     }
 
-    /// Attest that this node has independently verified an artifact.
+    /// Attest that this user has independently verified an artifact.
     pub fn attest<G>(
         &mut self,
         cid: Cid,
