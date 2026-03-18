@@ -12,6 +12,13 @@ matches a build from the same commit.
 
 > **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
 
+This COB is **build-system agnostic**. It works with any toolchain or build
+process that produces addressable artifacts. Ideally your builds are
+deterministic (reproducible), which lets other delegates independently verify
+artifacts and record attestations. However, deterministic builds are not a
+requirement; you can use radicle-artifact purely for publishing and discovering
+release artifacts without attestation.
+
 ## Workflow
 
 1. **Tag** — Create a canonical reference with an annotated tag for the release
