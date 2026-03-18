@@ -1,4 +1,5 @@
 1ee2a1b7c1e4c3456cef8341978d92c86203f71b refs/cobs/xyz.radicle.id/36eaee42e67b7ebeeed1c72e171e6695176d99ec
+bdcd0995adb95a43879036554e61c4e785d283eb refs/cobs/xyz.radicle.issue/381d6b3d663c2a2b9b4da114498dd421df54f914
 1f11d9bdbd4e7faccd11194aad2732c9e19b0c0c refs/cobs/xyz.radicle.issue/a65ac9d7499cd94d7cf49f9c8998dc9a6d192bca
 c5841fbe74ca8b654b1ce7326cbebd3ea5a5298f refs/cobs/xyz.radicle.patch/c5841fbe74ca8b654b1ce7326cbebd3ea5a5298f
 7bea99662e6f298e791bb5174bb01796fa97ac9b refs/cobs/xyz.radicle.patch/c720172a43b0e312c38764d85f7436f3a678ac65
@@ -7,7 +8,6 @@ c5841fbe74ca8b654b1ce7326cbebd3ea5a5298f refs/cobs/xyz.radicle.patch/c5841fbe74c
 ff843e79f971008faa4fad573f22c238a442559d refs/heads/patches/c720172a43b0e312c38764d85f7436f3a678ac65
 1ee2a1b7c1e4c3456cef8341978d92c86203f71b refs/rad/id
 36eaee42e67b7ebeeed1c72e171e6695176d99ec refs/rad/root
-c1558e5eb6854f9787f9ff36be44bfa9d03b135d refs/rad/sigrefs-parent
 fe49e7aff7ed87e1bb8c0f1669e694f2c04cc2a5 refs/tags/releases/0.1.0
 e921a5225a5a80bb9930018964c33fd855702048 refs/tags/releases/0.2.0
 afc9df7652af951cdb8a0dded586dad73679ee35 refs/tags/releases/0.3.0
