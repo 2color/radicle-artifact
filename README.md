@@ -41,6 +41,12 @@ Release
 - **Locations** — plain URLs (`https://`, `ipfs://`, `iroh://`, etc.)
 - Each node contributes a single URL per artifact; announcing a new URL replaces the previous one
 
+## Collaboration model
+
+Any node can contribute to any release. There is no restriction to the original
+author. This means any node can add artifacts, announce discovery locations, and
+record attestations on releases created by others. The `author` field records who created the release but does not gate contributions.
+
 ## Actions
 
 | Action           | Description                              |
