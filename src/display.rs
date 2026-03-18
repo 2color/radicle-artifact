@@ -74,12 +74,12 @@ impl Release {
                 let mut locations: Vec<_> = artifact
                     .locations()
                     .iter()
-                    .map(|(node_id, url)| NodeLocation {
-                        node_id: *node_id,
+                    .map(|(did, url)| Location {
+                        did: *did,
                         url: url.clone(),
                     })
                     .collect();
-                locations.sort_by_key(|l| l.node_id);
+                locations.sort_by_key(|l| l.did);
                 let attestations: Vec<_> = artifact.attestations().iter().copied().collect();
                 Artifact {
                     cid: *cid,
@@ -113,10 +113,10 @@ impl Release {
                 &mut s,
                 format!("  artifact {} ({})", artifact.cid, artifact.name),
             );
-            for node_loc in artifact.locations.iter() {
+            for loc in artifact.locations.iter() {
                 push_line(
                     &mut s,
-                    format!("    node {} {}", node_loc.node_id, node_loc.url),
+                    format!("    {} {}", loc.did, loc.url),
                 );
             }
             if !artifact.attestations.is_empty() {
@@ -136,12 +136,12 @@ impl Release {
 struct Artifact {
     cid: Cid,
     name: String,
-    locations: Vec<NodeLocation>,
+    locations: Vec<Location>,
     attestations: Vec<Did>,
 }
 
 #[derive(Serialize)]
-struct NodeLocation {
-    node_id: Did,
+struct Location {
+    did: Did,
     url: Url,
 }
