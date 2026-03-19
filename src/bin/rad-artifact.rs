@@ -168,6 +168,13 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
+        Command::Redact(cmd) => {
+            let signer = profile.signer().map_err(error::Signer)?;
+            redact_artifact(cmd, &mut releases, &signer)?;
+            if !args.no_sync {
+                announce(&profile, repo.id)?;
+            }
+        }
         Command::Show(cmd) => show_release(cmd, &releases)?,
         Command::List(cmd) => list_releases(cmd, &releases)?,
     }
@@ -242,6 +249,25 @@ where
     release
         .attest(cid, signer)
         .map_err(|err| error::Attest::Store { id, err })?;
+    Ok(())
+}
+
+fn redact_artifact<G>(
+    command::Redact { oid, cid, reason }: command::Redact,
+    releases: &mut Releases<Repository>,
+    signer: &Device<G>,
+) -> Result<(), error::Redact>
+where
+    G: Signer<crypto::Signature>,
+{
+    let id = find_unique_by_oid(oid, releases)?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::Redact::Store { id, err })?;
+    release
+        .redact(cid, reason, signer)
+        .map_err(|err| error::Redact::Redact { id, err })?;
+    eprintln!("redacted {cid}");
     Ok(())
 }
 
@@ -359,6 +385,8 @@ enum RadArtifactError {
     RemoveLocation(#[from] error::RemoveLocation),
     #[error(transparent)]
     Attest(#[from] error::Attest),
+    #[error(transparent)]
+    Redact(#[from] error::Redact),
 }
 
 mod command {
@@ -375,6 +403,7 @@ mod command {
         Locate(Locate),
         RemoveLocation(RemoveLocation),
         Attest(Attest),
+        Redact(Redact),
         Show(Show),
         List(List),
     }
@@ -424,6 +453,23 @@ mod command {
         pub oid: Oid,
         /// Content identifier for the artifact to attest.
         pub cid: Cid,
+    }
+
+    /// Redact an artifact, indicating it should not be used.
+    ///
+    /// Records that the signing node believes this artifact is compromised
+    /// or should be withdrawn. The reason is a free-form string (max 4096
+    /// bytes). The act of redaction is permanent; the reason text can be
+    /// amended by redacting again. A redaction supersedes any prior
+    /// attestation from the same node.
+    #[derive(Parser)]
+    pub struct Redact {
+        /// Git object id the release is associated with.
+        pub oid: Oid,
+        /// Content identifier for the artifact to redact.
+        pub cid: Cid,
+        /// Reason for the redaction.
+        pub reason: String,
     }
 
     /// Remove a discovery location for an artifact.
@@ -524,6 +570,24 @@ mod error {
         #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to attest artifact in release {id}")]
+        Store {
+            id: ReleaseId,
+            #[source]
+            err: cob::store::Error,
+        },
+    }
+
+    #[derive(Debug, Error)]
+    pub enum Redact {
+        #[error(transparent)]
+        Find(#[from] Find),
+        #[error("failed to redact artifact in release {id}")]
+        Redact {
+            id: ReleaseId,
+            #[source]
+            err: radicle_artifact::error::Redact,
+        },
+        #[error("failed to redact artifact in release {id}")]
         Store {
             id: ReleaseId,
             #[source]

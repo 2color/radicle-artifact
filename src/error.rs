@@ -3,6 +3,30 @@
 use radicle::{cob, git};
 use thiserror::Error;
 
+use crate::Cid;
+
+/// Errors that can occur when redacting an artifact.
+#[derive(Debug, Error)]
+pub enum Redact {
+    /// The artifact CID was not found in the release.
+    #[error("artifact {cid} not found in release")]
+    NotFound {
+        /// The CID that was not found.
+        cid: Cid,
+    },
+    /// The redaction reason exceeds the maximum allowed length.
+    #[error("redaction reason exceeds maximum length of {max} bytes (got {actual})")]
+    ReasonTooLong {
+        /// The actual byte length of the reason.
+        actual: usize,
+        /// The maximum allowed byte length.
+        max: usize,
+    },
+    /// An error occurred in the underlying COB store.
+    #[error(transparent)]
+    Store(#[from] cob::store::Error),
+}
+
 /// Errors that can occur when building a [`Release`][release].
 ///
 /// [release]: super::Release

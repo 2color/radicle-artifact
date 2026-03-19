@@ -84,11 +84,22 @@ impl Release {
                 // Sort by (did, url) for deterministic output.
                 locations.sort_by(|a, b| a.did.cmp(&b.did).then(a.url.as_str().cmp(b.url.as_str())));
                 let attestations: Vec<_> = artifact.attestations().iter().copied().collect();
+                let mut redactions: Vec<_> = artifact
+                    .redactions()
+                    .iter()
+                    .map(|(did, reason)| Redaction {
+                        did: *did,
+                        reason: reason.clone(),
+                    })
+                    .collect();
+                // Sort by DID for deterministic output.
+                redactions.sort_by(|a, b| a.did.cmp(&b.did));
                 Artifact {
                     cid: cid.to_string(),
                     name: artifact.name().to_owned(),
                     locations,
                     attestations,
+                    redactions,
                 }
             })
             .collect();
@@ -129,6 +140,12 @@ impl Release {
                     format!("    attestations: {}", nodes.join(", ")),
                 );
             }
+            if !artifact.redactions.is_empty() {
+                push_line(&mut s, "    redactions:".to_string());
+                for r in artifact.redactions.iter() {
+                    push_line(&mut s, format!("      {} - {}", r.did, r.reason));
+                }
+            }
         }
 
         s
@@ -141,10 +158,17 @@ struct Artifact {
     name: String,
     locations: Vec<Location>,
     attestations: Vec<Did>,
+    redactions: Vec<Redaction>,
 }
 
 #[derive(Serialize)]
 struct Location {
     did: Did,
     url: Url,
+}
+
+#[derive(Serialize)]
+struct Redaction {
+    did: Did,
+    reason: String,
 }

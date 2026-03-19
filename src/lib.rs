@@ -80,6 +80,9 @@ pub mod error;
 pub static TYPENAME: LazyLock<TypeName> =
     LazyLock::new(|| FromStr::from_str("org.radworks.artifact").expect("type name is valid"));
 
+/// Maximum byte length for a redaction reason string.
+pub const MAX_REDACT_REASON_LEN: usize = 2048;
+
 /// The identifier for a given [`Release`] collaborative object.
 ///
 /// When a [`Release`] is created, through [`Releases::create`], the identifier
@@ -143,9 +146,12 @@ pub struct Release {
 pub struct Artifact {
     name: String,
     locations: BTreeMap<Did, BTreeSet<Url>>,
-    /// Nodes that have independently verified this artifact's CID.
+    /// Users that have independently verified this artifact's CID.
     #[serde(default)]
     attestations: BTreeSet<Did>,
+    /// Users that have redacted this artifact, with their stated reason.
+    #[serde(default)]
+    redactions: BTreeMap<Did, String>,
 }
 
 impl Artifact {
@@ -180,6 +186,26 @@ impl Artifact {
     /// Check whether a specific DID has attested to this artifact.
     pub fn is_attested_by(&self, user: &Did) -> bool {
         self.attestations.contains(user)
+    }
+
+    /// Get all redactions, keyed by the DID that issued them.
+    pub fn redactions(&self) -> &BTreeMap<Did, String> {
+        &self.redactions
+    }
+
+    /// Check whether a specific DID has redacted this artifact.
+    pub fn is_redacted_by(&self, user: &Did) -> bool {
+        self.redactions.contains_key(user)
+    }
+
+    /// Get the redaction reason from a specific DID, if any.
+    pub fn redaction_by(&self, user: &Did) -> Option<&str> {
+        self.redactions.get(user).map(|s| s.as_str())
+    }
+
+    /// Check whether any DID has redacted this artifact.
+    pub fn is_redacted(&self) -> bool {
+        !self.redactions.is_empty()
     }
 }
 
@@ -228,6 +254,23 @@ pub enum Action {
     Attest {
         /// The content identifier of the artifact to attest.
         cid: Cid,
+    },
+    /// Redact an artifact, indicating it should not be used.
+    ///
+    /// The reason is a free-form string explaining why (e.g. supply chain
+    /// compromise, build reproducibility failure). If the same DID redacts
+    /// again, the reason is updated — the act of redaction is permanent but
+    /// the reason text can be amended. A redaction supersedes any prior
+    /// attestation from the same DID.
+    ///
+    /// Silent no-op if the CID does not exist in the release (this is
+    /// intentional for COB replay consistency; the [`ReleaseMut`] API
+    /// validates the CID before creating the action).
+    Redact {
+        /// The content identifier of the artifact to redact.
+        cid: Cid,
+        /// A human-readable reason for the redaction.
+        reason: String,
     },
 }
 
@@ -281,6 +324,7 @@ impl Release {
                     name,
                     locations: BTreeMap::new(),
                     attestations: BTreeSet::new(),
+                    redactions: BTreeMap::new(),
                 });
             }
             Action::AddLocation { cid, location } => {
@@ -301,6 +345,13 @@ impl Release {
             Action::Attest { cid } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     artifact.attestations.insert(user);
+                }
+            }
+            Action::Redact { cid, reason } => {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                    artifact.redactions.insert(user, reason);
+                    // A redaction supersedes any prior attestation from the same user.
+                    artifact.attestations.remove(&user);
                 }
             }
         }
@@ -597,6 +648,32 @@ where
         self.transaction("Attest artifact", signer, |tx| tx.attest(cid))
     }
 
+    /// Redact an artifact, indicating it should not be used.
+    ///
+    /// Returns an error if the CID does not exist in the release or if the
+    /// reason exceeds [`MAX_REDACT_REASON_LEN`] bytes.
+    pub fn redact<G>(
+        &mut self,
+        cid: Cid,
+        reason: String,
+        signer: &Device<G>,
+    ) -> Result<EntryId, error::Redact>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        if self.artifact(&cid).is_none() {
+            return Err(error::Redact::NotFound { cid });
+        }
+        if reason.len() > MAX_REDACT_REASON_LEN {
+            return Err(error::Redact::ReasonTooLong {
+                actual: reason.len(),
+                max: MAX_REDACT_REASON_LEN,
+            });
+        }
+        self.transaction("Redact artifact", signer, |tx| tx.redact(cid, reason))
+            .map_err(error::Redact::from)
+    }
+
     /// Apply COB operations to a `ReleaseMut`.
     fn transaction<G, F>(
         &mut self,
@@ -696,6 +773,11 @@ where
     /// Attest to an artifact.
     fn attest(&mut self, cid: Cid) -> Result<(), store::Error> {
         self.0.push(Action::Attest { cid })
+    }
+
+    /// Redact an artifact with a reason.
+    fn redact(&mut self, cid: Cid, reason: String) -> Result<(), store::Error> {
+        self.0.push(Action::Redact { cid, reason })
     }
 }
 
@@ -1093,6 +1175,284 @@ mod test {
         let artifact = release.artifact(&cid).unwrap();
         assert!(artifact.is_attested_by(&Did::from(alice.signer.public_key())));
         assert_eq!(artifact.attestations().len(), 1);
+    }
+
+    #[test]
+    fn redact_artifact() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .redact(cid, "compromised build".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_did = Did::from(alice.signer.public_key());
+        assert!(artifact.is_redacted());
+        assert!(artifact.is_redacted_by(&alice_did));
+        assert_eq!(artifact.redaction_by(&alice_did), Some("compromised build"));
+        assert_eq!(artifact.redactions().len(), 1);
+    }
+
+    #[test]
+    fn multi_user_redaction() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        release
+            .redact(cid, "supply chain attack".into(), &alice.signer)
+            .unwrap();
+        release
+            .redact(cid, "failed reproducibility check".into(), &bob.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.redactions().len(), 2);
+        assert_eq!(
+            artifact.redaction_by(&Did::from(alice.signer.public_key())),
+            Some("supply chain attack")
+        );
+        assert_eq!(
+            artifact.redaction_by(&Did::from(bob.signer.public_key())),
+            Some("failed reproducibility check")
+        );
+    }
+
+    #[test]
+    fn multi_user_same_reason() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        // Both users redact with the same reason — both are recorded independently.
+        release
+            .redact(cid, "malware detected".into(), &alice.signer)
+            .unwrap();
+        release
+            .redact(cid, "malware detected".into(), &bob.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.redactions().len(), 2);
+        assert!(artifact.is_redacted_by(&Did::from(alice.signer.public_key())));
+        assert!(artifact.is_redacted_by(&Did::from(bob.signer.public_key())));
+    }
+
+    #[test]
+    fn redact_updates_reason() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .redact(cid, "initial reason".into(), &alice.signer)
+            .unwrap();
+        release
+            .redact(cid, "updated reason".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_did = Did::from(alice.signer.public_key());
+        assert_eq!(artifact.redactions().len(), 1);
+        assert_eq!(artifact.redaction_by(&alice_did), Some("updated reason"));
+    }
+
+    #[test]
+    fn redaction_persists_through_reload() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+        release
+            .redact(cid, "compromised".into(), &alice.signer)
+            .unwrap();
+
+        // Reload and verify redaction is still present.
+        release.reload().unwrap();
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_did = Did::from(alice.signer.public_key());
+        assert!(artifact.is_redacted_by(&alice_did));
+        assert_eq!(artifact.redaction_by(&alice_did), Some("compromised"));
+    }
+
+    #[test]
+    fn redact_removes_attestation() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        // Attest then redact — redaction should supersede the attestation.
+        release.attest(cid, &alice.signer).unwrap();
+        release
+            .redact(cid, "source was compromised".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_did = Did::from(alice.signer.public_key());
+        assert!(!artifact.is_attested_by(&alice_did));
+        assert!(artifact.is_redacted_by(&alice_did));
+    }
+
+    #[test]
+    fn redact_then_attest_restores_attestation() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        // Redact first, then attest — both should be present since Attest
+        // does not remove redactions (redactions are permanent).
+        release
+            .redact(cid, "suspected issue".into(), &alice.signer)
+            .unwrap();
+        release.attest(cid, &alice.signer).unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_did = Did::from(alice.signer.public_key());
+        assert!(artifact.is_attested_by(&alice_did));
+        assert!(artifact.is_redacted_by(&alice_did));
+    }
+
+    #[test]
+    fn redact_only_removes_own_attestation() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        // Both attest, then Alice redacts — only Alice's attestation is removed.
+        release.attest(cid, &alice.signer).unwrap();
+        release.attest(cid, &bob.signer).unwrap();
+        release
+            .redact(cid, "compromised".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert!(!artifact.is_attested_by(&Did::from(alice.signer.public_key())));
+        assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
+    }
+
+    #[test]
+    fn redact_empty_reason() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .redact(cid, "".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_did = Did::from(alice.signer.public_key());
+        assert!(artifact.is_redacted_by(&alice_did));
+        assert_eq!(artifact.redaction_by(&alice_did), Some(""));
+    }
+
+    #[test]
+    fn redact_reason_too_long() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        let long_reason = "x".repeat(crate::MAX_REDACT_REASON_LEN + 1);
+        let result = release.redact(cid, long_reason, &alice.signer);
+        assert!(result.is_err());
+        // Artifact should not be redacted.
+        assert!(!release.artifact(&cid).unwrap().is_redacted());
+    }
+
+    #[test]
+    fn redact_nonexistent_cid_errors() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        // Try to redact a CID that was never added — should error.
+        let cid = test_cid(99);
+        let result = release.redact(cid, "does not matter".into(), &alice.signer);
+        assert!(result.is_err());
     }
 
     #[test]
