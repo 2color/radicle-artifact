@@ -47,7 +47,8 @@
 
 #![deny(missing_docs)]
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
@@ -141,7 +142,7 @@ pub struct Release {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
     name: String,
-    locations: HashMap<Did, BTreeSet<Url>>,
+    locations: BTreeMap<Did, BTreeSet<Url>>,
     /// Nodes that have independently verified this artifact's CID.
     #[serde(default)]
     attestations: BTreeSet<Did>,
@@ -154,11 +155,14 @@ impl Artifact {
     }
 
     /// Get the discovery locations, keyed by the DID that contributed them.
-    pub fn locations(&self) -> &HashMap<Did, BTreeSet<Url>> {
+    pub fn locations(&self) -> &BTreeMap<Did, BTreeSet<Url>> {
         &self.locations
     }
 
-    /// Get all unique discovery URLs across all users.
+    /// Get all discovery URLs across all users.
+    ///
+    /// Note: the same URL may appear more than once if multiple users
+    /// contributed it.
     pub fn all_locations(&self) -> Vec<&Url> {
         self.locations.values().flatten().collect()
     }
@@ -275,7 +279,7 @@ impl Release {
                 // Idempotent: only insert if CID is new.
                 self.artifacts.entry(cid).or_insert_with(|| Artifact {
                     name,
-                    locations: HashMap::new(),
+                    locations: BTreeMap::new(),
                     attestations: BTreeSet::new(),
                 });
             }
@@ -286,11 +290,10 @@ impl Release {
             }
             Action::RemoveLocation { cid, location } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    if let Some(urls) = artifact.locations.get_mut(&user) {
-                        urls.remove(&location);
-                        // Clean up empty entries.
-                        if urls.is_empty() {
-                            artifact.locations.remove(&user);
+                    if let Entry::Occupied(mut e) = artifact.locations.entry(user) {
+                        e.get_mut().remove(&location);
+                        if e.get().is_empty() {
+                            e.remove();
                         }
                     }
                 }
@@ -950,6 +953,15 @@ mod test {
             .unwrap();
         assert_eq!(urls.len(), 1);
         assert!(urls.contains(&url2));
+
+        // Removing the last URL cleans up the DID entry entirely.
+        release
+            .remove_location(cid, url2, &alice.signer)
+            .unwrap();
+        let artifact = release.artifact(&cid).unwrap();
+        assert!(artifact
+            .locations_of(&Did::from(alice.signer.public_key()))
+            .is_none());
     }
 
     #[test]

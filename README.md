@@ -5,8 +5,8 @@ release artifacts and their discovery locations.
 
 A **Release** is associated with a Git OID (annotated tag or commit) and an
 author (the NodeId of the creating node). It contains one or more **Artifacts**,
-each identified by a content identifier (CID). Each node can announce a single
-discovery URL for any artifact, enabling decentralized mirroring. Nodes can also
+each identified by a content identifier (CID). Each node can announce multiple
+discovery URLs for any artifact, enabling decentralized mirroring. Nodes can also
 **attest** to an artifact, recording that they independently verified the CID
 matches a build from the same commit.
 
@@ -36,17 +36,17 @@ release artifacts without attestation.
 ```
 Release
 ├── oid: Oid                          # git commit or annotated tag
-├── author: NodeId                    # node that created this release
+├── author: Did                       # node that created this release
 └── artifacts: Map<Cid, Artifact>
     └── Artifact
         ├── name: String              # human-readable description
-        ├── locations: Map<NodeId, Url>
-        └── attestations: Set<NodeId>   # nodes that verified the CID
+        ├── locations: Map<Did, Set<Url>>
+        └── attestations: Set<Did>      # nodes that verified the CID
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
 - **Locations** — plain URLs (`https://`, `ipfs://`, `iroh://`, etc.)
-- Each node contributes a single URL per artifact; announcing a new URL replaces the previous one
+- Each node can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
 
 ## Collaboration model
 

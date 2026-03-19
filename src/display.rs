@@ -82,7 +82,7 @@ impl Release {
                     })
                     .collect();
                 // Sort by (did, url) for deterministic output.
-                locations.sort_by_key(|l| (l.did, l.url.to_string()));
+                locations.sort_by(|a, b| a.did.cmp(&b.did).then(a.url.as_str().cmp(b.url.as_str())));
                 let attestations: Vec<_> = artifact.attestations().iter().copied().collect();
                 Artifact {
                     cid: *cid,
