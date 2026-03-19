@@ -127,7 +127,7 @@ impl From<ObjectId> for ReleaseId {
 ///
 /// Multiple artifacts can exist per release, and multiple users can announce
 /// discovery locations for each artifact.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Release {
     /// The DID of the user that created this release.
     author: Did,
@@ -139,13 +139,18 @@ pub struct Release {
 ///
 /// Each artifact has a human-readable `name` describing what it is, and a set
 /// of discovery locations contributed by various users identified by their DIDs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Artifact {
     name: String,
     locations: BTreeMap<Did, BTreeSet<Url>>,
     /// Nodes that have independently verified this artifact's CID.
     #[serde(default)]
     attestations: BTreeSet<Did>,
+    /// Structured metadata contributed by users, keyed by DID then by
+    /// reverse-DNS namespace key (e.g. `xyz.example.build-env`).
+    /// Each user manages their own entries independently.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<Did, BTreeMap<String, serde_json::Value>>,
 }
 
 impl Artifact {
@@ -181,10 +186,28 @@ impl Artifact {
     pub fn is_attested_by(&self, user: &Did) -> bool {
         self.attestations.contains(user)
     }
+
+    /// Get all structured metadata, keyed by contributing DID.
+    pub fn metadata(&self) -> &BTreeMap<Did, BTreeMap<String, serde_json::Value>> {
+        &self.metadata
+    }
+
+    /// Get metadata contributed by a specific DID.
+    pub fn metadata_of(&self, user: &Did) -> Option<&BTreeMap<String, serde_json::Value>> {
+        self.metadata.get(user)
+    }
+
+    /// Collect values for a specific key across all contributing DIDs.
+    pub fn all_metadata_for_key(&self, key: &str) -> Vec<(&Did, &serde_json::Value)> {
+        self.metadata
+            .iter()
+            .filter_map(|(did, map)| map.get(key).map(|v| (did, v)))
+            .collect()
+    }
 }
 
 /// The collaborative object actions for artifact releases.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Action {
     /// Create a [`Release`] for the given [`Oid`].
     ///
@@ -228,6 +251,29 @@ pub enum Action {
     Attest {
         /// The content identifier of the artifact to attest.
         cid: Cid,
+    },
+    /// Set a structured metadata entry on an artifact.
+    ///
+    /// Each user manages their own metadata independently. Setting the same
+    /// key again overwrites the previous value for that user. Keys follow
+    /// reverse-DNS convention (e.g. `xyz.example.build-env`).
+    /// Silent no-op if the CID does not exist in the release.
+    SetMetadata {
+        /// The content identifier of the artifact.
+        cid: Cid,
+        /// Metadata key (reverse-DNS convention recommended).
+        key: String,
+        /// Arbitrary JSON value.
+        value: serde_json::Value,
+    },
+    /// Remove a metadata entry previously set by this user.
+    ///
+    /// No-op if the key, user, or CID is not found.
+    RemoveMetadata {
+        /// The content identifier of the artifact.
+        cid: Cid,
+        /// Metadata key to remove.
+        key: String,
     },
 }
 
@@ -281,6 +327,7 @@ impl Release {
                     name,
                     locations: BTreeMap::new(),
                     attestations: BTreeSet::new(),
+                    metadata: BTreeMap::new(),
                 });
             }
             Action::AddLocation { cid, location } => {
@@ -301,6 +348,21 @@ impl Release {
             Action::Attest { cid } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     artifact.attestations.insert(user);
+                }
+            }
+            Action::SetMetadata { cid, key, value } => {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                    artifact.metadata.entry(user).or_default().insert(key, value);
+                }
+            }
+            Action::RemoveMetadata { cid, key } => {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                    if let Entry::Occupied(mut e) = artifact.metadata.entry(user) {
+                        e.get_mut().remove(&key);
+                        if e.get().is_empty() {
+                            e.remove();
+                        }
+                    }
                 }
             }
         }
@@ -597,6 +659,37 @@ where
         self.transaction("Attest artifact", signer, |tx| tx.attest(cid))
     }
 
+    /// Set a structured metadata entry on an artifact.
+    pub fn set_metadata<G>(
+        &mut self,
+        cid: Cid,
+        key: String,
+        value: serde_json::Value,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Set metadata", signer, |tx| {
+            tx.set_metadata(cid, key, value)
+        })
+    }
+
+    /// Remove a metadata entry previously set by this user.
+    pub fn remove_metadata<G>(
+        &mut self,
+        cid: Cid,
+        key: String,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Remove metadata", signer, |tx| {
+            tx.remove_metadata(cid, key)
+        })
+    }
+
     /// Apply COB operations to a `ReleaseMut`.
     fn transaction<G, F>(
         &mut self,
@@ -696,6 +789,21 @@ where
     /// Attest to an artifact.
     fn attest(&mut self, cid: Cid) -> Result<(), store::Error> {
         self.0.push(Action::Attest { cid })
+    }
+
+    /// Set a metadata entry on an artifact.
+    fn set_metadata(
+        &mut self,
+        cid: Cid,
+        key: String,
+        value: serde_json::Value,
+    ) -> Result<(), store::Error> {
+        self.0.push(Action::SetMetadata { cid, key, value })
+    }
+
+    /// Remove a metadata entry from an artifact.
+    fn remove_metadata(&mut self, cid: Cid, key: String) -> Result<(), store::Error> {
+        self.0.push(Action::RemoveMetadata { cid, key })
     }
 }
 
@@ -1106,5 +1214,256 @@ mod test {
         let fake_id = crate::ReleaseId::from(oid);
         let result = releases.get_mut(&fake_id);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_metadata_basic() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        let value = serde_json::json!({"flake": true, "output": "packages.x86_64-linux.node"});
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.nix-build".into(),
+                value.clone(),
+                &alice.signer,
+            )
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_meta = artifact
+            .metadata_of(&Did::from(alice.signer.public_key()))
+            .unwrap();
+        assert_eq!(alice_meta.get("xyz.example.nix-build").unwrap(), &value);
+    }
+
+    #[test]
+    fn set_metadata_overwrites() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.key".into(),
+                serde_json::json!("first"),
+                &alice.signer,
+            )
+            .unwrap();
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.key".into(),
+                serde_json::json!("second"),
+                &alice.signer,
+            )
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_meta = artifact
+            .metadata_of(&Did::from(alice.signer.public_key()))
+            .unwrap();
+        assert_eq!(
+            alice_meta.get("xyz.example.key").unwrap(),
+            &serde_json::json!("second")
+        );
+        assert_eq!(alice_meta.len(), 1);
+    }
+
+    #[test]
+    fn remove_metadata() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        // Set two keys, remove one.
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.a".into(),
+                serde_json::json!(1),
+                &alice.signer,
+            )
+            .unwrap();
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.b".into(),
+                serde_json::json!(2),
+                &alice.signer,
+            )
+            .unwrap();
+        release
+            .remove_metadata(cid, "xyz.example.a".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_meta = artifact
+            .metadata_of(&Did::from(alice.signer.public_key()))
+            .unwrap();
+        assert!(alice_meta.get("xyz.example.a").is_none());
+        assert_eq!(alice_meta.get("xyz.example.b").unwrap(), &serde_json::json!(2));
+    }
+
+    #[test]
+    fn remove_metadata_cleans_up_empty_did() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.key".into(),
+                serde_json::json!(true),
+                &alice.signer,
+            )
+            .unwrap();
+        release
+            .remove_metadata(cid, "xyz.example.key".into(), &alice.signer)
+            .unwrap();
+
+        // The DID entry itself should be cleaned up when the last key is removed.
+        let artifact = release.artifact(&cid).unwrap();
+        assert!(artifact
+            .metadata_of(&Did::from(alice.signer.public_key()))
+            .is_none());
+        assert!(artifact.metadata().is_empty());
+    }
+
+    #[test]
+    fn set_metadata_for_missing_cid_is_noop() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(99);
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.key".into(),
+                serde_json::json!(true),
+                &alice.signer,
+            )
+            .unwrap();
+
+        assert!(release.artifact(&cid).is_none());
+    }
+
+    #[test]
+    fn metadata_persists_through_reload() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        let value = serde_json::json!({"reproducible": true});
+        release
+            .set_metadata(cid, "xyz.example.build".into(), value.clone(), &alice.signer)
+            .unwrap();
+
+        release.reload().unwrap();
+        let artifact = release.artifact(&cid).unwrap();
+        let alice_meta = artifact
+            .metadata_of(&Did::from(alice.signer.public_key()))
+            .unwrap();
+        assert_eq!(alice_meta.get("xyz.example.build").unwrap(), &value);
+    }
+
+    #[test]
+    fn multi_user_metadata() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        // Both users set the same key with different values.
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.verified".into(),
+                serde_json::json!(true),
+                &alice.signer,
+            )
+            .unwrap();
+        release
+            .set_metadata(
+                cid,
+                "xyz.example.verified".into(),
+                serde_json::json!(false),
+                &bob.signer,
+            )
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+
+        // Each user's value is independent.
+        let alice_did = Did::from(alice.signer.public_key());
+        let bob_did = Did::from(bob.signer.public_key());
+        assert_eq!(
+            artifact.metadata_of(&alice_did).unwrap().get("xyz.example.verified").unwrap(),
+            &serde_json::json!(true)
+        );
+        assert_eq!(
+            artifact.metadata_of(&bob_did).unwrap().get("xyz.example.verified").unwrap(),
+            &serde_json::json!(false)
+        );
+
+        // all_metadata_for_key returns both entries.
+        let entries = artifact.all_metadata_for_key("xyz.example.verified");
+        assert_eq!(entries.len(), 2);
     }
 }

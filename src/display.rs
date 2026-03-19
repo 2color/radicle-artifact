@@ -5,6 +5,7 @@
 
 use radicle::{git::Oid, identity::Did};
 use serde::Serialize;
+use serde_json;
 use url::Url;
 
 use crate::{Cid, ReleaseId};
@@ -84,11 +85,25 @@ impl Release {
                 // Sort by (did, url) for deterministic output.
                 locations.sort_by(|a, b| a.did.cmp(&b.did).then(a.url.as_str().cmp(b.url.as_str())));
                 let attestations: Vec<_> = artifact.attestations().iter().copied().collect();
+                let mut metadata: Vec<_> = artifact
+                    .metadata()
+                    .iter()
+                    .flat_map(|(did, entries)| {
+                        entries.iter().map(move |(key, value)| MetadataEntry {
+                            did: *did,
+                            key: key.clone(),
+                            value: value.clone(),
+                        })
+                    })
+                    .collect();
+                // Sort by (did, key) for deterministic output.
+                metadata.sort_by(|a, b| a.did.cmp(&b.did).then(a.key.cmp(&b.key)));
                 Artifact {
                     cid: *cid,
                     name: artifact.name().to_owned(),
                     locations,
                     attestations,
+                    metadata,
                 }
             })
             .collect();
@@ -129,6 +144,12 @@ impl Release {
                     format!("    attestations: {}", nodes.join(", ")),
                 );
             }
+            for entry in artifact.metadata.iter() {
+                push_line(
+                    &mut s,
+                    format!("    {} {}={}", entry.did, entry.key, entry.value),
+                );
+            }
         }
 
         s
@@ -141,10 +162,19 @@ struct Artifact {
     name: String,
     locations: Vec<Location>,
     attestations: Vec<Did>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    metadata: Vec<MetadataEntry>,
 }
 
 #[derive(Serialize)]
 struct Location {
     did: Did,
     url: Url,
+}
+
+#[derive(Serialize)]
+struct MetadataEntry {
+    did: Did,
+    key: String,
+    value: serde_json::Value,
 }

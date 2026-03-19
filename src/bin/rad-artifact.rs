@@ -168,6 +168,20 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
+        Command::SetMetadata(cmd) => {
+            let signer = profile.signer().map_err(error::Signer)?;
+            set_metadata(cmd, &mut releases, &signer)?;
+            if !args.no_sync {
+                announce(&profile, repo.id)?;
+            }
+        }
+        Command::RemoveMetadata(cmd) => {
+            let signer = profile.signer().map_err(error::Signer)?;
+            remove_metadata_cmd(cmd, &mut releases, &signer)?;
+            if !args.no_sync {
+                announce(&profile, repo.id)?;
+            }
+        }
         Command::Show(cmd) => show_release(cmd, &releases)?,
         Command::List(cmd) => list_releases(cmd, &releases)?,
     }
@@ -260,6 +274,57 @@ where
     release
         .remove_location(cid, url, signer)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
+    Ok(())
+}
+
+fn set_metadata<G>(
+    command::SetMetadata {
+        oid,
+        cid,
+        key,
+        value,
+    }: command::SetMetadata,
+    releases: &mut Releases<Repository>,
+    signer: &Device<G>,
+) -> Result<(), error::SetMetadata>
+where
+    G: Signer<crypto::Signature>,
+{
+    let value: serde_json::Value =
+        serde_json::from_str(&value).map_err(error::SetMetadata::Json)?;
+    let id = find_unique_by_oid(oid, releases)?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::SetMetadata::Store { id, err })?;
+    // Validate that the artifact exists before creating a no-op action.
+    if release.artifact(&cid).is_none() {
+        return Err(error::SetMetadata::UnknownCid { id, cid });
+    }
+    release
+        .set_metadata(cid, key, value, signer)
+        .map_err(|err| error::SetMetadata::Store { id, err })?;
+    Ok(())
+}
+
+fn remove_metadata_cmd<G>(
+    command::RemoveMetadataCmd { oid, cid, key }: command::RemoveMetadataCmd,
+    releases: &mut Releases<Repository>,
+    signer: &Device<G>,
+) -> Result<(), error::RemoveMetadataCmd>
+where
+    G: Signer<crypto::Signature>,
+{
+    let id = find_unique_by_oid(oid, releases)?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::RemoveMetadataCmd::Store { id, err })?;
+    // Validate that the artifact exists before creating a no-op action.
+    if release.artifact(&cid).is_none() {
+        return Err(error::RemoveMetadataCmd::UnknownCid { id, cid });
+    }
+    release
+        .remove_metadata(cid, key, signer)
+        .map_err(|err| error::RemoveMetadataCmd::Store { id, err })?;
     Ok(())
 }
 
@@ -359,6 +424,10 @@ enum RadArtifactError {
     RemoveLocation(#[from] error::RemoveLocation),
     #[error(transparent)]
     Attest(#[from] error::Attest),
+    #[error(transparent)]
+    SetMetadata(#[from] error::SetMetadata),
+    #[error(transparent)]
+    RemoveMetadataCmd(#[from] error::RemoveMetadataCmd),
 }
 
 mod command {
@@ -375,6 +444,8 @@ mod command {
         Locate(Locate),
         RemoveLocation(RemoveLocation),
         Attest(Attest),
+        SetMetadata(SetMetadata),
+        RemoveMetadata(RemoveMetadataCmd),
         Show(Show),
         List(List),
     }
@@ -437,6 +508,34 @@ mod command {
         pub cid: Cid,
         /// URL to remove.
         pub url: Url,
+    }
+
+    /// Set a structured metadata entry on an artifact.
+    ///
+    /// Each user manages their own metadata independently. Setting the same
+    /// key again overwrites the previous value. Keys follow reverse-DNS
+    /// convention (e.g. xyz.example.build-env).
+    #[derive(Parser)]
+    pub struct SetMetadata {
+        /// Git object id the release is associated with.
+        pub oid: Oid,
+        /// Content identifier for the artifact.
+        pub cid: Cid,
+        /// Metadata key (reverse-DNS convention recommended).
+        pub key: String,
+        /// JSON value for the metadata entry.
+        pub value: String,
+    }
+
+    /// Remove a metadata entry previously set by this user.
+    #[derive(Parser)]
+    pub struct RemoveMetadataCmd {
+        /// Git object id the release is associated with.
+        pub oid: Oid,
+        /// Content identifier for the artifact.
+        pub cid: Cid,
+        /// Metadata key to remove.
+        pub key: String,
     }
 
     /// Show the release COB for a Git commit or annotated tag.
@@ -536,6 +635,36 @@ mod error {
         #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to remove location from release {id}")]
+        Store {
+            id: ReleaseId,
+            #[source]
+            err: cob::store::Error,
+        },
+    }
+
+    #[derive(Debug, Error)]
+    pub enum SetMetadata {
+        #[error(transparent)]
+        Find(#[from] Find),
+        #[error("invalid JSON value")]
+        Json(#[source] serde_json::Error),
+        #[error("artifact {cid} not found in release {id}")]
+        UnknownCid { id: ReleaseId, cid: Cid },
+        #[error("failed to set metadata on release {id}")]
+        Store {
+            id: ReleaseId,
+            #[source]
+            err: cob::store::Error,
+        },
+    }
+
+    #[derive(Debug, Error)]
+    pub enum RemoveMetadataCmd {
+        #[error(transparent)]
+        Find(#[from] Find),
+        #[error("artifact {cid} not found in release {id}")]
+        UnknownCid { id: ReleaseId, cid: Cid },
+        #[error("failed to remove metadata from release {id}")]
         Store {
             id: ReleaseId,
             #[source]

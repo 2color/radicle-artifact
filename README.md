@@ -41,12 +41,14 @@ Release
     └── Artifact
         ├── name: String              # human-readable description
         ├── locations: Map<Did, Set<Url>>
-        └── attestations: Set<Did>      # nodes that verified the CID
+        ├── attestations: Set<Did>      # nodes that verified the CID
+        └── metadata: Map<Did, Map<String, Value>>  # structured metadata per user
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
 - **Locations** — plain URLs (`https://`, `ipfs://`, `iroh://`, etc.)
 - Each node can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
+- **Metadata** — arbitrary JSON values keyed by reverse-DNS namespace (e.g. `xyz.example.build-env`); each node manages its own entries independently
 
 ## Collaboration model
 
@@ -63,6 +65,8 @@ record attestations on releases created by others. The `author` field records wh
 | `AddLocation`    | Announce a discovery URL for an artifact |
 | `RemoveLocation` | Retract a previously announced URL       |
 | `Attest`         | Record independent verification of a CID |
+| `SetMetadata`    | Set a structured metadata entry          |
+| `RemoveMetadata` | Remove a metadata entry                  |
 
 ## CLI usage
 
@@ -72,6 +76,8 @@ rad-artifact add <OID> <CID> <NAME>              # add artifact
 rad-artifact locate <OID> <CID> <URL>            # add discovery URL
 rad-artifact remove-location <OID> <CID> <URL>   # remove discovery URL
 rad-artifact attest <OID> <CID>                  # attest to an artifact
+rad-artifact set-metadata <OID> <CID> <KEY> <JSON>  # set metadata entry
+rad-artifact remove-metadata <OID> <CID> <KEY>   # remove metadata entry
 rad-artifact show <OID> [--pretty]               # show release
 rad-artifact list [--pretty] [--verbose]          # list all releases
 ```
