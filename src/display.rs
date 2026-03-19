@@ -7,7 +7,7 @@ use radicle::{git::Oid, identity::Did};
 use serde::Serialize;
 use url::Url;
 
-use crate::{Cid, ReleaseId};
+use crate::ReleaseId;
 
 /// Append a line to a string buffer.
 fn push_line(s: &mut String, line: String) {
@@ -85,14 +85,14 @@ impl Release {
                 locations.sort_by(|a, b| a.did.cmp(&b.did).then(a.url.as_str().cmp(b.url.as_str())));
                 let attestations: Vec<_> = artifact.attestations().iter().copied().collect();
                 Artifact {
-                    cid: *cid,
+                    cid: cid.to_string(),
                     name: artifact.name().to_owned(),
                     locations,
                     attestations,
                 }
             })
             .collect();
-        // Sort artifacts by CID for deterministic output.
+        // Sort artifacts by CID string for deterministic output.
         artifacts.sort_by(|a, b| a.cid.cmp(&b.cid));
 
         Self {
@@ -137,7 +137,7 @@ impl Release {
 
 #[derive(Serialize)]
 struct Artifact {
-    cid: Cid,
+    cid: String,
     name: String,
     locations: Vec<Location>,
     attestations: Vec<Did>,
