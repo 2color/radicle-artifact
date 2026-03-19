@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-19
+
+### Changed
+
+* `fe158fa` Rename NodeLocation to Location with did field *<daniel@norman.life>*
+
+### Other
+
+* `6951caa` Document the collaboration model *<daniel@norman.life>*
+* `69c8717` Document build-system agnosticism *<daniel@norman.life>*
+* `a42215c` Use Did instead of NodeId *<daniel@norman.life>*
+* `ff843e7` Use user instead of node for consistency *<daniel@norman.life>*
+* `871956b` Allow nodes to add multiple locations per artifact *<daniel@norman.life>*
+* `6315178` Refine multiple locations and tighten tests *<daniel@norman.life>*
+* `0d208d2` Stringify CIDs when rendering json *<daniel@norman.life>*
+
 ## [0.4.0] - 2026-03-17
 
 ### Added
@@ -15,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 * `e2da22d` Update docs to reflect author and locations *<daniel@norman.life>*
+
+### Other
+
+* `f781788` Release radicle-artifact version 0.4.0 *<daniel@norman.life>*
 
 ## [0.3.0] - 2026-03-17
 
