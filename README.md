@@ -8,7 +8,9 @@ author (the NodeId of the creating node). It contains one or more **Artifacts**,
 each identified by a content identifier (CID). Each node can announce multiple
 discovery URLs for any artifact, enabling decentralized mirroring. Nodes can also
 **attest** to an artifact, recording that they independently verified the CID
-matches a build from the same commit.
+matches a build from the same commit. Nodes can also **redact** an artifact,
+signaling that it should not be used (e.g. due to a supply chain compromise or
+build reproducibility failure).
 
 > **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
 
@@ -24,8 +26,9 @@ release artifacts without attestation.
 1. **Tag** — Create a canonical reference with an annotated tag for the release
 2. **Build** — Build the release artifacts and compute their content identifiers (CIDs)
 3. **Publish** — Create the release COB and add artifacts using the CLI
-4. **Host** — Upload artifacts to any server or IPFS and register discovery locations per node
+4. **Host** — Upload artifacts to any server or IPFS and register discovery locations per DID
 5. **Verify** — Other delegates check out the tagged version, build independently, and attest artifacts whose CIDs match. Attestation can be limited to the artifacts a delegate is able to reproduce locally
+6. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, any DID can redact it with a reason. Redactions are permanent and supersede prior attestations from the same DID
 
 ## COB type
 
@@ -41,7 +44,8 @@ Release
     └── Artifact
         ├── name: String              # human-readable description
         ├── locations: Map<Did, Set<Url>>
-        └── attestations: Set<Did>      # nodes that verified the CID
+        ├── attestations: Set<Did>      # nodes that verified the CID
+        └── redactions: Map<Did, String> # nodes that flagged the artifact, with reason
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
@@ -56,13 +60,14 @@ record attestations on releases created by others. The `author` field records wh
 
 ## Actions
 
-| Action           | Description                              |
-| ---------------- | ---------------------------------------- |
-| `Create`         | Initialize a release for a git OID       |
-| `AddArtifact`    | Add an artifact (CID + name) to release  |
-| `AddLocation`    | Announce a discovery URL for an artifact |
-| `RemoveLocation` | Retract a previously announced URL       |
-| `Attest`         | Record independent verification of a CID |
+| Action           | Description                               |
+| ---------------- | ----------------------------------------- |
+| `Create`         | Initialize a release for a git OID        |
+| `AddArtifact`    | Add an artifact (CID + name) to release   |
+| `AddLocation`    | Announce a discovery URL for an artifact  |
+| `RemoveLocation` | Retract a previously announced URL        |
+| `Attest`         | Record independent verification of a CID  |
+| `Redact`         | Flag an artifact as compromised/withdrawn |
 
 ## CLI usage
 
@@ -72,6 +77,7 @@ rad-artifact add <OID> <CID> <NAME>              # add artifact
 rad-artifact locate <OID> <CID> <URL>            # add discovery URL
 rad-artifact remove-location <OID> <CID> <URL>   # remove discovery URL
 rad-artifact attest <OID> <CID>                  # attest to an artifact
+rad-artifact redact <OID> <CID> <REASON>         # redact an artifact
 rad-artifact show <OID> [--pretty]               # show release
 rad-artifact list [--pretty] [--verbose]          # list all releases
 ```
