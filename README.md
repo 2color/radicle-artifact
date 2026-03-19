@@ -4,13 +4,15 @@ A Radicle [Collaborative Object][cob] (COB) for recording content-addressed
 release artifacts and their discovery locations.
 
 A **Release** is associated with a Git OID (annotated tag or commit) and an
-author (the NodeId of the creating node). It contains one or more **Artifacts**,
-each identified by a content identifier (CID). Each node can announce multiple
-discovery URLs for any artifact, enabling decentralized mirroring. Nodes can also
+author (the DID of the creating user). It contains one or more **Artifacts**,
+each identified by a content identifier (CID). Each user can announce multiple
+discovery URLs for any artifact, enabling decentralized mirroring. Users can also
 **attest** to an artifact, recording that they independently verified the CID
-matches a build from the same commit. Nodes can also **redact** an artifact,
+matches a build from the same commit. Users can also **redact** an artifact,
 signaling that it should not be used (e.g. due to a supply chain compromise or
 build reproducibility failure).
+
+Each user is identified by a DID derived which is currently mapped 1:1 to the Radicle NodeID, an ED25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
 
 > **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
 
@@ -39,23 +41,23 @@ release artifacts without attestation.
 ```
 Release
 ├── oid: Oid                          # git commit or annotated tag
-├── author: Did                       # node that created this release
+├── author: Did                       # user that created this release
 └── artifacts: Map<Cid, Artifact>
     └── Artifact
         ├── name: String              # human-readable description
         ├── locations: Map<Did, Set<Url>>
-        ├── attestations: Set<Did>      # nodes that verified the CID
-        └── redactions: Map<Did, String> # nodes that flagged the artifact, with reason
+        ├── attestations: Set<Did>      # users that verified the CID
+        └── redactions: Map<Did, String> # users that flagged the artifact, with reason
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
 - **Locations** — plain URLs (`https://`, `ipfs://`, `iroh://`, etc.)
-- Each node can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
+- Each user can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
 
 ## Collaboration model
 
-Any node can contribute to any release. There is no restriction to the original
-author. This means any node can add artifacts, announce discovery locations, and
+Any user can contribute to any release. There is no restriction to the original
+author. This means any user can add artifacts, announce discovery locations, and
 record attestations on releases created by others. The `author` field records who created the release but does not gate contributions.
 
 ## Actions
