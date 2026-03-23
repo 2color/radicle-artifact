@@ -144,6 +144,8 @@ pub struct Release {
 /// of discovery locations contributed by various users identified by their DIDs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
+    /// The DID that originally added this artifact.
+    author: Did,
     name: String,
     locations: BTreeMap<Did, BTreeSet<Url>>,
     /// Users that have independently verified this artifact's CID.
@@ -155,6 +157,11 @@ pub struct Artifact {
 }
 
 impl Artifact {
+    /// Get the [`Did`] of the user that added this artifact.
+    pub fn author(&self) -> &Did {
+        &self.author
+    }
+
     /// Get the human-readable name of this artifact.
     pub fn name(&self) -> &str {
         &self.name
@@ -221,7 +228,7 @@ pub enum Action {
     },
     /// Add an artifact to the release.
     ///
-    /// Idempotent — ignored if the CID already exists.
+    /// If the CID already exists, the name is updated.
     AddArtifact {
         /// The content identifier for this artifact.
         cid: Cid,
@@ -320,13 +327,23 @@ impl Release {
             // Subsequent Create actions are ignored after initialization.
             Action::Create { .. } => {}
             Action::AddArtifact { cid, name } => {
-                // Idempotent: only insert if CID is new.
-                self.artifacts.entry(cid).or_insert_with(|| Artifact {
-                    name,
-                    locations: BTreeMap::new(),
-                    attestations: BTreeSet::new(),
-                    redactions: BTreeMap::new(),
-                });
+                // Insert if new, or update the name if the original author resends.
+                match self.artifacts.entry(cid) {
+                    indexmap::map::Entry::Occupied(mut e) => {
+                        if e.get().author == user {
+                            e.get_mut().name = name;
+                        }
+                    }
+                    indexmap::map::Entry::Vacant(e) => {
+                        e.insert(Artifact {
+                            author: user,
+                            name,
+                            locations: BTreeMap::new(),
+                            attestations: BTreeSet::new(),
+                            redactions: BTreeMap::new(),
+                        });
+                    }
+                }
             }
             Action::AddLocation { cid, location } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
@@ -920,14 +937,57 @@ mod test {
         release
             .add_artifact(cid, "first name".into(), &alice.signer)
             .unwrap();
-        // Second add with different name is ignored — first name wins.
+        // Second add with different name updates it.
         release
             .add_artifact(cid, "second name".into(), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        assert_eq!(artifact.name(), "first name");
+        assert_eq!(artifact.name(), "second name");
         assert_eq!(release.artifacts().len(), 1);
+    }
+
+    #[test]
+    fn add_artifact_records_author() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.author(), &Did::from(alice.signer.public_key()));
+    }
+
+    #[test]
+    fn non_author_cannot_rename_artifact() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "original name".into(), &alice.signer)
+            .unwrap();
+
+        // Bob tries to rename — should be ignored.
+        release
+            .add_artifact(cid, "bobs name".into(), &bob.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.name(), "original name");
+        assert_eq!(artifact.author(), &Did::from(alice.signer.public_key()));
     }
 
     #[test]

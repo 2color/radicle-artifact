@@ -96,6 +96,7 @@ impl Release {
                 redactions.sort_by(|a, b| a.did.cmp(&b.did));
                 Artifact {
                     cid: cid.to_string(),
+                    author: *artifact.author(),
                     name: artifact.name().to_owned(),
                     locations,
                     attestations,
@@ -155,6 +156,7 @@ impl Release {
 #[derive(Serialize)]
 struct Artifact {
     cid: String,
+    author: Did,
     name: String,
     locations: Vec<Location>,
     attestations: Vec<Did>,
