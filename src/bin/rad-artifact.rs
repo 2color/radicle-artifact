@@ -458,10 +458,10 @@ mod command {
     /// Redact an artifact, indicating it should not be used.
     ///
     /// Records that the signing node believes this artifact is compromised
-    /// or should be withdrawn. The reason is a free-form string (max 4096
+    /// or should be withdrawn. The reason is a free-form string (max 2048
     /// bytes). The act of redaction is permanent; the reason text can be
     /// amended by redacting again. A redaction supersedes any prior
-    /// attestation from the same node.
+    /// attestation from the same DID.
     #[derive(Parser)]
     pub struct Redact {
         /// Git object id the release is associated with.
