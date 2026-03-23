@@ -261,7 +261,8 @@ pub enum Action {
     /// compromise, build reproducibility failure). If the same DID redacts
     /// again, the reason is updated — the act of redaction is permanent but
     /// the reason text can be amended. A redaction supersedes any prior
-    /// attestation from the same DID.
+    /// attestation from the same DID, and prevents future attestations from
+    /// taking effect.
     ///
     /// Silent no-op if the CID does not exist in the release (this is
     /// intentional for COB replay consistency; the [`ReleaseMut`] API
@@ -344,7 +345,10 @@ impl Release {
             }
             Action::Attest { cid } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    artifact.attestations.insert(user);
+                    // A prior redaction from this user supersedes any attestation.
+                    if !artifact.redactions.contains_key(&user) {
+                        artifact.attestations.insert(user);
+                    }
                 }
             }
             Action::Redact { cid, reason } => {
@@ -1343,7 +1347,7 @@ mod test {
     }
 
     #[test]
-    fn redact_then_attest_restores_attestation() {
+    fn redact_then_attest_is_blocked() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -1356,8 +1360,8 @@ mod test {
             .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
-        // Redact first, then attest — both should be present since Attest
-        // does not remove redactions (redactions are permanent).
+        // Redact first, then attempt to attest — the attestation should be
+        // silently ignored because redactions are permanent and supersede.
         release
             .redact(cid, "suspected issue".into(), &alice.signer)
             .unwrap();
@@ -1365,7 +1369,7 @@ mod test {
 
         let artifact = release.artifact(&cid).unwrap();
         let alice_did = Did::from(alice.signer.public_key());
-        assert!(artifact.is_attested_by(&alice_did));
+        assert!(!artifact.is_attested_by(&alice_did));
         assert!(artifact.is_redacted_by(&alice_did));
     }
 
