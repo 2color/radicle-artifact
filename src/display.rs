@@ -89,7 +89,7 @@ impl Release {
                     .iter()
                     .map(|(did, reason)| Redaction {
                         did: *did,
-                        reason: reason.clone(),
+                        reason: reason.to_string(),
                     })
                     .collect();
                 // Sort by DID for deterministic output.

@@ -5,6 +5,16 @@ use thiserror::Error;
 
 use crate::Cid;
 
+/// A description string exceeded the maximum allowed byte length.
+#[derive(Debug, Error)]
+#[error("description exceeds maximum length of {max} bytes (got {actual})")]
+pub struct InvalidDescription {
+    /// The actual byte length.
+    pub actual: usize,
+    /// The maximum allowed byte length.
+    pub max: usize,
+}
+
 /// Errors that can occur when redacting an artifact.
 #[derive(Debug, Error)]
 pub enum Redact {
@@ -13,14 +23,6 @@ pub enum Redact {
     NotFound {
         /// The CID that was not found.
         cid: Cid,
-    },
-    /// The redaction reason exceeds the maximum allowed length.
-    #[error("redaction reason exceeds maximum length of {max} bytes (got {actual})")]
-    ReasonTooLong {
-        /// The actual byte length of the reason.
-        actual: usize,
-        /// The maximum allowed byte length.
-        max: usize,
     },
     /// An error occurred in the underlying COB store.
     #[error(transparent)]

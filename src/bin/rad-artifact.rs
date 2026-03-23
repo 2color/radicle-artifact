@@ -205,6 +205,7 @@ fn add_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
+    let name = radicle_artifact::Description::new(name).map_err(error::Add::InvalidDescription)?;
     let id = find_unique_by_oid(oid, releases)?;
     let mut release = releases
         .get_mut(&id)
@@ -260,6 +261,8 @@ fn redact_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
+    let reason =
+        radicle_artifact::Description::new(reason).map_err(error::Redact::InvalidDescription)?;
     let id = find_unique_by_oid(oid, releases)?;
     let mut release = releases
         .get_mut(&id)
@@ -458,8 +461,8 @@ mod command {
     /// Redact an artifact, indicating it should not be used.
     ///
     /// Records that the signing node believes this artifact is compromised
-    /// or should be withdrawn. The reason is a free-form string (max 2048
-    /// bytes). The act of redaction is permanent; the reason text can be
+    /// or should be withdrawn. The reason is a free-form string limited to
+    /// `Description::MAX_LEN` bytes. The act of redaction is permanent; the reason text can be
     /// amended by redacting again. A redaction supersedes any prior
     /// attestation from the same DID.
     #[derive(Parser)]
@@ -545,6 +548,8 @@ mod error {
     pub enum Add {
         #[error(transparent)]
         Find(#[from] Find),
+        #[error(transparent)]
+        InvalidDescription(radicle_artifact::error::InvalidDescription),
         #[error("failed to add artifact to release {id}")]
         Store {
             id: ReleaseId,
@@ -581,6 +586,8 @@ mod error {
     pub enum Redact {
         #[error(transparent)]
         Find(#[from] Find),
+        #[error(transparent)]
+        InvalidDescription(radicle_artifact::error::InvalidDescription),
         #[error("failed to redact artifact in release {id}")]
         Redact {
             id: ReleaseId,

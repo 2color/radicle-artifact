@@ -41,7 +41,8 @@
 //!
 //! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse().unwrap();
 //! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
-//! release.add_artifact(cid, "linux-amd64 binary".into(), &alice.signer).unwrap();
+//! let name: radicle_artifact::Description = "linux-amd64 binary".parse().unwrap();
+//! release.add_artifact(cid, name, &alice.signer).unwrap();
 //! release.add_location(cid, url, &alice.signer).unwrap();
 //! ```
 
@@ -80,8 +81,95 @@ pub mod error;
 pub static TYPENAME: LazyLock<TypeName> =
     LazyLock::new(|| FromStr::from_str("org.radworks.artifact").expect("type name is valid"));
 
-/// Maximum byte length for a redaction reason string.
-pub const MAX_REDACT_REASON_LEN: usize = 2048;
+/// A length-validated string used for artifact names and redaction reasons.
+///
+/// Enforces a maximum byte length of [`Description::MAX_LEN`]. Validation
+/// runs both through the Rust API ([`Description::new`], [`TryFrom`],
+/// [`FromStr`]) and during deserialization via `#[serde(try_from)]`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(into = "String")]
+pub struct Description {
+    inner: String,
+}
+
+/// Maximum byte length for a [`Description`].
+const MAX_DESCRIPTION_LEN: usize = 2048;
+
+impl Description {
+    /// Maximum byte length allowed for a description.
+    pub const MAX_LEN: usize = MAX_DESCRIPTION_LEN;
+
+    /// Create a new `Description`, returning an error if it exceeds [`Self::MAX_LEN`] bytes.
+    pub fn new(s: impl Into<String>) -> Result<Self, error::InvalidDescription> {
+        let inner = s.into();
+        if inner.len() > Self::MAX_LEN {
+            return Err(error::InvalidDescription {
+                actual: inner.len(),
+                max: Self::MAX_LEN,
+            });
+        }
+        Ok(Self { inner })
+    }
+}
+
+// Allows &Description to be used where &str is expected.
+impl AsRef<str> for Description {
+    fn as_ref(&self) -> &str {
+        &self.inner
+    }
+}
+
+// Enables printing and string interpolation.
+impl fmt::Display for Description {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+// Enables conversion back to String (also used by serde(into = "String")).
+impl From<Description> for String {
+    fn from(d: Description) -> Self {
+        d.inner
+    }
+}
+
+// Enables `Description::try_from(some_string)`.
+impl TryFrom<String> for Description {
+    type Error = error::InvalidDescription;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
+
+// Enables `Description::try_from("some str")`.
+impl TryFrom<&str> for Description {
+    type Error = error::InvalidDescription;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
+
+// Enables `"some str".parse::<Description>()`.
+impl FromStr for Description {
+    type Err = error::InvalidDescription;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+// Custom Deserialize so that JSON/COB replay also validates length.
+impl<'de> Deserialize<'de> for Description {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Description::new(s).map_err(serde::de::Error::custom)
+    }
+}
 
 /// The identifier for a given [`Release`] collaborative object.
 ///
@@ -146,14 +234,14 @@ pub struct Release {
 pub struct Artifact {
     /// The DID that originally added this artifact.
     author: Did,
-    name: String,
+    name: Description,
     locations: BTreeMap<Did, BTreeSet<Url>>,
     /// Users that have independently verified this artifact's CID.
     #[serde(default)]
     attestations: BTreeSet<Did>,
     /// Users that have redacted this artifact, with their stated reason.
     #[serde(default)]
-    redactions: BTreeMap<Did, String>,
+    redactions: BTreeMap<Did, Description>,
 }
 
 impl Artifact {
@@ -164,7 +252,7 @@ impl Artifact {
 
     /// Get the human-readable name of this artifact.
     pub fn name(&self) -> &str {
-        &self.name
+        self.name.as_ref()
     }
 
     /// Get the discovery locations, keyed by the DID that contributed them.
@@ -196,7 +284,7 @@ impl Artifact {
     }
 
     /// Get all redactions, keyed by the DID that issued them.
-    pub fn redactions(&self) -> &BTreeMap<Did, String> {
+    pub fn redactions(&self) -> &BTreeMap<Did, Description> {
         &self.redactions
     }
 
@@ -207,7 +295,7 @@ impl Artifact {
 
     /// Get the redaction reason from a specific DID, if any.
     pub fn redaction_by(&self, user: &Did) -> Option<&str> {
-        self.redactions.get(user).map(|s| s.as_str())
+        self.redactions.get(user).map(|d| d.as_ref())
     }
 
     /// Check whether any DID has redacted this artifact.
@@ -233,7 +321,7 @@ pub enum Action {
         /// The content identifier for this artifact.
         cid: Cid,
         /// A human-readable description of the artifact.
-        name: String,
+        name: Description,
     },
     /// Add a discovery location for an existing artifact.
     ///
@@ -278,7 +366,7 @@ pub enum Action {
         /// The content identifier of the artifact to redact.
         cid: Cid,
         /// A human-readable reason for the redaction.
-        reason: String,
+        reason: Description,
     },
 }
 
@@ -624,7 +712,7 @@ where
     pub fn add_artifact<G>(
         &mut self,
         cid: Cid,
-        name: String,
+        name: Description,
         signer: &Device<G>,
     ) -> Result<EntryId, store::Error>
     where
@@ -671,12 +759,12 @@ where
 
     /// Redact an artifact, indicating it should not be used.
     ///
-    /// Returns an error if the CID does not exist in the release or if the
-    /// reason exceeds [`MAX_REDACT_REASON_LEN`] bytes.
+    /// Returns an error if the CID does not exist in the release.
+    /// The `reason` is a [`Description`] which enforces length limits at construction.
     pub fn redact<G>(
         &mut self,
         cid: Cid,
-        reason: String,
+        reason: Description,
         signer: &Device<G>,
     ) -> Result<EntryId, error::Redact>
     where
@@ -684,12 +772,6 @@ where
     {
         if self.artifact(&cid).is_none() {
             return Err(error::Redact::NotFound { cid });
-        }
-        if reason.len() > MAX_REDACT_REASON_LEN {
-            return Err(error::Redact::ReasonTooLong {
-                actual: reason.len(),
-                max: MAX_REDACT_REASON_LEN,
-            });
         }
         self.transaction("Redact artifact", signer, |tx| tx.redact(cid, reason))
             .map_err(error::Redact::from)
@@ -777,7 +859,7 @@ where
     }
 
     /// Add an artifact to the transaction.
-    fn add_artifact(&mut self, cid: Cid, name: String) -> Result<(), store::Error> {
+    fn add_artifact(&mut self, cid: Cid, name: Description) -> Result<(), store::Error> {
         self.0.push(Action::AddArtifact { cid, name })
     }
 
@@ -797,7 +879,7 @@ where
     }
 
     /// Redact an artifact with a reason.
-    fn redact(&mut self, cid: Cid, reason: String) -> Result<(), store::Error> {
+    fn redact(&mut self, cid: Cid, reason: Description) -> Result<(), store::Error> {
         self.0.push(Action::Redact { cid, reason })
     }
 }
@@ -810,7 +892,12 @@ mod test {
     use radicle::test;
     use url::Url;
 
-    use crate::{Cid, Releases};
+    use crate::{Cid, Description, Releases};
+
+    /// Shorthand for creating a Description in tests.
+    fn desc(s: &str) -> Description {
+        Description::new(s).unwrap()
+    }
 
     /// Create a valid CIDv1 (raw codec, sha2-256) from a distinguishing byte.
     fn test_cid(n: u8) -> Cid {
@@ -852,7 +939,7 @@ mod test {
         // Alice adds an artifact.
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         // Alice adds a location for the artifact.
@@ -935,11 +1022,11 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "first name".into(), &alice.signer)
+            .add_artifact(cid, desc("first name"), &alice.signer)
             .unwrap();
         // Second add with different name updates it.
         release
-            .add_artifact(cid, "second name".into(), &alice.signer)
+            .add_artifact(cid, desc("second name"), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -958,7 +1045,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -977,12 +1064,12 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "original name".into(), &alice.signer)
+            .add_artifact(cid, desc("original name"), &alice.signer)
             .unwrap();
 
         // Bob tries to rename — should be ignored.
         release
-            .add_artifact(cid, "bobs name".into(), &bob.signer)
+            .add_artifact(cid, desc("bobs name"), &bob.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1060,7 +1147,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         // Alice adds two different URLs for the same artifact.
@@ -1122,7 +1209,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .add_artifact(cid, desc("test artifact"), &alice.signer)
             .unwrap();
 
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
@@ -1144,7 +1231,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .add_artifact(cid, desc("test artifact"), &alice.signer)
             .unwrap();
 
         // Reload from store and verify the artifact is still present.
@@ -1166,7 +1253,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         // All three delegates attest to the artifact.
@@ -1192,7 +1279,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .add_artifact(cid, desc("test artifact"), &alice.signer)
             .unwrap();
 
         // Attesting twice from the same node should be a no-op.
@@ -1230,7 +1317,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .add_artifact(cid, desc("test artifact"), &alice.signer)
             .unwrap();
         release.attest(cid, &alice.signer).unwrap();
 
@@ -1252,10 +1339,10 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "compromised build".into(), &alice.signer)
+            .redact(cid, desc("compromised build"), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1278,14 +1365,14 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         release
-            .redact(cid, "supply chain attack".into(), &alice.signer)
+            .redact(cid, desc("supply chain attack"), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "failed reproducibility check".into(), &bob.signer)
+            .redact(cid, desc("failed reproducibility check"), &bob.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1312,15 +1399,15 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         // Both users redact with the same reason — both are recorded independently.
         release
-            .redact(cid, "malware detected".into(), &alice.signer)
+            .redact(cid, desc("malware detected"), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "malware detected".into(), &bob.signer)
+            .redact(cid, desc("malware detected"), &bob.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1340,13 +1427,13 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "initial reason".into(), &alice.signer)
+            .redact(cid, desc("initial reason"), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "updated reason".into(), &alice.signer)
+            .redact(cid, desc("updated reason"), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1366,10 +1453,10 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .add_artifact(cid, desc("test artifact"), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "compromised".into(), &alice.signer)
+            .redact(cid, desc("compromised"), &alice.signer)
             .unwrap();
 
         // Reload and verify redaction is still present.
@@ -1391,13 +1478,13 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         // Attest then redact — redaction should supersede the attestation.
         release.attest(cid, &alice.signer).unwrap();
         release
-            .redact(cid, "source was compromised".into(), &alice.signer)
+            .redact(cid, desc("source was compromised"), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1417,13 +1504,13 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         // Redact first, then attempt to attest — the attestation should be
         // silently ignored because redactions are permanent and supersede.
         release
-            .redact(cid, "suspected issue".into(), &alice.signer)
+            .redact(cid, desc("suspected issue"), &alice.signer)
             .unwrap();
         release.attest(cid, &alice.signer).unwrap();
 
@@ -1445,14 +1532,14 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
 
         // Both attest, then Alice redacts — only Alice's attestation is removed.
         release.attest(cid, &alice.signer).unwrap();
         release.attest(cid, &bob.signer).unwrap();
         release
-            .redact(cid, "compromised".into(), &alice.signer)
+            .redact(cid, desc("compromised"), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1471,10 +1558,10 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, desc("linux-amd64 binary"), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "".into(), &alice.signer)
+            .redact(cid, desc(""), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1485,23 +1572,8 @@ mod test {
 
     #[test]
     fn redact_reason_too_long() {
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
-
-        let cid = test_cid(1);
-        release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
-            .unwrap();
-
-        let long_reason = "x".repeat(crate::MAX_REDACT_REASON_LEN + 1);
-        let result = release.redact(cid, long_reason, &alice.signer);
-        assert!(result.is_err());
-        // Artifact should not be redacted.
-        assert!(!release.artifact(&cid).unwrap().is_redacted());
+        let long_reason = "x".repeat(Description::MAX_LEN + 1);
+        assert!(Description::new(long_reason).is_err());
     }
 
     #[test]
@@ -1515,7 +1587,7 @@ mod test {
 
         // Try to redact a CID that was never added — should error.
         let cid = test_cid(99);
-        let result = release.redact(cid, "does not matter".into(), &alice.signer);
+        let result = release.redact(cid, desc("does not matter"), &alice.signer);
         assert!(result.is_err());
     }
 
