@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-03-23
+
+### Added
+
+* `22ae509` Add redact for marking artifacts as compromised *<daniel@norman.life>*
+* `e4f31a0` Add author to artifacts and allow name updates *<daniel@norman.life>*
+
+### Changed
+
+* `caf8d6c` Update README for artifact author and redactions *<daniel@norman.life>*
+
+### Fixed
+
+* `51ba100` Fix redact doc comment: max reason is 2048 bytes *<daniel@norman.life>*
+
+### Other
+
+* `16e4976` Document redact action in README *<daniel@norman.life>*
+* `d675cd8` Clarify user vs. node and adapt explanations *<daniel@norman.life>*
+* `6669b53` Prevent attestation after redaction for same DID *<daniel@norman.life>*
+
 ## [0.5.0] - 2026-03-19
 
 ### Changed
@@ -20,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `871956b` Allow nodes to add multiple locations per artifact *<daniel@norman.life>*
 * `6315178` Refine multiple locations and tighten tests *<daniel@norman.life>*
 * `0d208d2` Stringify CIDs when rendering json *<daniel@norman.life>*
+* `957f20f` Release radicle-artifact version 0.5.0 *<daniel@norman.life>*
 
 ## [0.4.0] - 2026-03-17
 
