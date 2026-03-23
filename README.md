@@ -5,12 +5,15 @@ release artifacts and their discovery locations.
 
 A **Release** is associated with a Git OID (annotated tag or commit) and an
 author (the DID of the creating user). It contains one or more **Artifacts**,
-each identified by a content identifier (CID). Each user can announce multiple
-discovery URLs for any artifact, enabling decentralized mirroring. Users can also
-**attest** to an artifact, recording that they independently verified the CID
-matches a build from the same commit. Users can also **redact** an artifact,
-signaling that it should not be used (e.g. due to a supply chain compromise or
-build reproducibility failure).
+each identified by a content identifier (CID). Each artifact tracks the DID that
+originally added it (the artifact author), and only that DID can update the
+artifact's name. Each user can announce multiple discovery URLs for any artifact,
+enabling decentralized mirroring. Users can also **attest** to an artifact,
+recording that they independently verified the CID matches a build from the same
+commit. Users can also **redact** an artifact, signaling that it should not be
+used (e.g. due to a supply chain compromise or build reproducibility failure).
+Redaction is permanent: it supersedes any prior attestation from the same DID and
+prevents that DID from attesting again.
 
 Each user is identified by a DID derived which is currently mapped 1:1 to the Radicle NodeID, an ED25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
 
@@ -30,7 +33,7 @@ release artifacts without attestation.
 3. **Publish** — Create the release COB and add artifacts using the CLI
 4. **Host** — Upload artifacts to any server or IPFS and register discovery locations per DID
 5. **Verify** — Other delegates check out the tagged version, build independently, and attest artifacts whose CIDs match. Attestation can be limited to the artifacts a delegate is able to reproduce locally
-6. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, any DID can redact it with a reason. Redactions are permanent and supersede prior attestations from the same DID
+6. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, any DID can redact it with a reason. Redactions are permanent: they supersede prior attestations from the same DID and block future attestations from that DID
 
 ## COB type
 
@@ -44,7 +47,8 @@ Release
 ├── author: Did                       # user that created this release
 └── artifacts: Map<Cid, Artifact>
     └── Artifact
-        ├── name: String              # human-readable description
+        ├── author: Did               # user that added this artifact
+        ├── name: String              # human-readable description (only author can update)
         ├── locations: Map<Did, Set<Url>>
         ├── attestations: Set<Did>      # users that verified the CID
         └── redactions: Map<Did, String> # users that flagged the artifact, with reason
@@ -62,14 +66,14 @@ record attestations on releases created by others. The `author` field records wh
 
 ## Actions
 
-| Action           | Description                               |
-| ---------------- | ----------------------------------------- |
-| `Create`         | Initialize a release for a git OID        |
-| `AddArtifact`    | Add an artifact (CID + name) to release   |
-| `AddLocation`    | Announce a discovery URL for an artifact  |
-| `RemoveLocation` | Retract a previously announced URL        |
-| `Attest`         | Record independent verification of a CID  |
-| `Redact`         | Flag an artifact as compromised/withdrawn |
+| Action           | Description                                                     |
+| ---------------- | --------------------------------------------------------------- |
+| `Create`         | Initialize a release for a git OID                              |
+| `AddArtifact`    | Add an artifact (CID + name), or update name if author re-sends |
+| `AddLocation`    | Announce a discovery URL for an artifact                        |
+| `RemoveLocation` | Retract a previously announced URL                              |
+| `Attest`         | Record independent verification of a CID                        |
+| `Redact`         | Flag an artifact as compromised/withdrawn                       |
 
 ## CLI usage
 
