@@ -102,6 +102,26 @@ src/
     └── rad-artifact.rs # CLI binary
 ```
 
+## How the COB is implemented
+
+The COB is implemented using the [`radicle`](https://crates.io/crates/radicle) crate's COB framework.
+
+The `Release` type implements three traits that plug into the framework:
+
+- **`CobWithType`** — registers the type name `org.radworks.artifact`
+- **`Cob`** — defines how to build initial state from the first operation (`from_root`) and how to apply subsequent operations (`op`)
+- **`Evaluate`** — deserializes git entries into typed operations and feeds them through the state machine
+
+Each mutation (create, add artifact, attest, redact, etc.) is an `Action` that implements `CobAction`. Actions are written to git as signed entries via `Transaction`, and state is reconstructed on read by replaying the operation DAG.
+
+| What the COB does                              | Module                | Key types                                             |
+| ---------------------------------------------- | --------------------- | ----------------------------------------------------- |
+| Define and evaluate the state machine          | `radicle::cob`        | `Evaluate`, `Op`, `Entry`                             |
+| Persist and transact operations as git objects | `radicle::cob::store` | `Store`, `Transaction`, `Cob`, `CobAction`            |
+| Read from and write to the git repository      | `radicle::storage`    | `ReadRepository`, `WriteRepository`, `SignRepository` |
+| Sign entries with the user's Ed25519 key       | `radicle::crypto`     | `Signer`, `Signature`, `Device`                       |
+| Announce changes to the network                | `radicle::node`       | `Node`, `Announcer`                                   |
+
 ## Cutting a release
 
 Requires [cargo-release](https://github.com/crate-ci/cargo-release) and
