@@ -1,28 +1,29 @@
-[workspace]
-members = [".", "fetch"]
-
 [package]
-name = "radicle-artifact"
-description = "Radicle Artifact Collaborative Object (COB)"
+name = "radicle-artifact-fetch"
+description = "Fetch artifacts from Radicle Artifact COBs"
 homepage = "https://radicle.xyz"
 repository = "https://app.radicle.xyz/nodes/iris.radicle.xyz/rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv"
 authors = ["Daniel Norman <daniel@norman.life>"]
 license = "MIT OR Apache-2.0"
-version = "0.6.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.84.0"
 
+[[bin]]
+name = "rad-fetch"
+path = "src/main.rs"
+
 [dependencies]
+radicle-artifact = { path = ".." }
+radicle = "0.21.0"
 cid = { version = "0.11", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "wrap_help"] }
-indexmap = { version = "2.7", features = ["serde"] }
-nonempty = "0.11.0"
-radicle = { version = "0.21.0" }
-serde = { version = "1.0", features = ["derive"] }
+multihash = "0.19"
+sha2 = "0.10"
 serde_json = "1.0"
 thiserror = "2.0"
-url = { version = "2.5", features = ["serde"] }
-
-[dev-dependencies.radicle]
-version = "0.21.0"
-features = ["test"]
+ureq = "3"
+url = "2.5"
+iroh-blobs = "0.99"
+iroh = "0.97"
+tokio = { version = "1", features = ["rt"] }
