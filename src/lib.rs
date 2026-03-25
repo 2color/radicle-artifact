@@ -257,7 +257,8 @@ pub enum Action {
     /// Attest that this user has independently verified the artifact.
     ///
     /// Idempotent — attesting the same CID twice from the same user is a no-op.
-    /// Silent no-op if the CID does not exist in the release.
+    /// Silent no-op if the user is the artifact's author (authorship implies
+    /// endorsement) or if the CID does not exist in the release.
     Attest {
         /// The content identifier of the artifact to attest.
         cid: Cid,
@@ -361,9 +362,13 @@ impl Release {
                 }
             }
             Action::Attest { cid } => {
-                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {                  
                     // A prior redaction from this user supersedes any attestation.
-                    if !artifact.redactions.contains_key(&user) {
+                    // The author implicitly vouches by creating the artifact;
+                    // a self-attestation is a no-op to avoid inflating counts.
+                    if user != artifact.author
+                        && !artifact.redactions.contains_key(&user)
+                    {
                         artifact.attestations.insert(user);
                     }
                 }
@@ -1169,20 +1174,20 @@ mod test {
             .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
-        // All three delegates attest to the artifact.
+        // Bob and Carol attest; Alice's self-attestation is a no-op (she's the author).
         release.attest(cid, &alice.signer).unwrap();
         release.attest(cid, &bob.signer).unwrap();
         release.attest(cid, &carol.signer).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        assert_eq!(artifact.attestations().len(), 3);
-        assert!(artifact.is_attested_by(&Did::from(alice.signer.public_key())));
+        assert_eq!(artifact.attestations().len(), 2);
+        assert!(!artifact.is_attested_by(&Did::from(alice.signer.public_key())));
         assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
         assert!(artifact.is_attested_by(&Did::from(carol.signer.public_key())));
     }
 
     #[test]
-    fn idempotent_attestation() {
+    fn author_self_attestation_is_noop() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -1195,9 +1200,32 @@ mod test {
             .add_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
-        // Attesting twice from the same node should be a no-op.
+        // The author already vouches by creating the artifact.
         release.attest(cid, &alice.signer).unwrap();
-        release.attest(cid, &alice.signer).unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert!(!artifact.is_attested_by(&Did::from(alice.signer.public_key())));
+        assert_eq!(artifact.attestations().len(), 0);
+    }
+
+    #[test]
+    fn idempotent_attestation() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        // Attesting twice from the same non-author node should be a no-op.
+        release.attest(cid, &bob.signer).unwrap();
+        release.attest(cid, &bob.signer).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.attestations().len(), 1);
@@ -1224,6 +1252,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
@@ -1232,12 +1261,12 @@ mod test {
         release
             .add_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
-        release.attest(cid, &alice.signer).unwrap();
+        release.attest(cid, &bob.signer).unwrap();
 
         // Reload and verify attestation is still present.
         release.reload().unwrap();
         let artifact = release.artifact(&cid).unwrap();
-        assert!(artifact.is_attested_by(&Did::from(alice.signer.public_key())));
+        assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
         assert_eq!(artifact.attestations().len(), 1);
     }
 
@@ -1385,6 +1414,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
@@ -1395,15 +1425,15 @@ mod test {
             .unwrap();
 
         // Attest then redact — redaction should supersede the attestation.
-        release.attest(cid, &alice.signer).unwrap();
+        release.attest(cid, &bob.signer).unwrap();
         release
-            .redact(cid, "source was compromised".into(), &alice.signer)
+            .redact(cid, "source was compromised".into(), &bob.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        let alice_did = Did::from(alice.signer.public_key());
-        assert!(!artifact.is_attested_by(&alice_did));
-        assert!(artifact.is_redacted_by(&alice_did));
+        let bob_did = Did::from(bob.signer.public_key());
+        assert!(!artifact.is_attested_by(&bob_did));
+        assert!(artifact.is_redacted_by(&bob_did));
     }
 
     #[test]
@@ -1411,6 +1441,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, &alice.signer).unwrap();
@@ -1423,14 +1454,14 @@ mod test {
         // Redact first, then attempt to attest — the attestation should be
         // silently ignored because redactions are permanent and supersede.
         release
-            .redact(cid, "suspected issue".into(), &alice.signer)
+            .redact(cid, "suspected issue".into(), &bob.signer)
             .unwrap();
-        release.attest(cid, &alice.signer).unwrap();
+        release.attest(cid, &bob.signer).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        let alice_did = Did::from(alice.signer.public_key());
-        assert!(!artifact.is_attested_by(&alice_did));
-        assert!(artifact.is_redacted_by(&alice_did));
+        let bob_did = Did::from(bob.signer.public_key());
+        assert!(!artifact.is_attested_by(&bob_did));
+        assert!(artifact.is_redacted_by(&bob_did));
     }
 
     #[test]
@@ -1448,15 +1479,15 @@ mod test {
             .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
-        // Both attest, then Alice redacts — only Alice's attestation is removed.
-        release.attest(cid, &alice.signer).unwrap();
+        // Bob attests; Alice's self-attestation is a no-op (she's the author).
+        // Then Alice redacts — Bob's attestation should remain.
         release.attest(cid, &bob.signer).unwrap();
         release
             .redact(cid, "compromised".into(), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        assert!(!artifact.is_attested_by(&Did::from(alice.signer.public_key())));
+        assert!(artifact.is_redacted_by(&Did::from(alice.signer.public_key())));
         assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
     }
 
