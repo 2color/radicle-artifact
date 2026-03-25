@@ -1364,9 +1364,9 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radicle"
-version = "0.21.0"
+version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bed19c0448cb77a8be9c7a5b6fc00a884d10434e679ad0eb8731fe4a52534346"
+checksum = "31fcfcac7b87b1a3677dccae9979046b949fb529d3061214c55b82d643c3b39a"
 dependencies = [
  "amplify",
  "base64",
@@ -1386,6 +1386,7 @@ dependencies = [
  "radicle-cob",
  "radicle-core",
  "radicle-crypto",
+ "radicle-git-metadata 0.2.0",
  "radicle-git-ref-format",
  "radicle-localtime",
  "radicle-oid",
@@ -1418,9 +1419,9 @@ dependencies = [
 
 [[package]]
 name = "radicle-cob"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bed621de031dce3c39b6c262c9a9297fab0f1e3099f78e8bffb9cd132a679d94"
+checksum = "cd49b584b0a61cba52cfd8ec873bb5f3cbc50763d020a4c333aeffa95a5c839e"
 dependencies = [
  "fastrand",
  "git-ref-format-core",
@@ -1429,7 +1430,7 @@ dependencies = [
  "nonempty 0.9.0",
  "radicle-crypto",
  "radicle-dag",
- "radicle-git-metadata",
+ "radicle-git-metadata 0.1.0",
  "radicle-oid",
  "serde",
  "serde_json",
@@ -1439,9 +1440,9 @@ dependencies = [
 
 [[package]]
 name = "radicle-core"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f797194bf12af94f8ce914520bdb54ba9f8c824621f3faa6763101dbd2e1dc79"
+checksum = "617b55b262b946470a355052a6d72c7f8efc724b8d8068021234cda74df7dd30"
 dependencies = [
  "git2",
  "multibase",
@@ -1456,9 +1457,9 @@ dependencies = [
 
 [[package]]
 name = "radicle-crypto"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a615a06e20545b03f9b01f0380687262e949e976a3127fbb932cb3fdb435866"
+checksum = "f77cf406d3e448de958e3a821bb09612bb2f97ac1dbb2ee314b59264cde8281d"
 dependencies = [
  "amplify",
  "cyphernet",
@@ -1490,6 +1491,15 @@ name = "radicle-git-metadata"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "522d7fa07dfe61981b5d96e9aeb2b7fb2f4a8d5804638e928eaedb33e423eccb"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "radicle-git-metadata"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db7817cae00f00f0e9a804b08e32d7846e97ae66fff8114d5a0d8c848de80ad5"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -1838,19 +1848,18 @@ dependencies = [
 
 [[package]]
 name = "sqlite"
-version = "0.32.0"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03801c10193857d6a4a71ec46cee198a15cbc659622aabe1db0d0bdbefbcf8e6"
+checksum = "f66e9c01a11936154f3910dbba732c01f8b591543bc4d6672bddee79fd9c4783"
 dependencies = [
- "libc",
  "sqlite3-sys",
 ]
 
 [[package]]
 name = "sqlite3-src"
-version = "0.5.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfc95a51a1ee38839599371685b9d4a926abb51791f0bc3bf8c3bb7867e6e454"
+checksum = "e5b6d3c860886b0a33e69e421796a5f4a27f23597a182c2450f6d7ace5103120"
 dependencies = [
  "cc",
  "pkg-config",
@@ -1858,11 +1867,10 @@ dependencies = [
 
 [[package]]
 name = "sqlite3-sys"
-version = "0.15.2"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2752c669433e40ebb08fde824146f50d9628aa0b66a3b7fc6be34db82a8063b"
+checksum = "a7781d97adc13a1d5081127a9ee29afad8427f3757bd984daf814d8265267039"
 dependencies = [
- "libc",
  "sqlite3-src",
 ]
 
