@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-03-25
+
+### Other
+
+* `a0d1544` Document how the COB is implemented *<daniel@norman.life>*
+* `208f75b` Make self-attestation by artifact author no-op *<daniel@norman.life>*
+* `4053ff6` Bump radicle crate to 0.22.1 *<daniel@norman.life>*
+
 ## [0.6.0] - 2026-03-23
 
 ### Added
@@ -25,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `16e4976` Document redact action in README *<daniel@norman.life>*
 * `d675cd8` Clarify user vs. node and adapt explanations *<daniel@norman.life>*
 * `6669b53` Prevent attestation after redaction for same DID *<daniel@norman.life>*
+* `d0cd174` Release radicle-artifact version 0.6.0 *<daniel@norman.life>*
 
 ## [0.5.0] - 2026-03-19
 
