@@ -3,6 +3,7 @@
 //! Run `rad-fetch --help` for usage.
 
 use std::error::Error as _;
+use std::ops::Deref;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -11,10 +12,13 @@ use clap::Parser;
 
 use radicle::cob;
 use radicle::git::Oid;
+use radicle::identity::Did;
 use radicle::prelude::{Profile, ReadStorage, RepoId};
 use radicle::storage::git::Repository;
 use radicle_artifact::*;
-use radicle_artifact_fetch::{default_fetchers, download};
+use radicle_artifact_fetch::{
+    ArtifactKind, Location, artifact_kind, default_fetchers, download, download_collection,
+};
 
 /// Fetch an artifact from a Radicle release COB.
 ///
@@ -91,25 +95,60 @@ fn run() -> Result<(), RadFetchError> {
         }
     }
 
-    // Collect URLs to try.
-    let urls: Vec<url::Url> = if let Some(ref url) = args.url {
-        vec![url.clone()]
+    // Collect locations to try.
+    let locations = if let Some(ref url) = args.url {
+        vec![Location::Url(url)]
     } else {
-        artifact.all_locations().into_iter().cloned().collect()
+        artifact_locations(artifact)?
     };
-    let url_refs: Vec<&url::Url> = urls.iter().collect();
 
-    // Download.
+    // Download, branching on whether this is a single blob or a collection.
     let output_path = args
         .output
         .unwrap_or_else(|| PathBuf::from(artifact.name()));
 
-    let mut file = File::create(&output_path).map_err(RadFetchError::Io)?;
-    let fetchers = default_fetchers();
-    download(&url_refs, &cid, &mut file, &fetchers).map_err(RadFetchError::Fetch)?;
+    match artifact_kind(&cid).map_err(RadFetchError::Fetch)? {
+        ArtifactKind::Blob => {
+            let mut file = File::create(&output_path).map_err(RadFetchError::Io)?;
+            let fetchers = default_fetchers();
+            download(&locations, &cid, &mut file, &fetchers).map_err(RadFetchError::Fetch)?;
+        }
+        ArtifactKind::Collection => {
+            download_collection(&locations, &cid, &output_path).map_err(RadFetchError::Fetch)?;
+        }
+    }
 
     println!("{}", output_path.display());
     Ok(())
+}
+
+/// Convert artifact locations into fetch locations.
+///
+/// For `radworks://` URLs, derives the iroh endpoint ID from the contributing
+/// DID's Ed25519 public key. For all other URLs, passes them through as-is.
+fn artifact_locations(artifact: &Artifact) -> Result<Vec<Location<'_>>, RadFetchError> {
+    let mut locations = Vec::new();
+    for (did, urls) in artifact.locations() {
+        for url in urls {
+            if url.scheme() == "radworks" {
+                let endpoint_id = did_to_endpoint_id(did)?;
+                locations.push(Location::Iroh(endpoint_id));
+            } else {
+                locations.push(Location::Url(url));
+            }
+        }
+    }
+    Ok(locations)
+}
+
+/// Derive an iroh endpoint ID from a Radicle DID.
+///
+/// Both use Ed25519 public keys, so this is a direct byte-level conversion.
+fn did_to_endpoint_id(did: &Did) -> Result<iroh::EndpointId, RadFetchError> {
+    let bytes: &[u8; 32] = did.as_key().deref();
+    iroh::PublicKey::from_bytes(bytes).map_err(|e| {
+        RadFetchError::Usage(format!("invalid Ed25519 key in DID {did}: {e}"))
+    })
 }
 
 fn open_repo(args: &Args, profile: &Profile) -> Result<Repository, RadFetchError> {

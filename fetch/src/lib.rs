@@ -1,28 +1,41 @@
 //! Fetch artifacts from Radicle Artifact COBs.
 //!
 //! Provides a [`Fetcher`] trait for protocol-extensible artifact retrieval,
-//! built-in [`HttpFetcher`] and [`IrohBlobFetcher`] implementations, and a
-//! [`download`] function that tries URLs in order with CID verification.
+//! a built-in [`HttpFetcher`] implementation, iroh-blobs fetching via
+//! [`fetch_iroh_blob`] and [`fetch_iroh_collection`], and a [`download`]
+//! function that tries locations in order with CID verification.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::path::Path;
 
 pub use cid::Cid;
 use cid::multihash::Multihash;
 pub use url::Url;
 
-/// Whether the caller must verify the downloaded content against the CID.
-///
-/// Fetchers that provide their own integrity verification (e.g. iroh-blobs
-/// with BLAKE3) return `No`. HTTP fetchers return `Yes` since the transport
-/// doesn't guarantee content integrity.
-///
-/// NOTE: iroh-blobs verifies the BLAKE3 hash from the URL, but that is a
-/// different hash than the artifact's CID (SHA2-256). A `radworks://` URL
-/// pointing at the wrong blob will pass iroh's check but won't match the
-/// CID. Callers should consider always verifying the CID regardless.
-pub enum NeedsVerification {
-    Yes,
-    No,
+/// Source: <https://github.com/multiformats/multicodec/blob/master/table.csv#L51>
+const HASH_CODE_BLAKE3: u64 = 0x1e;
+/// `blake3-hashseq` codec for iroh collections (a sequence of BLAKE3 hashes).
+const BLAKE3_HASHSEQ_CODEC: u64 = 0x80;
+/// Raw binary codec for single blobs.
+const RAW_CODEC: u64 = 0x55;
+
+/// Whether the CID represents a single blob or a collection of named blobs.
+pub fn artifact_kind(cid: &Cid) -> Result<ArtifactKind, FetchError> {
+    match cid.codec() {
+        RAW_CODEC => Ok(ArtifactKind::Blob),
+        BLAKE3_HASHSEQ_CODEC => Ok(ArtifactKind::Collection),
+        other => Err(FetchError::Cid(format!("unsupported CID codec: 0x{other:x}"))),
+    }
+}
+
+/// The kind of artifact a CID points to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactKind {
+    /// A single blob (raw codec 0x55).
+    Blob,
+    /// A named collection of blobs (blake3-hashseq codec 0x80).
+    Collection,
 }
 
 /// A protocol handler that can fetch content from URLs with a given scheme.
@@ -31,77 +44,15 @@ pub trait Fetcher {
     fn schemes(&self) -> &[&str];
 
     /// Fetch content at `url` into `dest`.
-    fn fetch(&self, url: &Url, dest: &mut dyn Write) -> Result<NeedsVerification, FetchError>;
+    fn fetch(&self, url: &Url, dest: &mut dyn Write) -> Result<(), FetchError>;
 }
 
-/// Iroh blob fetcher for `radworks://` URLs.
-///
-/// URL format: `radworks://<blake3-hash>?hint=<endpoint-id>`
-/// where the BLAKE3 hash is the content address (authority) and the `hint`
-/// query parameter identifies the node to fetch from.
-///
-/// Integrity is verified by iroh-blobs natively (BLAKE3), so no CID
-/// verification is needed by the caller.
-pub struct IrohBlobFetcher;
-
-impl IrohBlobFetcher {
-    /// Parse a `radworks://` URL into (blake3 hash, endpoint ID).
-    fn parse_url(url: &Url) -> Result<(iroh_blobs::Hash, iroh::EndpointId), FetchError> {
-        let hash_str = url
-            .host_str()
-            .ok_or_else(|| FetchError::InvalidRadworksUrl("missing BLAKE3 hash".into()))?;
-
-        let hash = hash_str
-            .parse::<iroh_blobs::Hash>()
-            .map_err(|e| FetchError::InvalidRadworksUrl(format!("invalid BLAKE3 hash: {e}")))?;
-
-        // Extract endpoint ID from ?hint= query parameter
-        let endpoint_str = url
-            .query_pairs()
-            .find(|(key, _)| key == "hint")
-            .map(|(_, value)| value.into_owned())
-            .ok_or_else(|| FetchError::InvalidRadworksUrl("missing ?hint= endpoint ID".into()))?;
-
-        let endpoint_id = endpoint_str
-            .parse::<iroh::EndpointId>()
-            .map_err(|e| FetchError::InvalidRadworksUrl(format!("invalid endpoint ID: {e}")))?;
-
-        Ok((hash, endpoint_id))
-    }
-}
-
-impl Fetcher for IrohBlobFetcher {
-    fn schemes(&self) -> &[&str] {
-        &["radworks"]
-    }
-
-    fn fetch(&self, url: &Url, dest: &mut dyn Write) -> Result<NeedsVerification, FetchError> {
-        let (hash, endpoint_id) = Self::parse_url(url)?;
-
-        let rt = tokio::runtime::Runtime::new().map_err(|e| FetchError::Iroh(e.to_string()))?;
-        rt.block_on(async {
-            let endpoint = iroh::Endpoint::empty_builder()
-                .relay_mode(iroh::RelayMode::Default)
-                .address_lookup(iroh::address_lookup::PkarrResolver::n0_dns())
-                .bind()
-                .await
-                .map_err(|e| FetchError::Iroh(format!("endpoint bind: {e}")))?;
-
-            let connection = endpoint
-                .connect(endpoint_id, iroh_blobs::ALPN)
-                .await
-                .map_err(|e| FetchError::Iroh(format!("connect: {e}")))?;
-
-            let progress = iroh_blobs::get::request::get_blob(connection, hash);
-            let (bytes, _stats) = progress
-                .bytes_and_stats()
-                .await
-                .map_err(|e| FetchError::Iroh(format!("download: {e}")))?;
-
-            dest.write_all(&bytes).map_err(FetchError::Io)?;
-            Ok(NeedsVerification::No)
-        })
-    }
+/// A location to try fetching an artifact from.
+pub enum Location<'a> {
+    /// Fetch from a URL using a registered [`Fetcher`].
+    Url(&'a Url),
+    /// Fetch via iroh-blobs. The BLAKE3 hash is extracted from the CID.
+    Iroh(iroh::EndpointId),
 }
 
 /// HTTP(S) fetcher using ureq.
@@ -112,26 +63,148 @@ impl Fetcher for HttpFetcher {
         &["https", "http"]
     }
 
-    fn fetch(&self, url: &Url, dest: &mut dyn Write) -> Result<NeedsVerification, FetchError> {
+    fn fetch(&self, url: &Url, dest: &mut dyn Write) -> Result<(), FetchError> {
         let resp = ureq::get(url.as_str())
             .call()
             .map_err(|e| FetchError::Http(e.to_string()))?;
         let mut reader = resp.into_body().into_reader();
         io::copy(&mut reader, dest).map_err(FetchError::Io)?;
-        Ok(NeedsVerification::Yes)
+        Ok(())
     }
 }
 
-/// Verify that `data` matches the expected CID (sha2-256, raw codec 0x55).
-pub fn verify_cid(data: &[u8], expected: &Cid) -> Result<(), FetchError> {
-    use sha2::{Digest, Sha256};
+/// Extract the BLAKE3 digest from a CID's multihash.
+fn cid_to_blake3_hash(cid: &Cid) -> Result<iroh_blobs::Hash, FetchError> {
+    let mh = cid.hash();
+    if mh.code() != HASH_CODE_BLAKE3 {
+        return Err(FetchError::Cid(format!(
+            "expected BLAKE3 multihash (0x1e), got 0x{:x}",
+            mh.code()
+        )));
+    }
+    let digest: [u8; 32] = mh.digest().try_into().map_err(|_| {
+        FetchError::Cid(format!(
+            "expected 32-byte BLAKE3 digest, got {} bytes",
+            mh.digest().len()
+        ))
+    })?;
+    Ok(iroh_blobs::Hash::from_bytes(digest))
+}
 
-    let digest = Sha256::digest(data);
-    // 0x12 = sha2-256 multihash code
-    let mh = Multihash::<64>::wrap(0x12, &digest)
+/// Connect to an iroh endpoint and return the connection.
+async fn iroh_connect(
+    endpoint_id: iroh::EndpointId,
+) -> Result<iroh::endpoint::Connection, FetchError> {
+    let endpoint = iroh::Endpoint::empty_builder()
+        .relay_mode(iroh::RelayMode::Default)
+        .address_lookup(iroh::address_lookup::PkarrResolver::n0_dns())
+        .bind()
+        .await
+        .map_err(|e| FetchError::Iroh(format!("endpoint bind: {e}")))?;
+
+    endpoint
+        .connect(endpoint_id, iroh_blobs::ALPN)
+        .await
+        .map_err(|e| FetchError::Iroh(format!("connect: {e}")))
+}
+
+/// Fetch a single blob via iroh-blobs from the given endpoint.
+///
+/// The BLAKE3 hash is extracted from the CID's multihash. Since iroh-blobs
+/// verifies BLAKE3 natively and the CID uses the same hash, transport
+/// verification and content verification are the same operation.
+pub fn fetch_iroh_blob(
+    cid: &Cid,
+    endpoint_id: iroh::EndpointId,
+    dest: &mut dyn Write,
+) -> Result<(), FetchError> {
+    let hash = cid_to_blake3_hash(cid)?;
+
+    let rt = tokio::runtime::Runtime::new().map_err(|e| FetchError::Iroh(e.to_string()))?;
+    rt.block_on(async {
+        let connection = iroh_connect(endpoint_id).await?;
+
+        let progress = iroh_blobs::get::request::get_blob(connection, hash);
+        let (bytes, _stats) = progress
+            .bytes_and_stats()
+            .await
+            .map_err(|e| FetchError::Iroh(format!("download: {e}")))?;
+
+        dest.write_all(&bytes).map_err(FetchError::Io)?;
+        Ok(())
+    })
+}
+
+/// Fetch an iroh-blobs collection and write each entry as a file under `dest_dir`.
+///
+/// The CID must use the `blake3-hashseq` codec (0x80). Each entry in the
+/// collection is written to `dest_dir/<name>`.
+pub fn fetch_iroh_collection(
+    cid: &Cid,
+    endpoint_id: iroh::EndpointId,
+    dest_dir: &Path,
+) -> Result<(), FetchError> {
+    let hash = cid_to_blake3_hash(cid)?;
+
+    let rt = tokio::runtime::Runtime::new().map_err(|e| FetchError::Iroh(e.to_string()))?;
+    rt.block_on(async {
+        let connection = iroh_connect(endpoint_id).await?;
+
+        // Request the full collection (hashseq + all children).
+        let request = iroh_blobs::protocol::GetRequest::all(hash);
+        let at_start = iroh_blobs::get::fsm::start(connection, request, Default::default());
+        let at_connected = at_start
+            .next()
+            .await
+            .map_err(|e| FetchError::Iroh(format!("connect: {e}")))?;
+
+        let iroh_blobs::get::fsm::ConnectedNext::StartRoot(start) =
+            at_connected
+                .next()
+                .await
+                .map_err(|e| FetchError::Iroh(format!("start root: {e}")))?
+        else {
+            return Err(FetchError::Iroh("expected start root".into()));
+        };
+
+        let (collection, children, _stats) =
+            iroh_blobs::format::collection::Collection::read_fsm_all(start)
+                .await
+                .map_err(|e| FetchError::Iroh(format!("read collection: {e}")))?;
+
+        std::fs::create_dir_all(dest_dir).map_err(FetchError::Io)?;
+        write_collection(dest_dir, &collection, &children)?;
+
+        Ok(())
+    })
+}
+
+/// Write collection entries to disk.
+fn write_collection(
+    dest_dir: &Path,
+    collection: &iroh_blobs::format::collection::Collection,
+    children: &BTreeMap<u64, bytes::Bytes>,
+) -> Result<(), FetchError> {
+    for (i, (name, _hash)) in collection.iter().enumerate() {
+        let data = children.get(&(i as u64)).ok_or_else(|| {
+            FetchError::Iroh(format!("missing data for collection entry '{name}'"))
+        })?;
+        let path = dest_dir.join(name);
+        // Create parent dirs for nested entries like "subdir/file.txt"
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(FetchError::Io)?;
+        }
+        std::fs::write(&path, data).map_err(FetchError::Io)?;
+    }
+    Ok(())
+}
+
+/// Verify that `data` matches the expected CID (blake3, raw codec 0x55).
+pub fn verify_cid(data: &[u8], expected: &Cid) -> Result<(), FetchError> {
+    let digest = blake3::hash(data);
+    let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes())
         .map_err(|e| FetchError::Cid(format!("multihash wrap: {e}")))?;
-    // 0x55 = raw codec
-    let actual = Cid::new_v1(0x55, mh);
+    let actual = Cid::new_v1(RAW_CODEC, mh);
 
     if actual != *expected {
         return Err(FetchError::CidMismatch {
@@ -142,38 +215,46 @@ pub fn verify_cid(data: &[u8], expected: &Cid) -> Result<(), FetchError> {
     Ok(())
 }
 
-/// Try each URL in order until one succeeds. Verify CID when the fetcher
-/// indicates it's needed.
+/// Try each location in order until one succeeds. Always verify CID.
+///
+/// Only supports single-blob artifacts (raw codec). For collections, use
+/// [`download_collection`].
 pub fn download(
-    urls: &[&Url],
+    locations: &[Location],
     expected_cid: &Cid,
     dest: &mut dyn Write,
     fetchers: &[Box<dyn Fetcher>],
 ) -> Result<(), FetchError> {
-    if urls.is_empty() {
+    if locations.is_empty() {
         return Err(FetchError::NoLocations);
     }
 
     let mut errors = Vec::new();
 
-    for url in urls {
-        let scheme = url.scheme();
-        let fetcher = match fetchers.iter().find(|f| f.schemes().contains(&scheme)) {
-            Some(f) => f,
-            None => {
-                errors.push(FetchError::UnsupportedScheme(scheme.to_string()));
-                continue;
-            }
-        };
-
+    for location in locations {
         let mut buf = Vec::new();
-        match fetcher.fetch(url, &mut buf) {
-            Ok(needs_verify) => {
-                if matches!(needs_verify, NeedsVerification::Yes) {
-                    if let Err(e) = verify_cid(&buf, expected_cid) {
-                        errors.push(e);
+
+        let result = match location {
+            Location::Url(url) => {
+                let scheme = url.scheme();
+                match fetchers.iter().find(|f| f.schemes().contains(&scheme)) {
+                    Some(fetcher) => fetcher.fetch(url, &mut buf),
+                    None => {
+                        errors.push(FetchError::UnsupportedScheme(scheme.to_string()));
                         continue;
                     }
+                }
+            }
+            Location::Iroh(endpoint_id) => fetch_iroh_blob(expected_cid, *endpoint_id, &mut buf),
+        };
+
+        match result {
+            Ok(()) => {
+                // Always verify CID. For iroh this is redundant (same BLAKE3 hash)
+                // but cheap and provides defense in depth.
+                if let Err(e) = verify_cid(&buf, expected_cid) {
+                    errors.push(e);
+                    continue;
                 }
                 dest.write_all(&buf).map_err(FetchError::Io)?;
                 return Ok(());
@@ -188,9 +269,48 @@ pub fn download(
     Err(FetchError::AllFailed(errors))
 }
 
-/// Returns the default set of fetchers (HTTP + iroh-blobs).
+/// Try each iroh location until one succeeds at fetching a collection.
+///
+/// Only iroh locations support collections; URL locations are skipped.
+pub fn download_collection(
+    locations: &[Location],
+    expected_cid: &Cid,
+    dest_dir: &Path,
+) -> Result<(), FetchError> {
+    if locations.is_empty() {
+        return Err(FetchError::NoLocations);
+    }
+
+    let mut errors = Vec::new();
+
+    for location in locations {
+        match location {
+            Location::Url(_) => {
+                // HTTP doesn't support collection fetching (yet).
+                continue;
+            }
+            Location::Iroh(endpoint_id) => {
+                match fetch_iroh_collection(expected_cid, *endpoint_id, dest_dir) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        errors.push(e);
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Err(FetchError::NoLocations)
+    } else {
+        Err(FetchError::AllFailed(errors))
+    }
+}
+
+/// Returns the default set of URL-based fetchers.
 pub fn default_fetchers() -> Vec<Box<dyn Fetcher>> {
-    vec![Box::new(HttpFetcher), Box::new(IrohBlobFetcher)]
+    vec![Box::new(HttpFetcher)]
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -213,9 +333,6 @@ pub enum FetchError {
     #[error("CID error: {0}")]
     Cid(String),
 
-    #[error("invalid radworks:// URL: {0}")]
-    InvalidRadworksUrl(String),
-
     #[error("no locations registered for this artifact")]
     NoLocations,
 
@@ -227,27 +344,31 @@ pub enum FetchError {
 mod tests {
     use super::*;
 
+    /// Create a BLAKE3 CID for the given data (single blob).
+    fn blob_cid(data: &[u8]) -> Cid {
+        let digest = blake3::hash(data);
+        let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
+        Cid::new_v1(RAW_CODEC, mh)
+    }
+
+    /// Create a BLAKE3 CID with the hashseq codec.
+    fn collection_cid(data: &[u8]) -> Cid {
+        let digest = blake3::hash(data);
+        let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
+        Cid::new_v1(BLAKE3_HASHSEQ_CODEC, mh)
+    }
+
     #[test]
     fn verify_cid_matches() {
         let data = b"hello world";
-        // Compute expected CID for "hello world"
-        use sha2::{Digest, Sha256};
-        let digest = Sha256::digest(data);
-        let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
-        let cid = Cid::new_v1(0x55, mh);
-
+        let cid = blob_cid(data);
         assert!(verify_cid(data, &cid).is_ok());
     }
 
     #[test]
     fn verify_cid_mismatch() {
         let data = b"hello world";
-        // Wrong CID (different data)
-        use sha2::{Digest, Sha256};
-        let digest = Sha256::digest(b"wrong");
-        let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
-        let wrong_cid = Cid::new_v1(0x55, mh);
-
+        let wrong_cid = blob_cid(b"wrong");
         assert!(matches!(
             verify_cid(data, &wrong_cid),
             Err(FetchError::CidMismatch { .. })
@@ -256,47 +377,73 @@ mod tests {
 
     #[test]
     fn download_no_locations() {
-        let cid = {
-            use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(b"test");
-            let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
-            Cid::new_v1(0x55, mh)
-        };
+        let cid = blob_cid(b"test");
         let mut buf = Vec::new();
         let result = download(&[], &cid, &mut buf, &default_fetchers());
         assert!(matches!(result, Err(FetchError::NoLocations)));
     }
 
     #[test]
-    fn parse_radworks_url() {
-        // 64-char hex = valid BLAKE3 hash
-        let hash = "a".repeat(64);
-        // Valid ed25519 public key (64 hex chars)
-        let node = "b".repeat(64);
-        let url = Url::parse(&format!("radworks://{hash}?hint={node}")).unwrap();
-        let result = IrohBlobFetcher::parse_url(&url);
-        assert!(result.is_ok(), "parse failed: {result:?}");
-    }
-
-    #[test]
-    fn parse_radworks_url_missing_hint() {
-        let hash = "a".repeat(64);
-        let url = Url::parse(&format!("radworks://{hash}")).unwrap();
-        let result = IrohBlobFetcher::parse_url(&url);
-        assert!(matches!(result, Err(FetchError::InvalidRadworksUrl(_))));
-    }
-
-    #[test]
     fn download_unsupported_scheme() {
         let url = Url::parse("ftp://example.com/file").unwrap();
-        let cid = {
-            use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(b"test");
-            let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
-            Cid::new_v1(0x55, mh)
-        };
+        let cid = blob_cid(b"test");
         let mut buf = Vec::new();
-        let result = download(&[&url], &cid, &mut buf, &default_fetchers());
+        let result = download(
+            &[Location::Url(&url)],
+            &cid,
+            &mut buf,
+            &default_fetchers(),
+        );
         assert!(matches!(result, Err(FetchError::AllFailed(_))));
+    }
+
+    #[test]
+    fn cid_to_blake3_hash_roundtrip() {
+        let data = b"test data";
+        let expected_hash = iroh_blobs::Hash::new(data);
+        let cid = blob_cid(data);
+        let extracted = cid_to_blake3_hash(&cid).unwrap();
+        assert_eq!(extracted, expected_hash);
+    }
+
+    #[test]
+    fn cid_to_blake3_hash_rejects_sha256() {
+        let digest = [0u8; 32];
+        let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
+        let cid = Cid::new_v1(RAW_CODEC, mh);
+        assert!(matches!(
+            cid_to_blake3_hash(&cid),
+            Err(FetchError::Cid(_))
+        ));
+    }
+
+    #[test]
+    fn artifact_kind_blob() {
+        let cid = blob_cid(b"test");
+        assert_eq!(artifact_kind(&cid).unwrap(), ArtifactKind::Blob);
+    }
+
+    #[test]
+    fn artifact_kind_collection() {
+        let cid = collection_cid(b"test");
+        assert_eq!(artifact_kind(&cid).unwrap(), ArtifactKind::Collection);
+    }
+
+    #[test]
+    fn artifact_kind_unknown_codec() {
+        let digest = blake3::hash(b"test");
+        let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
+        let cid = Cid::new_v1(0x99, mh);
+        assert!(matches!(artifact_kind(&cid), Err(FetchError::Cid(_))));
+    }
+
+    #[test]
+    fn cid_to_blake3_works_with_hashseq_codec() {
+        // cid_to_blake3_hash should work regardless of codec
+        let data = b"test data";
+        let expected_hash = iroh_blobs::Hash::new(data);
+        let cid = collection_cid(data);
+        let extracted = cid_to_blake3_hash(&cid).unwrap();
+        assert_eq!(extracted, expected_hash);
     }
 }
