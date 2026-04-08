@@ -214,6 +214,18 @@ impl Artifact {
     pub fn is_redacted(&self) -> bool {
         !self.redactions.is_empty()
     }
+
+    /// Get locations filtered by URL scheme, with the contributing DID.
+    pub fn locations_by_scheme<'a>(&'a self, scheme: &str) -> Vec<(&'a Url, &'a Did)> {
+        self.locations
+            .iter()
+            .flat_map(|(did, urls)| {
+                urls.iter()
+                    .filter(|u| u.scheme() == scheme)
+                    .map(move |u| (u, did))
+            })
+            .collect()
+    }
 }
 
 /// The collaborative object actions for artifact releases.
@@ -496,6 +508,20 @@ where
     /// Find the [`Release`]s that are associated with the `wanted` commit.
     pub fn find_by_oid(&self, wanted: Oid) -> Result<FindByOid<'a>, store::Error> {
         FindByOid::new(self, wanted)
+    }
+
+    /// Find the release containing an artifact with the given CID.
+    pub fn find_by_cid(
+        &self,
+        cid: &Cid,
+    ) -> Result<Option<(ReleaseId, Release)>, cob::store::Error> {
+        for result in self.all()? {
+            let (id, release) = result?;
+            if release.artifact(cid).is_some() {
+                return Ok(Some((ReleaseId::from(id), release)));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -1561,5 +1587,133 @@ mod test {
         let fake_id = crate::ReleaseId::from(oid);
         let result = releases.get_mut(&fake_id);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn locations_by_scheme_filters_correctly() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        let https_url = Url::parse("https://example.com/file.tar.gz").unwrap();
+        let iroh_url = Url::parse("iroh://abc123").unwrap();
+        let http_url = Url::parse("http://mirror.example.com/file.tar.gz").unwrap();
+        release
+            .add_location(cid, https_url.clone(), &alice.signer)
+            .unwrap();
+        release
+            .add_location(cid, iroh_url.clone(), &alice.signer)
+            .unwrap();
+        release
+            .add_location(cid, http_url.clone(), &bob.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+
+        // Filter by "iroh" returns only the iroh URL.
+        let iroh_locations = artifact.locations_by_scheme("iroh");
+        assert_eq!(iroh_locations.len(), 1);
+        assert_eq!(iroh_locations[0].0, &iroh_url);
+        assert_eq!(iroh_locations[0].1, &Did::from(alice.signer.public_key()));
+
+        // Filter by "https" returns only the https URL.
+        let https_locations = artifact.locations_by_scheme("https");
+        assert_eq!(https_locations.len(), 1);
+        assert_eq!(https_locations[0].0, &https_url);
+
+        // Filter by "http" returns only Bob's http URL.
+        let http_locations = artifact.locations_by_scheme("http");
+        assert_eq!(http_locations.len(), 1);
+        assert_eq!(http_locations[0].0, &http_url);
+        assert_eq!(http_locations[0].1, &Did::from(bob.signer.public_key()));
+
+        // Filter by unknown scheme returns empty.
+        assert!(artifact.locations_by_scheme("ftp").is_empty());
+    }
+
+    #[test]
+    fn locations_by_scheme_duplicate_url_from_two_dids() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .unwrap();
+
+        // Both Alice and Bob add the same bare iroh:// URL.
+        let iroh_url = Url::parse("iroh://").unwrap();
+        release
+            .add_location(cid, iroh_url.clone(), &alice.signer)
+            .unwrap();
+        release
+            .add_location(cid, iroh_url.clone(), &bob.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        let iroh_locations = artifact.locations_by_scheme("iroh");
+
+        // Both DIDs contributed the same URL, so we get two entries.
+        assert_eq!(iroh_locations.len(), 2);
+        let dids: std::collections::BTreeSet<&Did> =
+            iroh_locations.iter().map(|(_, did)| *did).collect();
+        assert!(dids.contains(&Did::from(alice.signer.public_key())));
+        assert!(dids.contains(&Did::from(bob.signer.public_key())));
+
+        // Both entries point to the same URL.
+        assert!(iroh_locations.iter().all(|(url, _)| *url == &iroh_url));
+    }
+
+    #[test]
+    fn find_by_cid_finds_across_releases() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid1 = commit(&repo.backend, "Release 1");
+        let oid2 = commit(&repo.backend, "Release 2");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let cid1 = test_cid(1);
+        let cid2 = test_cid(2);
+        let cid_missing = test_cid(99);
+
+        // Create two releases with different artifacts.
+        {
+            let mut r1 = releases.create(oid1, &alice.signer).unwrap();
+            r1.add_artifact(cid1, "artifact-one".into(), &alice.signer)
+                .unwrap();
+        }
+        {
+            let mut r2 = releases.create(oid2, &alice.signer).unwrap();
+            r2.add_artifact(cid2, "artifact-two".into(), &alice.signer)
+                .unwrap();
+        }
+
+        // find_by_cid locates cid1 in the first release.
+        let (_, found) = releases.find_by_cid(&cid1).unwrap().unwrap();
+        assert_eq!(found.oid(), &oid1);
+        assert!(found.artifact(&cid1).is_some());
+
+        // find_by_cid locates cid2 in the second release.
+        let (_, found) = releases.find_by_cid(&cid2).unwrap().unwrap();
+        assert_eq!(found.oid(), &oid2);
+        assert!(found.artifact(&cid2).is_some());
+
+        // A CID not in any release returns None.
+        assert!(releases.find_by_cid(&cid_missing).unwrap().is_none());
     }
 }
