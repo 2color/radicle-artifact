@@ -3669,7 +3669,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "radicle-artifact-fetch"
+name = "radicle-artifact-share"
 version = "0.1.0"
 dependencies = [
  "blake3",

@@ -1,6 +1,6 @@
 [package]
-name = "radicle-artifact-fetch"
-description = "Fetch artifacts from Radicle Artifact COBs"
+name = "radicle-artifact-share"
+description = "Share artifacts via Radicle Artifact COBs"
 homepage = "https://radicle.xyz"
 repository = "https://app.radicle.xyz/nodes/iris.radicle.xyz/rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv"
 authors = ["Daniel Norman <daniel@norman.life>"]
@@ -10,7 +10,7 @@ edition = "2021"
 rust-version = "1.84.0"
 
 [[bin]]
-name = "rad-fetch"
+name = "rad-share"
 path = "src/main.rs"
 
 [dependencies]
@@ -27,4 +27,4 @@ ureq = "3"
 url = "2.5"
 iroh-blobs = "0.99"
 iroh = "0.97"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "signal"] }
