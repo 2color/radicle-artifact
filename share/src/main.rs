@@ -23,10 +23,22 @@ use radicle_artifact_share::{
 #[derive(Parser)]
 #[clap(version)]
 enum Cli {
+    /// Compute the BLAKE3 CID of a file or directory
+    Cid(CidArgs),
     /// Fetch an artifact from a release COB
     Fetch(FetchArgs),
     /// Serve an artifact via iroh-blobs using your radicle identity
     Serve(ServeArgs),
+}
+
+/// Compute the BLAKE3 CID of a file or directory.
+///
+/// For a single file, outputs a CID with the raw codec (0x55).
+/// For a directory, outputs a CID with the blake3-hashseq codec (0x80).
+#[derive(clap::Args)]
+struct CidArgs {
+    /// Path to file or directory.
+    path: PathBuf,
 }
 
 /// Fetch an artifact from a Radicle release COB.
@@ -86,9 +98,72 @@ fn main() {
 
 fn run() -> Result<(), RadShareError> {
     match Cli::parse() {
+        Cli::Cid(args) => run_cid(args),
         Cli::Fetch(args) => run_fetch(args),
         Cli::Serve(args) => run_serve(args),
     }
+}
+
+fn run_cid(args: CidArgs) -> Result<(), RadShareError> {
+    let path = &args.path;
+    if path.is_dir() {
+        // Build a collection: hash each file, then build the hashseq.
+        let rt = tokio::runtime::Runtime::new().map_err(RadShareError::Io)?;
+        let cid = rt.block_on(async {
+            let mem_store = iroh_blobs::store::mem::MemStore::new();
+            let store: iroh_blobs::api::Store = mem_store.into();
+            let mut entries = Vec::new();
+
+            let mut stack = vec![path.to_path_buf()];
+            while let Some(current) = stack.pop() {
+                let read_dir = std::fs::read_dir(&current).map_err(RadShareError::Io)?;
+                for entry in read_dir {
+                    let entry = entry.map_err(RadShareError::Io)?;
+                    let p = entry.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else {
+                        let tag = store
+                            .add_path(&p)
+                            .temp_tag()
+                            .await
+                            .map_err(|e| RadShareError::Share(
+                                radicle_artifact_share::Error::Serve(format!("add file: {e}")),
+                            ))?;
+                        let name = p
+                            .strip_prefix(path)
+                            .expect("path is under dir")
+                            .to_string_lossy()
+                            .into_owned();
+                        entries.push((name, tag.hash()));
+                    }
+                }
+            }
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+            let collection = iroh_blobs::format::collection::Collection::from_iter(entries);
+            let tag = collection
+                .store(&store)
+                .await
+                .map_err(|e| RadShareError::Share(
+                    radicle_artifact_share::Error::Serve(format!("store collection: {e}")),
+                ))?;
+            Ok::<_, RadShareError>(radicle_artifact_share::blake3_hash_to_cid(
+                tag.hash(),
+                radicle_artifact_share::ArtifactKind::Collection,
+            ))
+        })?;
+        println!("{cid}");
+    } else {
+        let data = std::fs::read(path).map_err(RadShareError::Io)?;
+        let hash = iroh_blobs::Hash::new(&data);
+        let cid = radicle_artifact_share::blake3_hash_to_cid(
+            hash,
+            radicle_artifact_share::ArtifactKind::Blob,
+        );
+        println!("{cid}");
+    }
+    Ok(())
 }
 
 fn run_fetch(args: FetchArgs) -> Result<(), RadShareError> {
