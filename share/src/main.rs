@@ -215,7 +215,7 @@ fn run_fetch(args: FetchArgs) -> Result<(), RadShareError> {
     let output_path = args.output.unwrap_or_else(|| {
         let name = artifact.name();
         // Include CID in default filename to avoid collisions across artifacts.
-        PathBuf::from(format!("{name}_{cid}"))
+        PathBuf::from(format!("{}_{cid}", name.replace(' ', "_")))
     });
 
     let preset = EndpointPreset::from_env().map_err(RadShareError::Share)?;
