@@ -209,9 +209,11 @@ fn run_fetch(args: FetchArgs) -> Result<(), RadShareError> {
     };
 
     // Download, branching on whether this is a single blob or a collection.
-    let output_path = args
-        .output
-        .unwrap_or_else(|| PathBuf::from(artifact.name()));
+    let output_path = args.output.unwrap_or_else(|| {
+        let name = artifact.name();
+        // Include CID in default filename to avoid collisions across artifacts.
+        PathBuf::from(format!("{name}_{cid}"))
+    });
 
     let preset = EndpointPreset::from_env().map_err(RadShareError::Share)?;
 
