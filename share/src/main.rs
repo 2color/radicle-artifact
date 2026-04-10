@@ -201,12 +201,15 @@ fn run_fetch(args: FetchArgs) -> Result<(), RadShareError> {
         }
     }
 
+    eprintln!("Artifact: {} (CID: {cid})", artifact.name());
+
     // Collect locations to try.
     let locations = if let Some(ref url) = args.url {
         vec![Location::Url(url)]
     } else {
         artifact_locations(artifact)?
     };
+    eprintln!("Trying {} location{}...", locations.len(), if locations.len() == 1 { "" } else { "s" });
 
     // Download, branching on whether this is a single blob or a collection.
     let output_path = args.output.unwrap_or_else(|| {
@@ -216,8 +219,9 @@ fn run_fetch(args: FetchArgs) -> Result<(), RadShareError> {
     });
 
     let preset = EndpointPreset::from_env().map_err(RadShareError::Share)?;
+    let kind = artifact_kind(&cid).map_err(RadShareError::Share)?;
 
-    match artifact_kind(&cid).map_err(RadShareError::Share)? {
+    match kind {
         ArtifactKind::Blob => {
             let mut file = File::create(&output_path).map_err(RadShareError::Io)?;
             let fetchers = default_fetchers();
@@ -230,7 +234,7 @@ fn run_fetch(args: FetchArgs) -> Result<(), RadShareError> {
         }
     }
 
-    println!("{}", output_path.display());
+    eprintln!("Saved to {}", output_path.display());
     Ok(())
 }
 

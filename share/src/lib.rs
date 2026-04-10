@@ -258,7 +258,7 @@ pub fn fetch_iroh_blob(
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
-        let (_endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
+        let (endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
 
         let progress = iroh_blobs::get::request::get_blob(connection, hash);
         let (bytes, _stats) = progress
@@ -267,6 +267,7 @@ pub fn fetch_iroh_blob(
             .map_err(|e| Error::Iroh(format!("download: {e}")))?;
 
         dest.write_all(&bytes).map_err(Error::Io)?;
+        endpoint.close().await;
         Ok(())
     })
 }
@@ -285,7 +286,7 @@ pub fn fetch_iroh_collection(
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
-        let (_endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
+        let (endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
 
         // Request the full collection (hashseq + all children).
         let request = iroh_blobs::protocol::GetRequest::all(hash);
@@ -312,6 +313,7 @@ pub fn fetch_iroh_collection(
         std::fs::create_dir_all(dest_dir).map_err(Error::Io)?;
         write_collection(dest_dir, &collection, &children)?;
 
+        endpoint.close().await;
         Ok(())
     })
 }
