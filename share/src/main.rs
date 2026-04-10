@@ -175,7 +175,7 @@ fn run_fetch(args: FetchArgs) -> Result<(), RadShareError> {
 
     let (oid, cid) = match (args.oid, args.cid) {
         (Some(oid), Some(cid)) => (oid, cid),
-        (None, None) => pick_interactive(&releases)?,
+        (None, None) => pick_interactive(&releases, &repo)?,
         _ => {
             return Err(RadShareError::Usage(
                 "provide both <oid> and <cid>, or neither for interactive mode".into(),
@@ -250,7 +250,7 @@ fn run_serve(args: ServeArgs) -> Result<(), RadShareError> {
     let cid = match args.cid {
         Some(cid) => cid,
         None => {
-            let (_oid, cid) = pick_interactive(&releases)?;
+            let (_oid, cid) = pick_interactive(&releases, &repo)?;
             cid
         }
     };
@@ -399,6 +399,7 @@ fn find_unique_by_oid(
 /// Interactive mode: list releases, pick one, list its artifacts, pick one.
 fn pick_interactive(
     releases: &Releases<Repository>,
+    repo: &Repository,
 ) -> Result<(Oid, Cid), RadShareError> {
     let all: Vec<(ReleaseId, Release)> = releases
         .all()
@@ -416,11 +417,21 @@ fn pick_interactive(
     // Step 1: pick a release.
     eprintln!("Releases:");
     for (i, (_, release)) in all.iter().enumerate() {
+        let oid = release.oid();
+        let short = &oid.to_string()[..7];
+        // Look up the commit summary to help the user identify the release.
+        let title = repo
+            .backend
+            .find_commit((*oid).into())
+            .ok()
+            .and_then(|c| c.summary().map(String::from))
+            .unwrap_or_default();
         let artifact_count = release.artifacts().len();
         eprintln!(
-            "  [{}] {} ({} artifact{})",
+            "  [{}] {} {} ({} artifact{})",
             i + 1,
-            release.oid(),
+            short,
+            title,
             artifact_count,
             if artifact_count == 1 { "" } else { "s" }
         );
