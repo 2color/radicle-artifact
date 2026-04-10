@@ -37,7 +37,9 @@
 //! # let oid = commit(&repo.backend, "Test Commit");
 //! # let repo = (&*repo).clone();
 //! let mut releases = Releases::open(repo).unwrap();
-//! let mut release = releases.create(oid, &alice.signer).unwrap();
+//!
+//! // find_or_create_by_oid creates the release COB automatically if needed.
+//! let mut release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
 //!
 //! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse().unwrap();
 //! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
@@ -469,6 +471,7 @@ impl<R: ReadRepository> Evaluate<R> for Release {
 ///
 ///   - [`Releases::create`]
 ///   - [`Releases::get_mut`]
+///   - [`Releases::find_or_create_by_oid`]
 pub struct Releases<'a, R> {
     raw: store::Store<'a, Release, R>,
 }
@@ -612,6 +615,43 @@ where
             store: self,
         })
     }
+
+    /// Find the unique [`Release`] for the given OID, or create one if none exists.
+    ///
+    /// Errors if multiple releases exist for the same OID (ambiguous).
+    pub fn find_or_create_by_oid<'g, G>(
+        &'g mut self,
+        oid: Oid,
+        signer: &Device<G>,
+    ) -> Result<ReleaseMut<'a, 'g, R>, FindOrCreateError>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        let mut found: Option<ReleaseId> = None;
+        for result in self.find_by_oid(oid)? {
+            let (id, _) = result?;
+            if found.is_some() {
+                return Err(FindOrCreateError::Ambiguous(oid));
+            }
+            found = Some(id);
+        }
+
+        match found {
+            None => Ok(self.create(oid, signer)?),
+            Some(id) => Ok(self.get_mut(&id)?),
+        }
+    }
+}
+
+/// Errors from [`Releases::find_or_create_by_oid`].
+#[derive(Debug, thiserror::Error)]
+pub enum FindOrCreateError {
+    /// Multiple releases exist for the same OID.
+    #[error("multiple releases found for commit {0}, use a release ID to disambiguate")]
+    Ambiguous(Oid),
+    /// An error occurred in the underlying COB store.
+    #[error(transparent)]
+    Store(#[from] store::Error),
 }
 
 /// A `ReleaseMut` is a [`Release`] where the underlying `Release` can be
@@ -1715,5 +1755,57 @@ mod test {
 
         // A CID not in any release returns None.
         assert!(releases.find_by_cid(&cid_missing).unwrap().is_none());
+    }
+
+    #[test]
+    fn find_or_create_creates_when_missing() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        // No release exists yet — find_or_create_by_oid should create one.
+        let release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+        assert_eq!(release.oid(), &oid);
+        assert_eq!(release.author(), &Did::from(alice.signer.public_key()));
+    }
+
+    #[test]
+    fn find_or_create_finds_existing() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let id = {
+            let r = releases.create(oid, &alice.signer).unwrap();
+            *r.id()
+        };
+
+        // Release already exists — find_or_create_by_oid should return it.
+        let release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+        assert_eq!(*release.id(), id);
+    }
+
+    #[test]
+    fn find_or_create_errors_on_ambiguous_oid() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        // Two different signers create releases for the same OID.
+        releases.create(oid, &alice.signer).unwrap();
+        releases.create(oid, &bob.signer).unwrap();
+
+        match releases.find_or_create_by_oid(oid, &alice.signer) {
+            Err(crate::FindOrCreateError::Ambiguous(_)) => {}
+            Err(err) => panic!("expected Ambiguous error, got: {err}"),
+            Ok(_) => panic!("expected Ambiguous error, got Ok"),
+        }
     }
 }

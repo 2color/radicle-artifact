@@ -30,7 +30,7 @@ release artifacts without attestation.
 
 1. **Tag** — Create a canonical reference with an annotated tag for the release
 2. **Build** — Build the release artifacts and compute their content identifiers (CIDs)
-3. **Publish** — Create the release COB and add artifacts using the CLI
+3. **Publish** — Add artifacts to the commit using the CLI (the release COB is created automatically)
 4. **Host** — Upload artifacts to any server or IPFS and register discovery locations per DID
 5. **Verify** — Other delegates check out the tagged version, build independently, and attest artifacts whose CIDs match. Attestation can be limited to the artifacts a delegate is able to reproduce locally
 6. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, any DID can redact it with a reason. Redactions are permanent: they supersede prior attestations from the same DID and block future attestations from that DID
@@ -66,20 +66,19 @@ record attestations on releases created by others. The `author` field records wh
 
 ## Actions
 
-| Action           | Description                                                     |
-| ---------------- | --------------------------------------------------------------- |
-| `Create`         | Initialize a release for a git OID                              |
-| `AddArtifact`    | Add an artifact (CID + name), or update name if author re-sends |
-| `AddLocation`    | Announce a discovery URL for an artifact                        |
-| `RemoveLocation` | Retract a previously announced URL                              |
-| `Attest`         | Record independent verification of a CID                        |
-| `Redact`         | Flag an artifact as compromised/withdrawn                       |
+| Action           | Description                                                                  |
+| ---------------- | ---------------------------------------------------------------------------- |
+| `Create`         | Initialize a release for a git OID (internal, auto-created by `AddArtifact`) |
+| `AddArtifact`    | Add an artifact (CID + name), or update name if author re-sends              |
+| `AddLocation`    | Announce a discovery URL for an artifact                                     |
+| `RemoveLocation` | Retract a previously announced URL                                           |
+| `Attest`         | Record independent verification of a CID                                     |
+| `Redact`         | Flag an artifact as compromised/withdrawn                                    |
 
 ## CLI usage
 
 ```
-rad-artifact create <OID>                        # create release
-rad-artifact add <OID> <CID> <NAME>              # add artifact
+rad-artifact add <OID> <CID> <NAME>              # add artifact (creates release if needed)
 rad-artifact locate <OID> <CID> <URL>            # add discovery URL
 rad-artifact remove-location <OID> <CID> <URL>   # remove discovery URL
 rad-artifact attest <OID> <CID>                  # attest to an artifact

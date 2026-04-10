@@ -133,13 +133,6 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     let repo = args.repository(&profile)?;
     let mut releases = open_releases(&repo)?;
     match args.command {
-        Command::Create(cmd) => {
-            let signer = profile.signer().map_err(error::Signer)?;
-            create_release(cmd, &mut releases, &signer)?;
-            if !args.no_sync {
-                announce(&profile, repo.id)?;
-            }
-        }
         Command::Add(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
             add_artifact(cmd, &mut releases, &signer)?;
@@ -182,21 +175,6 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     Ok(())
 }
 
-fn create_release<G>(
-    command::Create { oid }: command::Create,
-    releases: &mut Releases<Repository>,
-    signer: &Device<G>,
-) -> Result<(), error::Create>
-where
-    G: Signer<crypto::Signature>,
-{
-    let release = releases
-        .create(oid, signer)
-        .map_err(|err| error::Create { oid, err })?;
-    println!("{}", release.id());
-    Ok(())
-}
-
 fn add_artifact<G>(
     command::Add { oid, cid, name }: command::Add,
     releases: &mut Releases<Repository>,
@@ -205,10 +183,10 @@ fn add_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let id = find_unique_by_oid(oid, releases)?;
     let mut release = releases
-        .get_mut(&id)
-        .map_err(|err| error::Add::Store { id, err })?;
+        .find_or_create_by_oid(oid, signer)
+        .map_err(|err| error::Add::FindOrCreate { oid, err })?;
+    let id = *release.id();
     release
         .add_artifact(cid, name, signer)
         .map_err(|err| error::Add::Store { id, err })?;
@@ -424,8 +402,6 @@ enum RadArtifactError {
     #[error(transparent)]
     Show(#[from] error::Show),
     #[error(transparent)]
-    Create(#[from] error::Create),
-    #[error(transparent)]
     List(#[from] error::List),
     #[error(transparent)]
     Add(#[from] error::Add),
@@ -448,7 +424,6 @@ mod command {
 
     #[derive(Parser)]
     pub enum Command {
-        Create(Create),
         Add(Add),
         Locate(Locate),
         RemoveLocation(RemoveLocation),
@@ -458,16 +433,7 @@ mod command {
         List(List),
     }
 
-    /// Create a release COB for a specific Git commit or annotated tag.
-    ///
-    /// Write the release ID to the standard output.
-    #[derive(Parser)]
-    pub struct Create {
-        /// Git object id for the commit or annotated tag.
-        pub oid: Oid,
-    }
-
-    /// Add an artifact to an existing release.
+    /// Add an artifact to a release, creating it if needed.
     ///
     /// The artifact is identified by its content identifier (CID).
     #[derive(Parser)]
@@ -590,14 +556,6 @@ mod error {
     }
 
     #[derive(Debug, Error)]
-    #[error("failed to create a new release for the commit {oid}")]
-    pub struct Create {
-        pub oid: Oid,
-        #[source]
-        pub err: cob::store::Error,
-    }
-
-    #[derive(Debug, Error)]
     pub enum List {
         #[error("failed to list releases")]
         All(#[source] cob::store::Error),
@@ -609,8 +567,12 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum Add {
-        #[error(transparent)]
-        Find(#[from] Find),
+        #[error("failed to find or create release for commit {oid}")]
+        FindOrCreate {
+            oid: Oid,
+            #[source]
+            err: radicle_artifact::FindOrCreateError,
+        },
         #[error("failed to add artifact to release {id}")]
         Store {
             id: ReleaseId,
