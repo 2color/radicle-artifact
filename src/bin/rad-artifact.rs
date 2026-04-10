@@ -13,7 +13,7 @@ use radicle::{
     node::{
         device::Device,
         sync::{Announcer, AnnouncerConfig, ReplicationFactor},
-        Handle, Node,
+        AliasStore, Handle, Node,
     },
     prelude::{Profile, ReadStorage, RepoId},
     profile,
@@ -175,8 +175,8 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
-        Command::Show(cmd) => show_release(cmd, &releases)?,
-        Command::List(cmd) => list_releases(cmd, &releases)?,
+        Command::Show(cmd) => show_release(cmd, &releases, &profile)?,
+        Command::List(cmd) => list_releases(cmd, &releases, &profile)?,
     }
 
     Ok(())
@@ -292,13 +292,14 @@ where
 fn show_release(
     command::Show { pretty, oid }: command::Show,
     releases: &Releases<Repository>,
+    aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
     let id = find_unique_by_oid(oid, releases)?;
     let release = releases
         .get(&id)
         .map_err(|err| error::Find::Lookup { oid, err })?
         .ok_or(error::Find::NoRelease(oid))?;
-    let show = radicle_artifact::display::Release::new(id, &release);
+    let show = radicle_artifact::display::Release::new(id, &release, aliases);
     if pretty {
         println!("{}", show.pretty());
     } else {
@@ -313,6 +314,7 @@ fn show_release(
 fn list_releases(
     command::List { pretty, verbose }: command::List,
     releases: &Releases<Repository>,
+    aliases: &impl AliasStore,
 ) -> Result<(), error::List> {
     let iter = releases
         .all()
@@ -326,7 +328,7 @@ fn list_releases(
                 None
             }
         });
-    let releases = display::Releases::new(iter);
+    let releases = display::Releases::new(iter, aliases);
     if pretty {
         println!("{}", releases.pretty());
     } else {

@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 radicle-artifact = { path = ".." }
-radicle = "0.21.0"
+radicle = "0.22.1"
 cid = { version = "0.11", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "wrap_help"] }
 multihash = "0.19"
