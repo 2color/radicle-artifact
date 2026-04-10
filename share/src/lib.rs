@@ -224,19 +224,23 @@ fn cid_to_blake3_hash(cid: &Cid) -> Result<iroh_blobs::Hash, Error> {
 }
 
 /// Connect to an iroh endpoint and return the connection.
+///
+/// The endpoint is returned alongside the connection because the
+/// connection cannot outlive the endpoint that created it.
 async fn iroh_connect(
     endpoint_id: iroh::EndpointId,
     preset: EndpointPreset,
-) -> Result<iroh::endpoint::Connection, Error> {
+) -> Result<(iroh::Endpoint, iroh::endpoint::Connection), Error> {
     let endpoint = iroh::Endpoint::builder(preset)
         .bind()
         .await
         .map_err(|e| Error::Iroh(format!("endpoint bind: {e}")))?;
 
-    endpoint
+    let connection = endpoint
         .connect(endpoint_id, iroh_blobs::ALPN)
         .await
-        .map_err(|e| Error::Iroh(format!("connect: {e}")))
+        .map_err(|e| Error::Iroh(format!("connect: {e}")))?;
+    Ok((endpoint, connection))
 }
 
 /// Fetch a single blob via iroh-blobs from the given endpoint.
@@ -254,7 +258,7 @@ pub fn fetch_iroh_blob(
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
-        let connection = iroh_connect(endpoint_id, preset).await?;
+        let (_endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
 
         let progress = iroh_blobs::get::request::get_blob(connection, hash);
         let (bytes, _stats) = progress
@@ -281,7 +285,7 @@ pub fn fetch_iroh_collection(
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
-        let connection = iroh_connect(endpoint_id, preset).await?;
+        let (_endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
 
         // Request the full collection (hashseq + all children).
         let request = iroh_blobs::protocol::GetRequest::all(hash);
@@ -618,8 +622,18 @@ pub enum Error {
     #[error("no locations registered for this artifact")]
     NoLocations,
 
-    #[error("all fetch attempts failed")]
+    #[error("all {} fetch attempt{} failed:\n{}", .0.len(), if .0.len() == 1 { "" } else { "s" }, format_attempts(.0))]
     AllFailed(Vec<Error>),
+}
+
+/// Format each per-location error as a bulleted list for `AllFailed` display.
+fn format_attempts(errors: &[Error]) -> String {
+    errors
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("  {}: {e}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
