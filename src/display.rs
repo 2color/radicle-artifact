@@ -59,15 +59,20 @@ impl Releases {
     /// release author, the artifact author, or any delegate are hidden.
     /// Pass `None` to show all artifacts including redacted ones.
     ///
+    /// When `show_empty` is false, releases with no visible artifacts are
+    /// excluded from the output.
+    ///
     /// [release]: crate::Release
     pub fn new(
         releases: impl Iterator<Item = (ReleaseId, crate::Release)>,
         aliases: &impl AliasStore,
         delegates: Option<&BTreeSet<Did>>,
+        show_empty: bool,
     ) -> Self {
-        let mut releases = releases
+        let mut releases: Vec<_> = releases
             .map(|(id, release)| Release::new(id, &release, aliases, delegates))
-            .collect::<Vec<_>>();
+            .filter(|r| show_empty || !r.artifacts.is_empty())
+            .collect();
         releases.sort_by_cached_key(|r| r.release_id);
 
         Self {

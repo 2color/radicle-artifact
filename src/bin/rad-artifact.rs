@@ -332,6 +332,7 @@ fn list_releases(
         verbose,
         delegates_only,
         redacted,
+        empty,
     }: command::List,
     releases: &Releases<Repository>,
     repo: &Repository,
@@ -374,7 +375,7 @@ fn list_releases(
         });
     // Pass delegates for redaction filtering only when --redacted is not set.
     let redaction_filter = if redacted { None } else { delegates.as_ref() };
-    let releases = display::Releases::new(iter, aliases, redaction_filter);
+    let releases = display::Releases::new(iter, aliases, redaction_filter, empty);
     if pretty {
         println!("{}", releases.pretty());
     } else {
@@ -561,6 +562,9 @@ mod command {
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
+        /// Also show releases that have no artifacts.
+        #[clap(long)]
+        pub empty: bool,
     }
 }
 
