@@ -6,7 +6,6 @@ use std::error::Error as _;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use clap::Parser;
 
@@ -316,18 +315,20 @@ fn run_serve(args: ServeArgs) -> Result<(), RadShareError> {
 
 /// Convert artifact locations into fetch locations.
 ///
-/// For `iroh://` URLs, parses the endpoint ID from the URL host.
+/// For `iroh://` URLs, derives the endpoint ID from the DID that
+/// authored the location (same Ed25519 key).
 /// For all other URLs, passes them through as-is.
 fn artifact_locations(artifact: &Artifact) -> Result<Vec<Location<'_>>, RadShareError> {
     let mut locations = Vec::new();
-    for (_did, urls) in artifact.locations() {
+    for (did, urls) in artifact.locations() {
         for url in urls {
             if url.scheme() == "iroh" {
-                let host = url.host_str().ok_or_else(|| {
-                    RadShareError::Usage("iroh:// URL missing endpoint ID".into())
-                })?;
-                let pk = iroh::PublicKey::from_str(host).map_err(|e| {
-                    RadShareError::Usage(format!("invalid iroh endpoint ID in URL: {e}"))
+                let pk_bytes: &[u8] = did.as_ref();
+                let bytes: [u8; 32] = pk_bytes
+                    .try_into()
+                    .expect("ed25519 public key is 32 bytes");
+                let pk = iroh::PublicKey::from_bytes(&bytes).map_err(|e| {
+                    RadShareError::Usage(format!("invalid iroh endpoint ID from DID: {e}"))
                 })?;
                 locations.push(Location::Iroh(pk));
             } else {
