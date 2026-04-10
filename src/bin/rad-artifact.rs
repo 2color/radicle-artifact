@@ -15,7 +15,7 @@ use radicle::{
         sync::{Announcer, AnnouncerConfig, ReplicationFactor},
         AliasStore, Handle, Node,
     },
-    prelude::{Profile, ReadStorage, RepoId},
+    prelude::{Profile, ReadRepository, ReadStorage, RepoId},
     profile,
     storage::git::Repository,
 };
@@ -175,8 +175,8 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
-        Command::Show(cmd) => show_release(cmd, &releases, &profile)?,
-        Command::List(cmd) => list_releases(cmd, &releases, &profile)?,
+        Command::Show(cmd) => show_release(cmd, &releases, &repo, &profile)?,
+        Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
     }
 
     Ok(())
@@ -290,16 +290,31 @@ where
 }
 
 fn show_release(
-    command::Show { pretty, oid }: command::Show,
+    command::Show {
+        pretty,
+        redacted,
+        oid,
+    }: command::Show,
     releases: &Releases<Repository>,
+    repo: &Repository,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
+    let delegates = if redacted {
+        None
+    } else {
+        let ds: BTreeSet<_> = repo
+            .delegates()
+            .map_err(error::Show::Delegates)?
+            .into_iter()
+            .collect();
+        Some(ds)
+    };
     let id = find_unique_by_oid(oid, releases)?;
     let release = releases
         .get(&id)
         .map_err(|err| error::Find::Lookup { oid, err })?
         .ok_or(error::Find::NoRelease(oid))?;
-    let show = radicle_artifact::display::Release::new(id, &release, aliases);
+    let show = radicle_artifact::display::Release::new(id, &release, aliases, delegates.as_ref());
     if pretty {
         println!("{}", show.pretty());
     } else {
@@ -312,10 +327,27 @@ fn show_release(
 }
 
 fn list_releases(
-    command::List { pretty, verbose }: command::List,
+    command::List {
+        pretty,
+        verbose,
+        delegates_only,
+        redacted,
+    }: command::List,
     releases: &Releases<Repository>,
+    repo: &Repository,
     aliases: &impl AliasStore,
 ) -> Result<(), error::List> {
+    // Fetch delegates when needed for --delegates-only or redaction filtering.
+    let delegates = if delegates_only || !redacted {
+        let ds: BTreeSet<_> = repo
+            .delegates()
+            .map_err(error::List::Delegates)?
+            .into_iter()
+            .collect();
+        Some(ds)
+    } else {
+        None
+    };
     let iter = releases
         .all()
         .map_err(error::List::All)?
@@ -327,8 +359,22 @@ fn list_releases(
                 }
                 None
             }
+        })
+        .filter({
+            let delegates = delegates.clone();
+            move |(_id, release)| {
+                if delegates_only {
+                    delegates
+                        .as_ref()
+                        .map_or(true, |ds| ds.contains(release.author()))
+                } else {
+                    true
+                }
+            }
         });
-    let releases = display::Releases::new(iter, aliases);
+    // Pass delegates for redaction filtering only when --redacted is not set.
+    let redaction_filter = if redacted { None } else { delegates.as_ref() };
+    let releases = display::Releases::new(iter, aliases, redaction_filter);
     if pretty {
         println!("{}", releases.pretty());
     } else {
@@ -493,6 +539,9 @@ mod command {
         /// Format output in a more human oriented way than JSON.
         #[clap(long)]
         pub pretty: bool,
+        /// Also show artifacts that have been redacted by a trusted party.
+        #[clap(long)]
+        pub redacted: bool,
         /// Git object id the release is associated with.
         pub oid: Oid,
     }
@@ -506,6 +555,12 @@ mod command {
         /// Output all information, including intermediate errors.
         #[clap(long, short)]
         pub verbose: bool,
+        /// Only show releases created by delegates of the repository.
+        #[clap(long)]
+        pub delegates_only: bool,
+        /// Also show artifacts that have been redacted by a trusted party.
+        #[clap(long)]
+        pub redacted: bool,
     }
 }
 
@@ -523,6 +578,8 @@ mod error {
     pub enum Show {
         #[error(transparent)]
         Find(#[from] Find),
+        #[error("failed to get repository delegates")]
+        Delegates(#[source] RepositoryError),
         #[error("failed to show release, could not serialize to JSON")]
         Json(#[source] serde_json::Error),
     }
@@ -539,6 +596,8 @@ mod error {
     pub enum List {
         #[error("failed to list releases")]
         All(#[source] cob::store::Error),
+        #[error("failed to get repository delegates")]
+        Delegates(#[source] RepositoryError),
         #[error("failed to list releases, could not serialize to JSON")]
         Json(#[source] serde_json::Error),
     }

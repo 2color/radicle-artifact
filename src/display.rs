@@ -3,6 +3,8 @@
 //! These can be used in tools that wish to display data, such as the
 //! `rad-artifact` CLI tool.
 
+use std::collections::BTreeSet;
+
 use radicle::{
     git::Oid,
     identity::Did,
@@ -45,13 +47,18 @@ impl Releases {
     ///
     /// The `aliases` store is used to resolve human-readable aliases for DIDs.
     ///
+    /// When `delegates` is provided, artifacts that have been redacted by the
+    /// release author, the artifact author, or any delegate are hidden.
+    /// Pass `None` to show all artifacts including redacted ones.
+    ///
     /// [release]: crate::Release
     pub fn new(
         releases: impl Iterator<Item = (ReleaseId, crate::Release)>,
         aliases: &impl AliasStore,
+        delegates: Option<&BTreeSet<Did>>,
     ) -> Self {
         let mut releases = releases
-            .map(|(id, release)| Release::new(id, &release, aliases))
+            .map(|(id, release)| Release::new(id, &release, aliases, delegates))
             .collect::<Vec<_>>();
         releases.sort_by_cached_key(|r| r.release_id);
 
@@ -92,16 +99,34 @@ impl Release {
     /// Construct a new [`Release`] display form.
     ///
     /// The `aliases` store is used to resolve human-readable aliases for DIDs.
+    ///
+    /// When `delegates` is provided, artifacts that have been redacted by the
+    /// release author, the artifact author, or any delegate are hidden.
+    /// Pass `None` to show all artifacts including redacted ones.
     pub fn new(
         release_id: ReleaseId,
         release: &crate::Release,
         aliases: &impl AliasStore,
+        delegates: Option<&BTreeSet<Did>>,
     ) -> Self {
         let author = *release.author();
         let author_alias = resolve(&author, aliases);
         let mut artifacts: Vec<_> = release
             .artifacts()
             .iter()
+            .filter(|(_cid, artifact)| {
+                // Hide artifacts redacted by a trusted party: the release
+                // author, the artifact author, or a repository delegate.
+                if let Some(delegates) = delegates {
+                    !artifact.redactions().keys().any(|did| {
+                        *did == author
+                            || *did == *artifact.author()
+                            || delegates.contains(did)
+                    })
+                } else {
+                    true
+                }
+            })
             .map(|(cid, artifact)| {
                 let mut locations: Vec<_> = artifact
                     .locations()
