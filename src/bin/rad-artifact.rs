@@ -470,7 +470,7 @@ mod command {
     /// The artifact is identified by its content identifier (CID).
     #[derive(Parser)]
     pub struct Add {
-        /// Git object id the release is associated with.
+        /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact.
         pub cid: Cid,
@@ -483,7 +483,7 @@ mod command {
     /// Announces where an artifact can be retrieved from.
     #[derive(Parser)]
     pub struct Locate {
-        /// Git object id the release is associated with.
+        /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact.
         pub cid: Cid,
@@ -497,7 +497,7 @@ mod command {
     /// obtained the same CID. Idempotent — attesting twice is a no-op.
     #[derive(Parser)]
     pub struct Attest {
-        /// Git object id the release is associated with.
+        /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact to attest.
         pub cid: Cid,
@@ -512,7 +512,7 @@ mod command {
     /// attestation from the same DID.
     #[derive(Parser)]
     pub struct Redact {
-        /// Git object id the release is associated with.
+        /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact to redact.
         pub cid: Cid,
@@ -525,7 +525,7 @@ mod command {
     /// Retracts a previously announced location.
     #[derive(Parser)]
     pub struct RemoveLocation {
-        /// Git object id the release is associated with.
+        /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact.
         pub cid: Cid,
@@ -542,7 +542,7 @@ mod command {
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
-        /// Git object id the release is associated with.
+        /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
     }
 

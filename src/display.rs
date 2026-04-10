@@ -20,11 +20,19 @@ fn resolve(did: &Did, aliases: &impl AliasStore) -> Option<String> {
     aliases.alias(did.as_key()).map(|a| a.to_string())
 }
 
-/// Format a DID, prefixed with its alias if available.
+/// Compact format for pretty output: `alice@z6MkfEa…z3bQ9Wk` when an alias
+/// is available, or just the truncated key otherwise. The `did:key:` prefix is
+/// stripped and keys longer than 14 chars are shown as first 7 + `…` + last 7.
 fn format_did(did: &Did, alias: &Option<String>) -> String {
+    let key = did.to_string().replace("did:key:", "");
+    let compact = if key.len() > 14 {
+        format!("{}…{}", &key[..7], &key[key.len() - 7..])
+    } else {
+        key
+    };
     match alias {
-        Some(alias) => format!("{alias} ({did})"),
-        None => did.to_string(),
+        Some(alias) => format!("{alias}@{compact}"),
+        None => compact,
     }
 }
 
