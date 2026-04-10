@@ -419,13 +419,7 @@ fn pick_interactive(
     for (i, (_, release)) in all.iter().enumerate() {
         let oid = release.oid();
         let short = &oid.to_string()[..7];
-        // Look up the commit summary to help the user identify the release.
-        let title = repo
-            .backend
-            .find_commit((*oid).into())
-            .ok()
-            .and_then(|c| c.summary().map(String::from))
-            .unwrap_or_default();
+        let title = display::CommitTitle::title(repo, oid).unwrap_or_default();
         let artifact_count = release.artifacts().len();
         eprintln!(
             "  [{}] {} {} ({} artifact{})",

@@ -9,6 +9,7 @@ use radicle::{
     git::Oid,
     identity::Did,
     node::AliasStore,
+    storage::git::Repository,
 };
 use serde::Serialize;
 use url::Url;
@@ -42,6 +43,33 @@ fn push_line(s: &mut String, line: String) {
     s.push('\n');
 }
 
+/// Resolve the first line of a git commit message for display.
+///
+/// Implementations typically look up the commit via `git2` and return
+/// its summary. Return `None` when the OID cannot be resolved (e.g.
+/// it lives in a fork that hasn't been fetched).
+pub trait CommitTitle {
+    /// Return the first line of the commit message for `oid`, if available.
+    fn title(&self, oid: &Oid) -> Option<String>;
+}
+
+/// No-op resolver that never produces a title.
+impl CommitTitle for () {
+    fn title(&self, _oid: &Oid) -> Option<String> {
+        None
+    }
+}
+
+/// Resolve titles from a Radicle git repository.
+impl CommitTitle for Repository {
+    fn title(&self, oid: &Oid) -> Option<String> {
+        self.backend
+            .find_commit((*oid).into())
+            .ok()
+            .and_then(|c| c.summary().map(String::from))
+    }
+}
+
 /// A set of [`Release`]s sorted by their [`ReleaseId`].
 #[derive(Serialize)]
 pub struct Releases {
@@ -62,15 +90,21 @@ impl Releases {
     /// When `show_empty` is false, releases with no visible artifacts are
     /// excluded from the output.
     ///
+    /// The `titles` resolver looks up commit summaries for pretty output.
+    ///
     /// [release]: crate::Release
     pub fn new(
         releases: impl Iterator<Item = (ReleaseId, crate::Release)>,
         aliases: &impl AliasStore,
         delegates: Option<&BTreeSet<Did>>,
         show_empty: bool,
+        titles: &impl CommitTitle,
     ) -> Self {
         let mut releases: Vec<_> = releases
-            .map(|(id, release)| Release::new(id, &release, aliases, delegates))
+            .map(|(id, release)| {
+                let title = titles.title(release.oid());
+                Release::new(id, &release, aliases, delegates, title)
+            })
             .filter(|r| show_empty || !r.artifacts.is_empty())
             .collect();
         releases.sort_by_cached_key(|r| r.release_id);
@@ -105,6 +139,9 @@ pub struct Release {
     author_alias: Option<String>,
     author: Did,
     oid: Oid,
+    /// Locally-resolved commit summary; not persisted in the COB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
     artifacts: Vec<Artifact>,
 }
 
@@ -116,11 +153,14 @@ impl Release {
     /// When `delegates` is provided, artifacts that have been redacted by the
     /// release author, the artifact author, or any delegate are hidden.
     /// Pass `None` to show all artifacts including redacted ones.
+    ///
+    /// `title` is the first line of the commit message, if available.
     pub fn new(
         release_id: ReleaseId,
         release: &crate::Release,
         aliases: &impl AliasStore,
         delegates: Option<&BTreeSet<Did>>,
+        title: Option<String>,
     ) -> Self {
         let author = *release.author();
         let author_alias = resolve(&author, aliases);
@@ -194,6 +234,7 @@ impl Release {
             author_alias,
             author,
             oid: *release.oid(),
+            title,
             artifacts,
         }
     }
@@ -203,9 +244,14 @@ impl Release {
         let mut s = String::new();
 
         let author = format_did(&self.author, &self.author_alias);
+        let short_oid = &self.oid.to_string()[..7];
+        let title_suffix = match &self.title {
+            Some(t) => format!(" {t}"),
+            None => String::new(),
+        };
         push_line(
             &mut s,
-            format!("release {} by {} (commit {})", self.release_id, author, self.oid),
+            format!("release {} by {} (commit {short_oid}{title_suffix})", self.release_id, author),
         );
         for artifact in self.artifacts.iter() {
             push_line(

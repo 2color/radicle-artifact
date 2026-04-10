@@ -314,7 +314,8 @@ fn show_release(
         .get(&id)
         .map_err(|err| error::Find::Lookup { oid, err })?
         .ok_or(error::Find::NoRelease(oid))?;
-    let show = radicle_artifact::display::Release::new(id, &release, aliases, delegates.as_ref());
+    let title = display::CommitTitle::title(repo, release.oid());
+    let show = radicle_artifact::display::Release::new(id, &release, aliases, delegates.as_ref(), title);
     if pretty {
         println!("{}", show.pretty());
     } else {
@@ -375,7 +376,7 @@ fn list_releases(
         });
     // Pass delegates for redaction filtering only when --redacted is not set.
     let redaction_filter = if redacted { None } else { delegates.as_ref() };
-    let releases = display::Releases::new(iter, aliases, redaction_filter, empty);
+    let releases = display::Releases::new(iter, aliases, redaction_filter, empty, repo);
     if pretty {
         println!("{}", releases.pretty());
     } else {
