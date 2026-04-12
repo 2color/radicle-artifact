@@ -27,7 +27,14 @@ const TIMEOUT: Duration = Duration::from_millis(5000);
 
 fn main() {
     if let Err(err) = fallible_main() {
-        eprintln!("ERROR: {err}");
+        // Color "ERROR" red when stderr is a terminal and NO_COLOR is not set.
+        let use_color = std::io::stderr().is_terminal()
+            && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+        if use_color {
+            eprintln!("\x1b[1;31mERROR\x1b[0m: {err}");
+        } else {
+            eprintln!("ERROR: {err}");
+        }
         let mut err = err.source();
         while let Some(underlying) = err {
             eprintln!("caused by: {underlying}");
