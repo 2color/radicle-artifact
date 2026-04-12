@@ -914,12 +914,17 @@ Examples:
     /// amended by redacting again. A redaction supersedes any prior
     /// attestation from the same DID.
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Redact a compromised artifact:
+    $ rad-artifact redact abc1234 baf...abc -m \"build compromised, see advisory\"")]
     pub struct Redact {
         /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact to redact.
         pub cid: Cid,
         /// Reason for the redaction.
+        #[clap(short = 'm', long = "reason")]
         pub reason: String,
     }
 
