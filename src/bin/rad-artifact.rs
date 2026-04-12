@@ -48,7 +48,8 @@ fn fallible_main() -> Result<(), RadArtifactError> {
 /// with a Git commit or annotated tag, along with discovery locations where
 /// each artifact can be retrieved.
 ///
-/// Output is JSON by default, or human-readable with --pretty.
+/// Output is human-readable in a terminal, JSON when piped.
+/// Use --json or --pretty to override.
 #[derive(Parser)]
 #[clap(version)]
 struct Args {
@@ -292,9 +293,22 @@ where
     Ok(())
 }
 
+/// Decide whether to use pretty output: --pretty wins, --json wins, otherwise
+/// auto-detect based on whether stdout is a TTY.
+fn use_pretty(pretty: bool, json: bool) -> bool {
+    if json {
+        return false;
+    }
+    if pretty {
+        return true;
+    }
+    std::io::stdout().is_terminal()
+}
+
 fn show_release(
     command::Show {
         pretty,
+        json,
         redacted,
         oid,
     }: command::Show,
@@ -320,7 +334,7 @@ fn show_release(
     let title = display::CommitTitle::title(repo, release.oid());
     let show =
         radicle_artifact::display::Release::new(id, &release, aliases, delegates.as_ref(), title);
-    if pretty {
+    if use_pretty(pretty, json) {
         println!("{}", show.pretty());
     } else {
         println!(
@@ -334,6 +348,7 @@ fn show_release(
 fn list_releases(
     command::List {
         pretty,
+        json,
         verbose,
         delegates_only,
         redacted,
@@ -381,7 +396,7 @@ fn list_releases(
     // Pass delegates for redaction filtering only when --redacted is not set.
     let redaction_filter = if redacted { None } else { delegates.as_ref() };
     let releases = display::Releases::new(iter, aliases, redaction_filter, empty, repo);
-    if pretty {
+    if use_pretty(pretty, json) {
         println!("{}", releases.pretty());
     } else {
         println!(
@@ -921,9 +936,16 @@ Examples:
   Include redacted artifacts:
     $ rad-artifact show --pretty --redacted abc1234")]
     pub struct Show {
-        /// Format output in a more human oriented way than JSON.
+        /// Format output in a human-readable way.
+        ///
+        /// This is the default when stdout is a terminal.
         #[clap(long)]
         pub pretty: bool,
+        /// Force JSON output.
+        ///
+        /// This is the default when stdout is not a terminal (e.g. piped).
+        #[clap(long, conflicts_with = "pretty")]
+        pub json: bool,
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
@@ -944,9 +966,16 @@ Examples:
   Include empty and redacted releases:
     $ rad-artifact list --pretty --empty --redacted")]
     pub struct List {
-        /// Format output in a more human oriented way than JSON.
+        /// Format output in a human-readable way.
+        ///
+        /// This is the default when stdout is a terminal.
         #[clap(long)]
         pub pretty: bool,
+        /// Force JSON output.
+        ///
+        /// This is the default when stdout is not a terminal (e.g. piped).
+        #[clap(long, conflicts_with = "pretty")]
+        pub json: bool,
         /// Output all information, including intermediate errors.
         #[clap(long, short)]
         pub verbose: bool,
