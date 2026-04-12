@@ -447,15 +447,11 @@ fn run_fetch(
     releases: &Releases<Repository>,
     repo: &Repository,
 ) -> Result<(), RadArtifactError> {
+    // clap's `requires` ensures both or neither are provided.
     let (oid, cid) = match (args.oid, args.cid) {
         (Some(oid), Some(cid)) => (oid, cid),
         (None, None) => pick_interactive(no_input, releases, repo)?,
-        _ => {
-            return Err(error::Share::Usage(
-                "provide both <oid> and <cid>, or neither for interactive mode".into(),
-            )
-            .into())
-        }
+        _ => unreachable!("clap enforces both-or-neither"),
     };
 
     let release_id = find_unique_by_oid(oid, releases)?;
@@ -820,9 +816,11 @@ Examples:
   Fetch from a specific URL:
     $ rad-artifact fetch abc1234 baf...abc --url https://example.com/my-binary")]
     pub struct Fetch {
-        /// Git object ID of the release.
+        /// Git object ID of the release. Must be used with <CID>.
+        #[clap(requires = "cid")]
         pub oid: Option<radicle::git::Oid>,
-        /// Content identifier (CID) of the artifact to fetch.
+        /// Content identifier (CID) of the artifact to fetch. Must be used with <OID>.
+        #[clap(requires = "oid")]
         pub cid: Option<radicle_artifact::Cid>,
         /// Output file path. Defaults to the artifact name in the current directory.
         #[clap(short, long)]
