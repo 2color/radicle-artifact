@@ -760,6 +760,13 @@ mod command {
     /// For a directory, outputs a CID with the blake3-hashseq codec (0x80).
     #[cfg(feature = "share")]
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Compute CID of a file:
+    $ rad-artifact cid ./my-binary
+
+  Compute CID of a directory:
+    $ rad-artifact cid ./dist/")]
     pub struct ComputeCid {
         /// Path to file or directory.
         pub path: std::path::PathBuf,
@@ -771,6 +778,19 @@ mod command {
     /// Without arguments, interactively lists releases and artifacts to pick from.
     #[cfg(feature = "share")]
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Interactive mode (pick from available releases):
+    $ rad-artifact fetch
+
+  Fetch a specific artifact:
+    $ rad-artifact fetch abc1234 baf...abc
+
+  Fetch to a custom path:
+    $ rad-artifact fetch abc1234 baf...abc -o ./downloads/my-binary
+
+  Fetch from a specific URL:
+    $ rad-artifact fetch abc1234 baf...abc --url https://example.com/my-binary")]
     pub struct Fetch {
         /// Git object ID of the release.
         pub oid: Option<radicle::git::Oid>,
@@ -791,6 +811,13 @@ mod command {
     /// content until interrupted.
     #[cfg(feature = "share")]
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Serve with interactive artifact picker:
+    $ rad-artifact serve ./my-binary
+
+  Serve a specific artifact:
+    $ rad-artifact serve ./my-binary baf...abc")]
     pub struct Serve {
         /// Path to file or directory to serve.
         pub path: std::path::PathBuf,
@@ -802,6 +829,14 @@ mod command {
     ///
     /// The artifact is identified by its content identifier (CID).
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Compute the CID and add a release artifact:
+    $ rad-artifact cid ./my-binary
+    $ rad-artifact add abc1234 baf...abc \"my-binary v1.0 linux-amd64\"
+
+  Add an artifact for a tagged release:
+    $ rad-artifact add v1.0.0 baf...abc \"my-binary v1.0\"")]
     pub struct Add {
         /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
@@ -815,6 +850,13 @@ mod command {
     ///
     /// Announces where an artifact can be retrieved from.
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Register an HTTPS download location:
+    $ rad-artifact locate abc1234 baf...abc https://example.com/my-binary
+
+  Register an iroh-blobs endpoint:
+    $ rad-artifact locate abc1234 baf...abc iroh://<endpoint-id>")]
     pub struct Locate {
         /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
@@ -868,6 +910,16 @@ mod command {
 
     /// Show the release COB for a Git commit or annotated tag.
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Show a release as JSON (default):
+    $ rad-artifact show abc1234
+
+  Show a release in human-readable format:
+    $ rad-artifact show --pretty abc1234
+
+  Include redacted artifacts:
+    $ rad-artifact show --pretty --redacted abc1234")]
     pub struct Show {
         /// Format output in a more human oriented way than JSON.
         #[clap(long)]
@@ -881,6 +933,16 @@ mod command {
 
     /// List all release COBs for a repository.
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  List all releases as JSON:
+    $ rad-artifact list
+
+  Human-readable listing of delegate releases:
+    $ rad-artifact list --pretty --delegates-only
+
+  Include empty and redacted releases:
+    $ rad-artifact list --pretty --empty --redacted")]
     pub struct List {
         /// Format output in a more human oriented way than JSON.
         #[clap(long)]
