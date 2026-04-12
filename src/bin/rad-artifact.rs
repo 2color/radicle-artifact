@@ -202,8 +202,9 @@ where
         .map_err(|err| error::Add::FindOrCreate { oid, err })?;
     let id = *release.id();
     release
-        .add_artifact(cid, name, signer)
+        .add_artifact(cid, name.clone(), signer)
         .map_err(|err| error::Add::Store { id, err })?;
+    eprintln!("Added artifact '{name}' to release {}", &oid.to_string()[..7]);
     println!("{cid}");
     Ok(())
 }
@@ -221,8 +222,9 @@ where
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
     release
-        .add_location(cid, url, signer)
+        .add_location(cid, url.clone(), signer)
         .map_err(|err| error::Locate::Store { id, err })?;
+    eprintln!("Added location {url} for artifact {cid}");
     Ok(())
 }
 
@@ -241,6 +243,7 @@ where
     release
         .attest(cid, signer)
         .map_err(|err| error::Attest::Store { id, err })?;
+    eprintln!("Attested artifact {cid}");
     Ok(())
 }
 
@@ -276,8 +279,9 @@ where
         .get_mut(&id)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
     release
-        .remove_location(cid, url, signer)
+        .remove_location(cid, url.clone(), signer)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
+    eprintln!("Removed location {url} for artifact {cid}");
     Ok(())
 }
 
