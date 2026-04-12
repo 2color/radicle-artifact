@@ -213,6 +213,9 @@ where
         .add_artifact(cid, name.clone(), signer)
         .map_err(|err| error::Add::Store { id, err })?;
     eprintln!("Added artifact '{name}' to release {}", &oid.to_string()[..7]);
+    if std::io::stderr().is_terminal() {
+        eprintln!("Hint: use `rad-artifact locate {oid} {cid} <url>` to add a download location");
+    }
     println!("{cid}");
     Ok(())
 }
@@ -233,6 +236,9 @@ where
         .add_location(cid, url.clone(), signer)
         .map_err(|err| error::Locate::Store { id, err })?;
     eprintln!("Added location {url} for artifact {cid}");
+    if std::io::stderr().is_terminal() {
+        eprintln!("Hint: use `rad-artifact show --pretty {oid}` to verify the release");
+    }
     Ok(())
 }
 
