@@ -2,7 +2,7 @@
 //!
 //! Run `rad-artifact --help` to see how to use the program.
 
-use std::{collections::BTreeSet, error::Error as _, time::Duration};
+use std::{collections::BTreeSet, error::Error as _, io::IsTerminal, time::Duration};
 
 use clap::Parser;
 
@@ -62,6 +62,13 @@ struct Args {
     /// at a later point.
     #[clap(long)]
     no_sync: bool,
+
+    /// Disable all interactive prompts.
+    ///
+    /// Commands that would normally prompt (e.g. `fetch` without arguments)
+    /// will error instead. Useful for scripts and CI.
+    #[clap(long)]
+    no_input: bool,
 
     #[clap(subcommand)]
     command: command::Command,
@@ -181,9 +188,9 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         Command::Show(cmd) => show_release(cmd, &releases, &repo, &profile)?,
         Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
         #[cfg(feature = "share")]
-        Command::Fetch(cmd) => run_fetch(cmd, &profile, &releases, &repo)?,
+        Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
         #[cfg(feature = "share")]
-        Command::Serve(cmd) => run_serve(cmd, &profile, &mut releases, &repo)?,
+        Command::Serve(cmd) => run_serve(cmd, args.no_input, &profile, &mut releases, &repo)?,
     }
 
     Ok(())
@@ -407,13 +414,14 @@ fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
 #[cfg(feature = "share")]
 fn run_fetch(
     args: command::Fetch,
+    no_input: bool,
     _profile: &Profile,
     releases: &Releases<Repository>,
     repo: &Repository,
 ) -> Result<(), RadArtifactError> {
     let (oid, cid) = match (args.oid, args.cid) {
         (Some(oid), Some(cid)) => (oid, cid),
-        (None, None) => pick_interactive(releases, repo)?,
+        (None, None) => pick_interactive(no_input, releases, repo)?,
         _ => {
             return Err(error::Share::Usage(
                 "provide both <oid> and <cid>, or neither for interactive mode".into(),
@@ -480,6 +488,7 @@ fn run_fetch(
 #[cfg(feature = "share")]
 fn run_serve(
     args: command::Serve,
+    no_input: bool,
     profile: &Profile,
     releases: &mut Releases<Repository>,
     repo: &Repository,
@@ -487,7 +496,7 @@ fn run_serve(
     let cid = match args.cid {
         Some(cid) => cid,
         None => {
-            let (_oid, cid) = pick_interactive(releases, repo)?;
+            let (_oid, cid) = pick_interactive(no_input, releases, repo)?;
             cid
         }
     };
@@ -571,11 +580,21 @@ fn artifact_locations(artifact: &Artifact) -> Result<Vec<share::Location<'_>>, R
 }
 
 /// Interactive mode: list releases, pick one, list its artifacts, pick one.
+///
+/// Requires stdin to be a TTY. Errors if `no_input` is set or stdin is not
+/// interactive, so scripts don't hang waiting for input.
 #[cfg(feature = "share")]
 fn pick_interactive(
+    no_input: bool,
     releases: &Releases<Repository>,
     repo: &Repository,
 ) -> Result<(Oid, radicle_artifact::Cid), RadArtifactError> {
+    if no_input || !std::io::stdin().is_terminal() {
+        return Err(error::Share::Usage(
+            "interactive mode requires a terminal; pass <oid> and <cid> arguments, or remove --no-input".into(),
+        )
+        .into());
+    }
     let all: Vec<(ReleaseId, Release)> = releases
         .all()
         .map_err(|e| error::Share::Usage(e.to_string()))?
