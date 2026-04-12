@@ -19,6 +19,8 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
+#[cfg(feature = "share")]
+use radicle_artifact::share;
 use radicle_artifact::*;
 
 const TIMEOUT: Duration = Duration::from_millis(5000);
@@ -129,10 +131,18 @@ fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
 fn run(args: Args) -> Result<(), RadArtifactError> {
     use command::*;
 
+    // The Cid subcommand doesn't need a profile or repo.
+    #[cfg(feature = "share")]
+    if let Command::ComputeCid(cmd) = args.command {
+        return run_cid(cmd);
+    }
+
     let profile = load_profile()?;
     let repo = args.repository(&profile)?;
     let mut releases = open_releases(&repo)?;
     match args.command {
+        #[cfg(feature = "share")]
+        Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Add(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
             add_artifact(cmd, &mut releases, &signer)?;
@@ -170,6 +180,10 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Show(cmd) => show_release(cmd, &releases, &repo, &profile)?,
         Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
+        #[cfg(feature = "share")]
+        Command::Fetch(cmd) => run_fetch(cmd, &profile, &releases, &repo)?,
+        #[cfg(feature = "share")]
+        Command::Serve(cmd) => run_serve(cmd, &profile, &mut releases, &repo)?,
     }
 
     Ok(())
@@ -293,7 +307,8 @@ fn show_release(
         .map_err(|err| error::Find::Lookup { oid, err })?
         .ok_or(error::Find::NoRelease(oid))?;
     let title = display::CommitTitle::title(repo, release.oid());
-    let show = radicle_artifact::display::Release::new(id, &release, aliases, delegates.as_ref(), title);
+    let show =
+        radicle_artifact::display::Release::new(id, &release, aliases, delegates.as_ref(), title);
     if pretty {
         println!("{}", show.pretty());
     } else {
@@ -366,11 +381,279 @@ fn list_releases(
     Ok(())
 }
 
-/// Find the unique release for a given OID. Errors if none or more than one exist.
-fn find_unique_by_oid(
-    oid: Oid,
+// ---------------------------------------------------------------------------
+// Share commands (behind "share" feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "share")]
+fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
+    let path = &args.path;
+    if path.is_dir() {
+        let cid = share::compute_content_id(path).map_err(error::Share::Io)?;
+        println!("{cid}");
+    } else {
+        let data = std::fs::read(path).map_err(error::Share::Io)?;
+        let hash = iroh_blobs::Hash::new(&data);
+        let cid = share::blake3_hash_to_cid(hash, share::ArtifactKind::Blob);
+        println!("{cid}");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "share")]
+fn run_fetch(
+    args: command::Fetch,
+    _profile: &Profile,
     releases: &Releases<Repository>,
-) -> Result<ReleaseId, error::Find> {
+    repo: &Repository,
+) -> Result<(), RadArtifactError> {
+    let (oid, cid) = match (args.oid, args.cid) {
+        (Some(oid), Some(cid)) => (oid, cid),
+        (None, None) => pick_interactive(releases, repo)?,
+        _ => {
+            return Err(error::Share::Usage(
+                "provide both <oid> and <cid>, or neither for interactive mode".into(),
+            )
+            .into())
+        }
+    };
+
+    let release_id = find_unique_by_oid(oid, releases)?;
+    let release = releases
+        .get(&release_id)
+        .map_err(|err| error::Find::Lookup { oid, err })?
+        .ok_or(error::Find::NoRelease(oid))?;
+
+    let artifact = release
+        .artifact(&cid)
+        .ok_or(error::Share::ArtifactNotFound(cid))?;
+
+    if artifact.is_redacted() {
+        eprintln!("WARNING: this artifact has been redacted");
+        for (did, reason) in artifact.redactions() {
+            eprintln!("  {did}: {reason}");
+        }
+    }
+
+    eprintln!("Artifact: {} (CID: {cid})", artifact.name());
+
+    let locations = if let Some(ref url) = args.url {
+        vec![share::Location::Url(url)]
+    } else {
+        artifact_locations(artifact)?
+    };
+    eprintln!(
+        "Trying {} location{}...",
+        locations.len(),
+        if locations.len() == 1 { "" } else { "s" }
+    );
+
+    let output_path = args.output.unwrap_or_else(|| {
+        let name = artifact.name();
+        std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_")))
+    });
+
+    let preset = share::EndpointPreset::from_env().map_err(error::Share::Share)?;
+    let kind = share::artifact_kind(&cid).map_err(error::Share::Share)?;
+
+    match kind {
+        share::ArtifactKind::Blob => {
+            let mut file = std::fs::File::create(&output_path).map_err(error::Share::Io)?;
+            let fetchers = share::default_fetchers();
+            share::download(&locations, &cid, &mut file, &fetchers, &preset)
+                .map_err(error::Share::Share)?;
+        }
+        share::ArtifactKind::Collection => {
+            share::download_collection(&locations, &cid, &output_path, &preset)
+                .map_err(error::Share::Share)?;
+        }
+    }
+
+    eprintln!("Saved to {}", output_path.display());
+    Ok(())
+}
+
+#[cfg(feature = "share")]
+fn run_serve(
+    args: command::Serve,
+    profile: &Profile,
+    releases: &mut Releases<Repository>,
+    repo: &Repository,
+) -> Result<(), RadArtifactError> {
+    let cid = match args.cid {
+        Some(cid) => cid,
+        None => {
+            let (_oid, cid) = pick_interactive(releases, repo)?;
+            cid
+        }
+    };
+
+    let (release_id, release) = releases
+        .find_by_cid(&cid)
+        .map_err(|e| error::Share::Usage(e.to_string()))?
+        .ok_or(error::Share::ArtifactNotFound(cid))?;
+
+    let artifact = release.artifact(&cid).expect("find_by_cid guarantees this");
+    let kind = share::artifact_kind(&cid).map_err(error::Share::Share)?;
+
+    eprintln!("Artifact: {} (CID: {cid})", artifact.name());
+
+    let passphrase = radicle::profile::env::passphrase();
+    let iroh_sk = share::radicle_secret_to_iroh(&profile.keystore, passphrase)
+        .map_err(error::Share::Share)?;
+    let preset = share::EndpointPreset::from_env().map_err(error::Share::Share)?;
+
+    let rt = tokio::runtime::Runtime::new().map_err(error::Share::Io)?;
+    rt.block_on(async {
+        let server = share::Server::start(iroh_sk, preset)
+            .await
+            .map_err(error::Share::Share)?;
+
+        match kind {
+            share::ArtifactKind::Blob => {
+                share::add_blob(server.store(), &args.path, &cid)
+                    .await
+                    .map_err(error::Share::Share)?;
+            }
+            share::ArtifactKind::Collection => {
+                share::add_collection(server.store(), &args.path, &cid)
+                    .await
+                    .map_err(error::Share::Share)?;
+            }
+        }
+
+        let endpoint_id = server.endpoint().id();
+        let iroh_url = url::Url::parse(&format!("iroh://{endpoint_id}"))
+            .map_err(|e| error::Share::Usage(format!("failed to build iroh URL: {e}")))?;
+
+        let signer = profile.signer().map_err(error::Signer)?;
+        let mut release_mut = releases
+            .get_mut(&release_id)
+            .map_err(|e| error::Share::Usage(e.to_string()))?;
+        release_mut
+            .add_location(cid, iroh_url.clone(), &signer)
+            .map_err(|e| error::Share::Usage(e.to_string()))?;
+
+        eprintln!("Serving at {iroh_url}");
+        eprintln!("Press Ctrl+C to stop");
+
+        tokio::signal::ctrl_c().await.map_err(error::Share::Io)?;
+
+        eprintln!("\nShutting down...");
+        server.shutdown().await.map_err(error::Share::Share)?;
+
+        Ok::<_, RadArtifactError>(())
+    })
+}
+
+/// Convert artifact locations into fetch locations.
+///
+/// For `iroh://` URLs, derives the endpoint ID from the DID that
+/// authored the location (same Ed25519 key).
+#[cfg(feature = "share")]
+fn artifact_locations(artifact: &Artifact) -> Result<Vec<share::Location<'_>>, RadArtifactError> {
+    let mut locations = Vec::new();
+    for (did, urls) in artifact.locations() {
+        for url in urls {
+            if url.scheme() == "iroh" {
+                let pk = share::did_to_iroh_public_key(did).map_err(error::Share::Share)?;
+                locations.push(share::Location::Iroh(pk));
+            } else {
+                locations.push(share::Location::Url(url));
+            }
+        }
+    }
+    Ok(locations)
+}
+
+/// Interactive mode: list releases, pick one, list its artifacts, pick one.
+#[cfg(feature = "share")]
+fn pick_interactive(
+    releases: &Releases<Repository>,
+    repo: &Repository,
+) -> Result<(Oid, radicle_artifact::Cid), RadArtifactError> {
+    let all: Vec<(ReleaseId, Release)> = releases
+        .all()
+        .map_err(|e| error::Share::Usage(e.to_string()))?
+        .filter_map(|res| res.ok())
+        .map(|(id, release)| (ReleaseId::from(id), release))
+        .collect();
+
+    if all.is_empty() {
+        return Err(error::Share::Usage("no releases found in this repository".into()).into());
+    }
+
+    eprintln!("Releases:");
+    for (i, (_, release)) in all.iter().enumerate() {
+        let oid = release.oid();
+        let short = &oid.to_string()[..7];
+        let title = display::CommitTitle::title(repo, oid).unwrap_or_default();
+        let artifact_count = release.artifacts().len();
+        eprintln!(
+            "  [{}] {} {} ({} artifact{})",
+            i + 1,
+            short,
+            title,
+            artifact_count,
+            if artifact_count == 1 { "" } else { "s" }
+        );
+    }
+
+    let release_idx = prompt_choice("Select release", all.len())?;
+    let (_, release) = &all[release_idx];
+
+    let artifacts: Vec<(&radicle_artifact::Cid, &Artifact)> = release.artifacts().iter().collect();
+    if artifacts.is_empty() {
+        return Err(error::Share::Usage("selected release has no artifacts".into()).into());
+    }
+
+    eprintln!("Artifacts:");
+    for (i, (cid, artifact)) in artifacts.iter().enumerate() {
+        let redacted = if artifact.is_redacted() {
+            " [REDACTED]"
+        } else {
+            ""
+        };
+        eprintln!(
+            "  [{}] {} (CID: {}){}",
+            i + 1,
+            artifact.name(),
+            cid,
+            redacted
+        );
+    }
+
+    let artifact_idx = prompt_choice("Select artifact", artifacts.len())?;
+    let (cid, _) = artifacts[artifact_idx];
+
+    Ok((*release.oid(), *cid))
+}
+
+/// Prompt user for a 1-indexed choice, return 0-indexed.
+#[cfg(feature = "share")]
+fn prompt_choice(label: &str, max: usize) -> Result<usize, RadArtifactError> {
+    use std::io::{BufRead, Write};
+
+    let stdin = std::io::stdin();
+    loop {
+        eprint!("{label} [1-{max}]: ");
+        std::io::stderr().flush().map_err(error::Share::Io)?;
+
+        let mut line = String::new();
+        stdin
+            .lock()
+            .read_line(&mut line)
+            .map_err(error::Share::Io)?;
+
+        match line.trim().parse::<usize>() {
+            Ok(n) if n >= 1 && n <= max => return Ok(n - 1),
+            _ => eprintln!("Invalid choice, try again."),
+        }
+    }
+}
+
+/// Find the unique release for a given OID. Errors if none or more than one exist.
+fn find_unique_by_oid(oid: Oid, releases: &Releases<Repository>) -> Result<ReleaseId, error::Find> {
     let mut iter = releases
         .find_by_oid(oid)
         .map_err(|err| error::Find::Lookup { oid, err })?;
@@ -413,6 +696,11 @@ enum RadArtifactError {
     Attest(#[from] error::Attest),
     #[error(transparent)]
     Redact(#[from] error::Redact),
+    #[error(transparent)]
+    Find(#[from] error::Find),
+    #[cfg(feature = "share")]
+    #[error(transparent)]
+    Share(#[from] error::Share),
 }
 
 mod command {
@@ -431,6 +719,60 @@ mod command {
         Redact(Redact),
         Show(Show),
         List(List),
+        /// Compute the BLAKE3 CID of a file or directory
+        #[cfg(feature = "share")]
+        #[clap(name = "cid")]
+        ComputeCid(ComputeCid),
+        /// Fetch an artifact from a release COB
+        #[cfg(feature = "share")]
+        Fetch(Fetch),
+        /// Serve an artifact via iroh-blobs using your radicle identity
+        #[cfg(feature = "share")]
+        Serve(Serve),
+    }
+
+    /// Compute the BLAKE3 CID of a file or directory.
+    ///
+    /// For a single file, outputs a CID with the raw codec (0x55).
+    /// For a directory, outputs a CID with the blake3-hashseq codec (0x80).
+    #[cfg(feature = "share")]
+    #[derive(Parser)]
+    pub struct ComputeCid {
+        /// Path to file or directory.
+        pub path: std::path::PathBuf,
+    }
+
+    /// Fetch an artifact from a Radicle release COB.
+    ///
+    /// With positional arguments, fetches a specific artifact directly.
+    /// Without arguments, interactively lists releases and artifacts to pick from.
+    #[cfg(feature = "share")]
+    #[derive(Parser)]
+    pub struct Fetch {
+        /// Git object ID of the release.
+        pub oid: Option<radicle::git::Oid>,
+        /// Content identifier (CID) of the artifact to fetch.
+        pub cid: Option<radicle_artifact::Cid>,
+        /// Output file path. Defaults to the artifact name in the current directory.
+        #[clap(short, long)]
+        pub output: Option<std::path::PathBuf>,
+        /// Fetch from this URL directly, skipping registered locations.
+        #[clap(long)]
+        pub url: Option<url::Url>,
+    }
+
+    /// Serve an artifact via iroh-blobs using your radicle identity.
+    ///
+    /// Verifies the file/directory matches the artifact CID, registers an
+    /// `iroh://<endpoint_id>` location in the release COB, and serves the
+    /// content until interrupted.
+    #[cfg(feature = "share")]
+    #[derive(Parser)]
+    pub struct Serve {
+        /// Path to file or directory to serve.
+        pub path: std::path::PathBuf,
+        /// Artifact CID. If omitted, launches interactive picker.
+        pub cid: Option<radicle_artifact::Cid>,
     }
 
     /// Add an artifact to a release, creating it if needed.
@@ -685,5 +1027,18 @@ mod error {
         pub rid: RepoId,
         #[source]
         pub err: RepositoryError,
+    }
+
+    #[cfg(feature = "share")]
+    #[derive(Debug, Error)]
+    pub enum Share {
+        #[error("{0}")]
+        Usage(String),
+        #[error("artifact with CID {0} not found")]
+        ArtifactNotFound(radicle_artifact::Cid),
+        #[error(transparent)]
+        Share(radicle_artifact::share::Error),
+        #[error("I/O error")]
+        Io(#[source] std::io::Error),
     }
 }

@@ -5,12 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use radicle::{
-    git::Oid,
-    identity::Did,
-    node::AliasStore,
-    storage::git::Repository,
-};
+use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repository};
 use serde::Serialize;
 use url::Url;
 
@@ -172,9 +167,7 @@ impl Release {
                 // author, the artifact author, or a repository delegate.
                 if let Some(delegates) = delegates {
                     !artifact.redactions().keys().any(|did| {
-                        *did == author
-                            || *did == *artifact.author()
-                            || delegates.contains(did)
+                        *did == author || *did == *artifact.author() || delegates.contains(did)
                     })
                 } else {
                     true
@@ -194,7 +187,8 @@ impl Release {
                     })
                     .collect();
                 // Sort by (did, url) for deterministic output.
-                locations.sort_by(|a, b| a.did.cmp(&b.did).then(a.url.as_str().cmp(b.url.as_str())));
+                locations
+                    .sort_by(|a, b| a.did.cmp(&b.did).then(a.url.as_str().cmp(b.url.as_str())));
                 let attestations: Vec<_> = artifact
                     .attestations()
                     .iter()
@@ -251,7 +245,10 @@ impl Release {
         };
         push_line(
             &mut s,
-            format!("release {} by {} (commit {short_oid}{title_suffix})", self.release_id, author),
+            format!(
+                "release {} by {} (commit {short_oid}{title_suffix})",
+                self.release_id, author
+            ),
         );
         for artifact in self.artifacts.iter() {
             push_line(
@@ -268,10 +265,7 @@ impl Release {
                     .iter()
                     .map(|a| format_did(&a.did, &a.alias))
                     .collect();
-                push_line(
-                    &mut s,
-                    format!("    attestations: {}", nodes.join(", ")),
-                );
+                push_line(&mut s, format!("    attestations: {}", nodes.join(", ")));
             }
             if !artifact.redactions.is_empty() {
                 push_line(&mut s, "    redactions:".to_string());

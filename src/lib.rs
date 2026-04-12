@@ -49,6 +49,9 @@
 
 #![deny(missing_docs)]
 
+#[cfg(feature = "share")]
+pub mod share;
+
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -376,13 +379,11 @@ impl Release {
                 }
             }
             Action::Attest { cid } => {
-                if let Some(artifact) = self.artifacts.get_mut(&cid) {                  
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     // A prior redaction from this user supersedes any attestation.
                     // The author implicitly vouches by creating the artifact;
                     // a self-attestation is a no-op to avoid inflating counts.
-                    if user != artifact.author
-                        && !artifact.redactions.contains_key(&user)
-                    {
+                    if user != artifact.author && !artifact.redactions.contains_key(&user) {
                         artifact.attestations.insert(user);
                     }
                 }
@@ -1172,9 +1173,7 @@ mod test {
         assert!(urls.contains(&url2));
 
         // Removing the last URL cleans up the DID entry entirely.
-        release
-            .remove_location(cid, url2, &alice.signer)
-            .unwrap();
+        release.remove_location(cid, url2, &alice.signer).unwrap();
         let artifact = release.artifact(&cid).unwrap();
         assert!(artifact
             .locations_of(&Did::from(alice.signer.public_key()))
@@ -1570,9 +1569,7 @@ mod test {
         release
             .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
-        release
-            .redact(cid, "".into(), &alice.signer)
-            .unwrap();
+        release.redact(cid, "".into(), &alice.signer).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         let alice_did = Did::from(alice.signer.public_key());
