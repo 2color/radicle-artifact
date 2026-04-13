@@ -90,6 +90,13 @@ async fn show_download_progress(pb: ProgressBar, mut recv: tokio::sync::mpsc::Re
 // Iroh internals
 // ---------------------------------------------------------------------------
 
+/// Ephemeral store directory for an iroh download, following sendme's convention.
+/// Placed in the current working directory and cleaned up after the download.
+fn iroh_store_dir(hash: &iroh_blobs::Hash) -> std::path::PathBuf {
+    let hex = hash.to_hex();
+    std::path::PathBuf::from(format!(".rad-artifact-fetch-{hex}"))
+}
+
 /// Connect to an iroh endpoint and return the connection.
 ///
 /// The endpoint is returned alongside the connection because the
@@ -192,8 +199,9 @@ pub fn fetch_iroh_blob(
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
-        let temp_dir = tempfile::tempdir().map_err(Error::Io)?;
-        let db = FsStore::load(temp_dir.path())
+        let store_dir = iroh_store_dir(&hash);
+        std::fs::create_dir_all(&store_dir).map_err(Error::Io)?;
+        let db = FsStore::load(&store_dir)
             .await
             .map_err(|e| Error::Iroh(format!("store load: {e}")))?;
 
@@ -209,8 +217,9 @@ pub fn fetch_iroh_blob(
         }
         .await;
 
-        // Always shut down the store before the temp dir is dropped.
+        // Always shut down the store before removing the directory.
         db.shutdown().await.ok();
+        std::fs::remove_dir_all(&store_dir).ok();
         result
     })
 }
@@ -245,8 +254,9 @@ pub fn fetch_iroh_collection(
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
-        let temp_dir = tempfile::tempdir().map_err(Error::Io)?;
-        let db = FsStore::load(temp_dir.path())
+        let store_dir = iroh_store_dir(&hash);
+        std::fs::create_dir_all(&store_dir).map_err(Error::Io)?;
+        let db = FsStore::load(&store_dir)
             .await
             .map_err(|e| Error::Iroh(format!("store load: {e}")))?;
 
@@ -276,6 +286,7 @@ pub fn fetch_iroh_collection(
         .await;
 
         db.shutdown().await.ok();
+        std::fs::remove_dir_all(&store_dir).ok();
         result
     })
 }
@@ -345,26 +356,35 @@ pub fn download(
     Err(Error::AllFailed(errors))
 }
 
-/// Fetch via HTTP to a temp file, verify CID from disk, then rename to dest.
+/// Fetch via HTTP to a partial file, verify CID from disk, then rename to dest.
 fn download_http(
     fetcher: &dyn Fetcher,
     url: &Url,
     expected_cid: &Cid,
     dest: &Path,
 ) -> Result<(), Error> {
-    // Stream to a temp file in the same directory as dest (so rename is atomic).
-    let dest_dir = dest.parent().unwrap_or(Path::new("."));
-    let temp_file = tempfile::NamedTempFile::new_in(dest_dir).map_err(Error::Io)?;
-    let mut writer = BufWriter::new(temp_file.as_file());
-    fetcher.fetch(url, &mut writer)?;
+    // Write to a .partial file next to the destination, then rename on success.
+    let partial = dest.with_extension("partial");
+    let file = std::fs::File::create(&partial).map_err(Error::Io)?;
+    let mut writer = BufWriter::new(file);
+    let fetch_result = fetcher.fetch(url, &mut writer);
+
+    // Clean up the partial file on any error.
+    if let Err(e) = fetch_result {
+        std::fs::remove_file(&partial).ok();
+        return Err(e);
+    }
     writer.flush().map_err(Error::Io)?;
     drop(writer);
 
-    // Verify CID by hashing the temp file from disk (no memory buffering).
-    cid_util::verify_cid_file(temp_file.path(), expected_cid)?;
+    // Verify CID by hashing the partial file from disk (no memory buffering).
+    if let Err(e) = cid_util::verify_cid_file(&partial, expected_cid) {
+        std::fs::remove_file(&partial).ok();
+        return Err(e);
+    }
 
-    // Atomic rename to final destination.
-    temp_file.persist(dest).map_err(|e| Error::Io(e.error))?;
+    // Rename to final destination.
+    std::fs::rename(&partial, dest).map_err(Error::Io)?;
     Ok(())
 }
 
