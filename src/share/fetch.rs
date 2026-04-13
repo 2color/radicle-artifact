@@ -196,6 +196,8 @@ pub fn fetch_iroh_blob(
         hash,
         format: BlobFormat::Raw,
     };
+    // iroh-blobs export requires an absolute path.
+    let dest = std::path::absolute(dest).map_err(Error::Io)?;
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
@@ -251,6 +253,8 @@ pub fn fetch_iroh_collection(
         hash,
         format: BlobFormat::HashSeq,
     };
+    // iroh-blobs export requires an absolute path.
+    let dest_dir = std::path::absolute(dest_dir).map_err(Error::Io)?;
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
@@ -268,7 +272,7 @@ pub fn fetch_iroh_collection(
                 .await
                 .map_err(|e| Error::Iroh(format!("load collection: {e}")))?;
 
-            std::fs::create_dir_all(dest_dir).map_err(Error::Io)?;
+            std::fs::create_dir_all(&dest_dir).map_err(Error::Io)?;
             for (name, entry_hash) in collection.iter() {
                 let target = dest_dir.join(name);
                 if let Some(parent) = target.parent() {
