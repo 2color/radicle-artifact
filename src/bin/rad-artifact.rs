@@ -494,9 +494,8 @@ fn run_fetch(
 
     match kind {
         share::ArtifactKind::Blob => {
-            let mut file = std::fs::File::create(&output_path).map_err(error::Share::Io)?;
             let fetchers = share::default_fetchers();
-            share::download(&locations, &cid, &mut file, &fetchers, &preset)
+            share::download(&locations, &cid, &output_path, &fetchers, &preset)
                 .map_err(error::Share::Share)?;
         }
         share::ArtifactKind::Collection => {

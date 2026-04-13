@@ -90,6 +90,28 @@ pub fn verify_cid(data: &[u8], expected: &Cid) -> Result<(), Error> {
     Ok(())
 }
 
+/// Verify that a file on disk matches the expected CID.
+///
+/// Streams the file through a BLAKE3 hasher to avoid loading it into memory.
+pub fn verify_cid_file(path: &std::path::Path, expected: &Cid) -> Result<(), Error> {
+    let file = std::fs::File::open(path).map_err(Error::Io)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut reader, &mut hasher).map_err(Error::Io)?;
+    let digest = hasher.finalize();
+    let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes())
+        .map_err(|e| Error::Cid(format!("multihash wrap: {e}")))?;
+    let actual = Cid::new_v1(RAW_CODEC, mh);
+
+    if actual != *expected {
+        return Err(Error::CidMismatch {
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Walk a directory and return sorted (relative_name, absolute_path) pairs.
 ///
 /// Skips symlinks, normalizes path separators to `/`, and sorts by name

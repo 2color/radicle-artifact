@@ -3,12 +3,20 @@
 //! Provides a [`Fetcher`] trait for protocol-extensible artifact retrieval,
 //! a built-in [`HttpFetcher`], and iroh-blobs fetching via [`fetch_iroh_blob`]
 //! and [`fetch_iroh_collection`].
+//!
+//! Iroh downloads stream to disk via [`iroh_blobs::store::fs::FsStore`],
+//! avoiding in-memory buffering. Progress is reported via [`indicatif`].
 
-use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 use cid::Cid;
+use indicatif::{ProgressBar, ProgressStyle};
+use iroh_blobs::api::remote::GetProgressItem;
+use iroh_blobs::format::collection::Collection;
+use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::{BlobFormat, HashAndFormat};
+use n0_future::StreamExt;
 use url::Url;
 
 use super::cid as cid_util;
@@ -50,6 +58,38 @@ impl Fetcher for HttpFetcher {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Progress bar helpers (following sendme conventions)
+// ---------------------------------------------------------------------------
+
+fn make_download_progress() -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.enable_steady_tick(std::time::Duration::from_millis(250));
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} Downloading {bytes} ({binary_bytes_per_sec})",
+        )
+        .unwrap(),
+    );
+    pb
+}
+
+/// Drive a progress bar from a channel of byte offsets.
+///
+/// Runs as a spawned task so the download stream and the UI update are
+/// decoupled — this supports future multi-connection downloads where
+/// multiple providers feed the same store.
+async fn show_download_progress(pb: ProgressBar, mut recv: tokio::sync::mpsc::Receiver<u64>) {
+    while let Some(offset) = recv.recv().await {
+        pb.set_position(offset);
+    }
+    pb.finish_and_clear();
+}
+
+// ---------------------------------------------------------------------------
+// Iroh internals
+// ---------------------------------------------------------------------------
+
 /// Connect to an iroh endpoint and return the connection.
 ///
 /// The endpoint is returned alongside the connection because the
@@ -70,11 +110,58 @@ async fn iroh_connect(
     Ok((endpoint, connection))
 }
 
+/// Download content into a [`FsStore`] via `execute_get`, showing progress.
+///
+/// This is the shared core used by both [`fetch_iroh_blob`] and
+/// [`fetch_iroh_collection`]. The caller is responsible for exporting
+/// from the store after this returns.
+async fn fetch_iroh_to_store(
+    hash_and_format: HashAndFormat,
+    endpoint_id: iroh::EndpointId,
+    db: &FsStore,
+    preset: EndpointPreset,
+) -> Result<iroh::Endpoint, Error> {
+    let (endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
+    let local = db
+        .remote()
+        .local(hash_and_format)
+        .await
+        .map_err(|e| Error::Iroh(format!("local info: {e}")))?;
+
+    if !local.is_complete() {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let pb = make_download_progress();
+        let task = tokio::spawn(show_download_progress(pb, rx));
+
+        let get = db.remote().execute_get(connection, local.missing());
+        let mut stream = get.stream();
+        while let Some(item) = stream.next().await {
+            match item {
+                GetProgressItem::Progress(offset) => {
+                    tx.send(offset).await.ok();
+                }
+                GetProgressItem::Done(_stats) => break,
+                GetProgressItem::Error(cause) => {
+                    return Err(Error::Iroh(format!("download: {cause}")));
+                }
+            }
+        }
+        drop(tx);
+        task.await.ok();
+    }
+
+    Ok(endpoint)
+}
+
+// ---------------------------------------------------------------------------
+// Public iroh fetch API
+// ---------------------------------------------------------------------------
+
 /// Fetch a single blob via iroh-blobs from the given endpoint.
 ///
-/// The BLAKE3 hash is extracted from the CID's multihash. Since iroh-blobs
-/// verifies BLAKE3 natively and the CID uses the same hash, transport
-/// verification and content verification are the same operation.
+/// Downloads into a temporary [`FsStore`], then exports the blob to `dest`.
+/// No in-memory buffering — data streams through the store to disk.
+/// BLAKE3 verification happens during transfer (iroh-blobs verifies natively).
 ///
 /// # Sync/async design
 ///
@@ -94,24 +181,37 @@ async fn iroh_connect(
 pub fn fetch_iroh_blob(
     cid: &Cid,
     endpoint_id: iroh::EndpointId,
-    dest: &mut dyn Write,
+    dest: &Path,
     preset: EndpointPreset,
 ) -> Result<(), Error> {
     let hash = cid_util::cid_to_blake3_hash(cid)?;
+    let hash_and_format = HashAndFormat {
+        hash,
+        format: BlobFormat::Raw,
+    };
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
-        let (endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
-
-        let progress = iroh_blobs::get::request::get_blob(connection, hash);
-        let (bytes, _stats) = progress
-            .bytes_and_stats()
+        let temp_dir = tempfile::tempdir().map_err(Error::Io)?;
+        let db = FsStore::load(temp_dir.path())
             .await
-            .map_err(|e| Error::Iroh(format!("download: {e}")))?;
+            .map_err(|e| Error::Iroh(format!("store load: {e}")))?;
 
-        dest.write_all(&bytes).map_err(Error::Io)?;
-        endpoint.close().await;
-        Ok(())
+        let result = async {
+            let endpoint =
+                fetch_iroh_to_store(hash_and_format, endpoint_id, &db, preset).await?;
+            db.blobs()
+                .export(hash, dest)
+                .await
+                .map_err(|e| Error::Iroh(format!("export: {e}")))?;
+            endpoint.close().await;
+            Ok(())
+        }
+        .await;
+
+        // Always shut down the store before the temp dir is dropped.
+        db.shutdown().await.ok();
+        result
     })
 }
 
@@ -138,62 +238,61 @@ pub fn fetch_iroh_collection(
     preset: EndpointPreset,
 ) -> Result<(), Error> {
     let hash = cid_util::cid_to_blake3_hash(cid)?;
+    let hash_and_format = HashAndFormat {
+        hash,
+        format: BlobFormat::HashSeq,
+    };
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
     rt.block_on(async {
-        let (endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
-
-        let request = iroh_blobs::protocol::GetRequest::all(hash);
-        let at_start = iroh_blobs::get::fsm::start(connection, request, Default::default());
-        let at_connected = at_start
-            .next()
+        let temp_dir = tempfile::tempdir().map_err(Error::Io)?;
+        let db = FsStore::load(temp_dir.path())
             .await
-            .map_err(|e| Error::Iroh(format!("connect: {e}")))?;
+            .map_err(|e| Error::Iroh(format!("store load: {e}")))?;
 
-        let iroh_blobs::get::fsm::ConnectedNext::StartRoot(start) = at_connected
-            .next()
-            .await
-            .map_err(|e| Error::Iroh(format!("start root: {e}")))?
-        else {
-            return Err(Error::Iroh("expected start root".into()));
-        };
+        let result = async {
+            let endpoint =
+                fetch_iroh_to_store(hash_and_format, endpoint_id, &db, preset).await?;
 
-        let (collection, children, _stats) =
-            iroh_blobs::format::collection::Collection::read_fsm_all(start)
+            let collection = Collection::load(hash, db.as_ref())
                 .await
-                .map_err(|e| Error::Iroh(format!("read collection: {e}")))?;
+                .map_err(|e| Error::Iroh(format!("load collection: {e}")))?;
 
-        std::fs::create_dir_all(dest_dir).map_err(Error::Io)?;
-        write_collection(dest_dir, &collection, &children)?;
+            std::fs::create_dir_all(dest_dir).map_err(Error::Io)?;
+            for (name, entry_hash) in collection.iter() {
+                let target = dest_dir.join(name);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(Error::Io)?;
+                }
+                db.blobs()
+                    .export(*entry_hash, &target)
+                    .await
+                    .map_err(|e| Error::Iroh(format!("export '{name}': {e}")))?;
+            }
 
-        endpoint.close().await;
-        Ok(())
+            endpoint.close().await;
+            Ok(())
+        }
+        .await;
+
+        db.shutdown().await.ok();
+        result
     })
 }
 
-/// Write collection entries to disk.
-fn write_collection(
-    dest_dir: &Path,
-    collection: &iroh_blobs::format::collection::Collection,
-    children: &BTreeMap<u64, bytes::Bytes>,
-) -> Result<(), Error> {
-    for (i, (name, _hash)) in collection.iter().enumerate() {
-        let data = children
-            .get(&(i as u64))
-            .ok_or_else(|| Error::Iroh(format!("missing data for collection entry '{name}'")))?;
-        let path = dest_dir.join(name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(Error::Io)?;
-        }
-        std::fs::write(&path, data).map_err(Error::Io)?;
-    }
-    Ok(())
-}
+// ---------------------------------------------------------------------------
+// Location-fallback orchestrators
+// ---------------------------------------------------------------------------
 
-/// Try each location in order until one succeeds. Always verify CID.
+/// Try each location in order until one succeeds.
 ///
 /// Only supports single-blob artifacts (raw codec). For collections, use
 /// [`download_collection`].
+///
+/// - **HTTP locations:** stream to a temp file, verify CID from disk, rename
+///   to `dest`. No in-memory buffering.
+/// - **Iroh locations:** download via [`FsStore`] and export to `dest`.
+///   BLAKE3 is verified during transfer, so no separate CID check is needed.
 ///
 /// # Sync/async design
 ///
@@ -207,7 +306,7 @@ fn write_collection(
 pub fn download(
     locations: &[Location],
     expected_cid: &Cid,
-    dest: &mut dyn Write,
+    dest: &Path,
     fetchers: &[Box<dyn Fetcher>],
     preset: &EndpointPreset,
 ) -> Result<(), Error> {
@@ -218,13 +317,11 @@ pub fn download(
     let mut errors = Vec::new();
 
     for location in locations {
-        let mut buf = Vec::new();
-
         let result = match location {
             Location::Url(url) => {
                 let scheme = url.scheme();
                 match fetchers.iter().find(|f| f.schemes().contains(&scheme)) {
-                    Some(fetcher) => fetcher.fetch(url, &mut buf),
+                    Some(fetcher) => download_http(fetcher.as_ref(), url, expected_cid, dest),
                     None => {
                         errors.push(Error::UnsupportedScheme(scheme.to_string()));
                         continue;
@@ -232,21 +329,12 @@ pub fn download(
                 }
             }
             Location::Iroh(endpoint_id) => {
-                fetch_iroh_blob(expected_cid, *endpoint_id, &mut buf, preset.clone())
+                fetch_iroh_blob(expected_cid, *endpoint_id, dest, preset.clone())
             }
         };
 
         match result {
-            Ok(()) => {
-                // Always verify CID. For iroh this is redundant (same BLAKE3 hash)
-                // but cheap and provides defense in depth.
-                if let Err(e) = cid_util::verify_cid(&buf, expected_cid) {
-                    errors.push(e);
-                    continue;
-                }
-                dest.write_all(&buf).map_err(Error::Io)?;
-                return Ok(());
-            }
+            Ok(()) => return Ok(()),
             Err(e) => {
                 errors.push(e);
                 continue;
@@ -255,6 +343,29 @@ pub fn download(
     }
 
     Err(Error::AllFailed(errors))
+}
+
+/// Fetch via HTTP to a temp file, verify CID from disk, then rename to dest.
+fn download_http(
+    fetcher: &dyn Fetcher,
+    url: &Url,
+    expected_cid: &Cid,
+    dest: &Path,
+) -> Result<(), Error> {
+    // Stream to a temp file in the same directory as dest (so rename is atomic).
+    let dest_dir = dest.parent().unwrap_or(Path::new("."));
+    let temp_file = tempfile::NamedTempFile::new_in(dest_dir).map_err(Error::Io)?;
+    let mut writer = BufWriter::new(temp_file.as_file());
+    fetcher.fetch(url, &mut writer)?;
+    writer.flush().map_err(Error::Io)?;
+    drop(writer);
+
+    // Verify CID by hashing the temp file from disk (no memory buffering).
+    cid_util::verify_cid_file(temp_file.path(), expected_cid)?;
+
+    // Atomic rename to final destination.
+    temp_file.persist(dest).map_err(|e| Error::Io(e.error))?;
+    Ok(())
 }
 
 /// Try each iroh location until one succeeds at fetching a collection.
@@ -322,9 +433,10 @@ mod tests {
     #[test]
     fn download_no_locations() {
         let cid = blob_cid(b"test");
-        let mut buf = Vec::new();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
         let preset = EndpointPreset::default();
-        let result = download(&[], &cid, &mut buf, &default_fetchers(), &preset);
+        let result = download(&[], &cid, &dest, &default_fetchers(), &preset);
         assert!(matches!(result, Err(Error::NoLocations)));
     }
 
@@ -332,12 +444,13 @@ mod tests {
     fn download_unsupported_scheme() {
         let url = Url::parse("ftp://example.com/file").unwrap();
         let cid = blob_cid(b"test");
-        let mut buf = Vec::new();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
         let preset = EndpointPreset::default();
         let result = download(
             &[Location::Url(&url)],
             &cid,
-            &mut buf,
+            &dest,
             &default_fetchers(),
             &preset,
         );

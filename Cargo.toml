@@ -24,6 +24,9 @@ share = [
     "dep:bytes",
     "dep:walkdir",
     "dep:dunce",
+    "dep:indicatif",
+    "dep:n0-future",
+    "dep:tempfile",
 ]
 
 [dependencies]
@@ -42,11 +45,14 @@ iroh = { version = "0.97", optional = true }
 iroh-blobs = { version = "0.99", optional = true }
 blake3 = { version = "1", optional = true }
 multihash = { version = "0.19", optional = true }
-tokio = { version = "1", features = ["rt", "signal"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "signal"], optional = true }
 ureq = { version = "3", optional = true }
 bytes = { version = "1", optional = true }
 walkdir = { version = "2", optional = true }
 dunce = { version = "1", optional = true }
+indicatif = { version = "0.17", optional = true }
+n0-future = { version = "0.3", optional = true }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
