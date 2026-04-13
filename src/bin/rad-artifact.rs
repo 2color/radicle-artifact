@@ -202,7 +202,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         Command::Show(cmd) => show_release(cmd, &releases, &repo, &delegates, &profile)?,
         Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
         #[cfg(feature = "share")]
-        Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo, &delegates)?,
+        Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
         #[cfg(feature = "share")]
         Command::Serve(cmd) => run_serve(cmd, args.no_input, &profile, &mut releases, &repo)?,
     }
@@ -222,14 +222,14 @@ where
 {
     let oid = resolve_commit(&commit, repo)?;
     // Find existing delegate release, or create a new one.
-    let mut release = match find_delegate_release(oid, releases, delegates) {
+    let mut release = match releases.find_delegate_release(oid, delegates) {
         Ok(id) => releases
             .get_mut(&id)
             .map_err(|err| error::Add::Store { id, err })?,
-        Err(error::Find::NoRelease(_)) => releases
+        Err(radicle_artifact::error::FindRelease::NoRelease(_)) => releases
             .create(oid, signer)
             .map_err(|err| error::Add::Create { oid, err })?,
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(error::Find::from(e).into()),
     };
     let id = *release.id();
     release
@@ -254,7 +254,7 @@ where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
-    let id = find_delegate_release(oid, releases, delegates)?;
+    let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
@@ -279,7 +279,7 @@ where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
-    let id = find_delegate_release(oid, releases, delegates)?;
+    let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Attest::Store { id, err })?;
@@ -301,7 +301,7 @@ where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
-    let id = find_delegate_release(oid, releases, delegates)?;
+    let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Redact::Store { id, err })?;
@@ -323,7 +323,7 @@ where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
-    let id = find_delegate_release(oid, releases, delegates)?;
+    let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
@@ -359,7 +359,7 @@ fn show_release(
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
     let oid = resolve_commit(&commit, repo)?;
-    let id = find_delegate_release(oid, releases, delegates)?;
+    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
     let release = releases
         .get(&id)
         .map_err(|err| error::Find::Lookup { oid, err })?
@@ -468,7 +468,6 @@ fn run_fetch(
     _profile: &Profile,
     releases: &Releases<Repository>,
     repo: &Repository,
-    delegates: &BTreeSet<Did>,
 ) -> Result<(), RadArtifactError> {
     // clap's `requires` ensures both or neither are provided.
     let (oid, cid) = match (args.commit, args.cid) {
@@ -480,7 +479,7 @@ fn run_fetch(
         _ => unreachable!("clap enforces both-or-neither"),
     };
 
-    let release_id = find_delegate_release(oid, releases, delegates)?;
+    let release_id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
     let release = releases
         .get(&release_id)
         .map_err(|err| error::Find::Lookup { oid, err })?
@@ -734,35 +733,6 @@ fn resolve_commit(commit: &str, repo: &Repository) -> Result<Oid, error::Resolve
             err,
         })?;
     Ok(object.id().into())
-}
-
-/// Find the unique delegate-authored release for a given OID.
-///
-/// Only considers releases authored by repository delegates, ignoring any
-/// non-delegate releases. Errors if no delegate release exists or if multiple
-/// delegates created releases for the same OID.
-fn find_delegate_release(
-    oid: Oid,
-    releases: &Releases<Repository>,
-    delegates: &BTreeSet<Did>,
-) -> Result<ReleaseId, error::Find> {
-    let iter = releases
-        .find_by_oid(oid)
-        .map_err(|err| error::Find::Lookup { oid, err })?;
-
-    let mut found: Option<ReleaseId> = None;
-    for result in iter {
-        let (id, release) = result.map_err(|err| error::Find::Lookup { oid, err })?;
-        if !delegates.contains(release.author()) {
-            continue;
-        }
-        if found.is_some() {
-            return Err(error::Find::Ambiguous(oid));
-        }
-        found = Some(id);
-    }
-
-    found.ok_or(error::Find::NoRelease(oid))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1206,6 +1176,18 @@ mod error {
         },
     }
 
+    impl From<radicle_artifact::error::FindRelease> for Find {
+        fn from(e: radicle_artifact::error::FindRelease) -> Self {
+            match e {
+                radicle_artifact::error::FindRelease::NoRelease(oid) => Self::NoRelease(oid),
+                radicle_artifact::error::FindRelease::Ambiguous(oid) => Self::Ambiguous(oid),
+                radicle_artifact::error::FindRelease::Store { oid, err } => {
+                    Self::Lookup { oid, err }
+                }
+            }
+        }
+    }
+
     #[derive(Debug, Error)]
     #[error("could not resolve '{commit}' to a git object")]
     pub struct Resolve {
@@ -1267,89 +1249,5 @@ mod error {
         Share(radicle_artifact::share::Error),
         #[error("I/O error")]
         Io(#[source] std::io::Error),
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod test {
-    use std::collections::BTreeSet;
-
-    use radicle::{git::Oid, identity::Did, prelude::ReadStorage, test};
-
-    use radicle_artifact::Releases;
-
-    use super::find_delegate_release;
-
-    fn commit(repo: &radicle::git::raw::Repository, message: &str) -> Oid {
-        let tree = {
-            let tree = repo.treebuilder(None).unwrap();
-            let oid = tree.write().unwrap();
-            repo.find_tree(oid).unwrap()
-        };
-        let author = repo.signature().unwrap();
-        repo.commit(None, &author, &author, message, &tree, &[])
-            .unwrap()
-            .into()
-    }
-
-    #[test]
-    fn find_delegate_release_ignores_non_delegate() {
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-
-        let oid = commit(&repo.backend, "v1.0");
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        // Bob (non-delegate) creates a release.
-        releases.create(oid, &bob.signer).unwrap();
-
-        // Alice is the only delegate.
-        let delegates: BTreeSet<Did> = [Did::from(alice.signer.public_key())].into();
-
-        // Lookup should not find Bob's release.
-        let err = find_delegate_release(oid, &releases, &delegates).unwrap_err();
-        assert!(
-            matches!(err, super::error::Find::NoRelease(_)),
-            "expected NoRelease, got {err:?}"
-        );
-
-        // Alice (delegate) creates a release for the same OID.
-        let alice_release = releases.create(oid, &alice.signer).unwrap();
-        let alice_id = *alice_release.id();
-
-        // Now lookup should find Alice's release.
-        let found = find_delegate_release(oid, &releases, &delegates).unwrap();
-        assert_eq!(found, alice_id);
-    }
-
-    #[test]
-    fn find_delegate_release_detects_ambiguity() {
-        // Use the Network setup which has alice and bob as delegates of the same repo.
-        let test::setup::Network {
-            alice, bob, rid, ..
-        } = test::setup::Network::default();
-
-        let repo = alice.storage.repository(rid).unwrap();
-        let oid = commit(&repo.backend, "v1.0");
-        let mut releases = Releases::open(&repo).unwrap();
-
-        let delegates: BTreeSet<Did> = [
-            Did::from(alice.signer.public_key()),
-            Did::from(bob.signer.public_key()),
-        ]
-        .into();
-
-        // Both delegates create releases for the same OID.
-        releases.create(oid, &alice.signer).unwrap();
-        releases.create(oid, &bob.signer).unwrap();
-
-        let err = find_delegate_release(oid, &releases, &delegates).unwrap_err();
-        assert!(
-            matches!(err, super::error::Find::Ambiguous(_)),
-            "expected Ambiguous, got {err:?}"
-        );
     }
 }

@@ -514,6 +514,51 @@ where
         FindByOid::new(self, wanted)
     }
 
+    /// Find the unique release for a given OID across all authors.
+    ///
+    /// Errors if no release exists for the OID or if multiple releases exist.
+    pub fn find_unique_by_oid(&self, oid: Oid) -> Result<ReleaseId, error::FindRelease> {
+        let mut found: Option<ReleaseId> = None;
+        for result in self
+            .find_by_oid(oid)
+            .map_err(|err| error::FindRelease::Store { oid, err })?
+        {
+            let (id, _) = result.map_err(|err| error::FindRelease::Store { oid, err })?;
+            if found.is_some() {
+                return Err(error::FindRelease::Ambiguous(oid));
+            }
+            found = Some(id);
+        }
+        found.ok_or(error::FindRelease::NoRelease(oid))
+    }
+
+    /// Find the unique delegate-authored release for a given OID.
+    ///
+    /// Only considers releases authored by repository delegates, ignoring any
+    /// non-delegate releases. Errors if no delegate release exists or if
+    /// multiple delegates created releases for the same OID.
+    pub fn find_delegate_release(
+        &self,
+        oid: Oid,
+        delegates: &BTreeSet<Did>,
+    ) -> Result<ReleaseId, error::FindRelease> {
+        let mut found: Option<ReleaseId> = None;
+        for result in self
+            .find_by_oid(oid)
+            .map_err(|err| error::FindRelease::Store { oid, err })?
+        {
+            let (id, release) = result.map_err(|err| error::FindRelease::Store { oid, err })?;
+            if !delegates.contains(release.author()) {
+                continue;
+            }
+            if found.is_some() {
+                return Err(error::FindRelease::Ambiguous(oid));
+            }
+            found = Some(id);
+        }
+        found.ok_or(error::FindRelease::NoRelease(oid))
+    }
+
     /// Find the release containing an artifact with the given CID.
     pub fn find_by_cid(
         &self,
@@ -877,8 +922,11 @@ where
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod test {
+    use std::collections::BTreeSet;
+
     use radicle::git::{raw::Repository, Oid};
     use radicle::identity::Did;
+    use radicle::prelude::ReadStorage;
     use radicle::test;
     use url::Url;
 
@@ -1804,5 +1852,65 @@ mod test {
             Err(err) => panic!("expected Ambiguous error, got: {err}"),
             Ok(_) => panic!("expected Ambiguous error, got Ok"),
         }
+    }
+
+    #[test]
+    fn find_delegate_release_ignores_non_delegate() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+
+        let oid = commit(&repo.backend, "v1.0");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        // Bob (non-delegate) creates a release.
+        releases.create(oid, &bob.signer).unwrap();
+
+        // Alice is the only delegate.
+        let delegates: BTreeSet<Did> = [Did::from(alice.signer.public_key())].into();
+
+        // Lookup should not find Bob's release.
+        let err = releases.find_delegate_release(oid, &delegates).unwrap_err();
+        assert!(
+            matches!(err, crate::error::FindRelease::NoRelease(_)),
+            "expected NoRelease, got {err:?}"
+        );
+
+        // Alice (delegate) creates a release for the same OID.
+        let alice_release = releases.create(oid, &alice.signer).unwrap();
+        let alice_id = *alice_release.id();
+
+        // Now lookup should find Alice's release.
+        let found = releases.find_delegate_release(oid, &delegates).unwrap();
+        assert_eq!(found, alice_id);
+    }
+
+    #[test]
+    fn find_delegate_release_detects_ambiguity() {
+        // Use the Network setup which has alice and bob as delegates of the same repo.
+        let test::setup::Network {
+            alice, bob, rid, ..
+        } = test::setup::Network::default();
+
+        let repo = alice.storage.repository(rid).unwrap();
+        let oid = commit(&repo.backend, "v1.0");
+        let mut releases = Releases::open(&repo).unwrap();
+
+        let delegates: BTreeSet<Did> = [
+            Did::from(alice.signer.public_key()),
+            Did::from(bob.signer.public_key()),
+        ]
+        .into();
+
+        // Both delegates create releases for the same OID.
+        releases.create(oid, &alice.signer).unwrap();
+        releases.create(oid, &bob.signer).unwrap();
+
+        let err = releases.find_delegate_release(oid, &delegates).unwrap_err();
+        assert!(
+            matches!(err, crate::error::FindRelease::Ambiguous(_)),
+            "expected Ambiguous, got {err:?}"
+        );
     }
 }
