@@ -643,12 +643,13 @@ fn pick_interactive(
         )
         .into());
     }
-    let all: Vec<(ReleaseId, Release)> = releases
+    let mut all: Vec<(ReleaseId, Release)> = releases
         .all()
         .map_err(|e| error::Share::Usage(e.to_string()))?
         .filter_map(|res| res.ok())
         .map(|(id, release)| (ReleaseId::from(id), release))
         .collect();
+    all.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
 
     if all.is_empty() {
         return Err(error::Share::Usage("no releases found in this repository".into()).into());
