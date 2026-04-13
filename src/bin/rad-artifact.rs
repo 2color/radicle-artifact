@@ -165,16 +165,16 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
-        Command::Locate(cmd) => {
+        Command::Location(loc) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            locate_artifact(cmd, &mut releases, &signer)?;
-            if !args.no_sync {
-                announce(&profile, repo.id)?;
+            match loc.command {
+                LocationCommand::Add(cmd) => {
+                    location_add(cmd, &mut releases, &signer)?;
+                }
+                LocationCommand::Remove(cmd) => {
+                    location_remove(cmd, &mut releases, &signer)?;
+                }
             }
-        }
-        Command::RemoveLocation(cmd) => {
-            let signer = profile.signer().map_err(error::Signer)?;
-            remove_location(cmd, &mut releases, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -221,14 +221,14 @@ where
         .map_err(|err| error::Add::Store { id, err })?;
     eprintln!("Added artifact '{name}' to release {}", &oid.to_string()[..7]);
     if std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact locate {oid} {cid} <url>` to add a download location");
+        eprintln!("Hint: use `rad-artifact location add {oid} --cid {cid} <url>` to add a download location");
     }
     println!("{cid}");
     Ok(())
 }
 
-fn locate_artifact<G>(
-    command::Locate { oid, cid, url }: command::Locate,
+fn location_add<G>(
+    command::LocationAdd { oid, cid, url }: command::LocationAdd,
     releases: &mut Releases<Repository>,
     signer: &Device<G>,
 ) -> Result<(), error::Locate>
@@ -287,8 +287,8 @@ where
     Ok(())
 }
 
-fn remove_location<G>(
-    command::RemoveLocation { oid, cid, url }: command::RemoveLocation,
+fn location_remove<G>(
+    command::LocationRemove { oid, cid, url }: command::LocationRemove,
     releases: &mut Releases<Repository>,
     signer: &Device<G>,
 ) -> Result<(), error::RemoveLocation>
@@ -759,8 +759,8 @@ mod command {
     #[derive(Parser)]
     pub enum Command {
         Add(Add),
-        Locate(Locate),
-        RemoveLocation(RemoveLocation),
+        /// Manage discovery locations for artifacts.
+        Location(Location),
         Attest(Attest),
         Redact(Redact),
         Show(Show),
@@ -775,6 +775,21 @@ mod command {
         /// Serve an artifact via iroh-blobs using your radicle identity
         #[cfg(feature = "share")]
         Serve(Serve),
+    }
+
+    /// Manage discovery locations for artifacts.
+    ///
+    /// Locations announce where an artifact can be retrieved from.
+    #[derive(Parser)]
+    pub struct Location {
+        #[clap(subcommand)]
+        pub command: LocationCommand,
+    }
+
+    #[derive(Parser)]
+    pub enum LocationCommand {
+        Add(LocationAdd),
+        Remove(LocationRemove),
     }
 
     /// Compute the BLAKE3 CID of a file or directory.
@@ -807,19 +822,19 @@ Examples:
     $ rad-artifact fetch
 
   Fetch a specific artifact:
-    $ rad-artifact fetch abc1234 baf...abc
+    $ rad-artifact fetch abc1234 --cid baf...abc
 
   Fetch to a custom path:
-    $ rad-artifact fetch abc1234 baf...abc -o ./downloads/my-binary
+    $ rad-artifact fetch abc1234 --cid baf...abc -o ./downloads/my-binary
 
   Fetch from a specific URL:
-    $ rad-artifact fetch abc1234 baf...abc --url https://example.com/my-binary")]
+    $ rad-artifact fetch abc1234 --cid baf...abc --url https://example.com/my-binary")]
     pub struct Fetch {
-        /// Git object ID of the release. Must be used with <CID>.
+        /// Git object ID of the release. Required with --cid.
         #[clap(requires = "cid")]
         pub oid: Option<radicle::git::Oid>,
-        /// Content identifier (CID) of the artifact to fetch. Must be used with <OID>.
-        #[clap(requires = "oid")]
+        /// Content identifier of the artifact to fetch. Required with <OID>.
+        #[clap(long, requires = "oid")]
         pub cid: Option<radicle_artifact::Cid>,
         /// Output file path. Defaults to the artifact name in the current directory.
         #[clap(short, long)]
@@ -842,11 +857,12 @@ Examples:
     $ rad-artifact serve ./my-binary
 
   Serve a specific artifact:
-    $ rad-artifact serve ./my-binary baf...abc")]
+    $ rad-artifact serve ./my-binary --cid baf...abc")]
     pub struct Serve {
         /// Path to file or directory to serve.
         pub path: std::path::PathBuf,
         /// Artifact CID. If omitted, launches interactive picker.
+        #[clap(long)]
         pub cid: Option<radicle_artifact::Cid>,
     }
 
@@ -858,16 +874,18 @@ Examples:
 Examples:
   Compute the CID and add a release artifact:
     $ rad-artifact cid ./my-binary
-    $ rad-artifact add abc1234 baf...abc \"my-binary v1.0 linux-amd64\"
+    $ rad-artifact add abc1234 --cid baf...abc -n \"my-binary v1.0\"
 
   Add an artifact for a tagged release:
-    $ rad-artifact add v1.0.0 baf...abc \"my-binary v1.0\"")]
+    $ rad-artifact add v1.0.0 --cid baf...abc --name \"my-binary v1.0\"")]
     pub struct Add {
         /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact.
+        #[clap(long)]
         pub cid: Cid,
         /// Human-readable description of the artifact.
+        #[clap(short, long)]
         pub name: String,
     }
 
@@ -878,14 +896,15 @@ Examples:
     #[clap(after_long_help = "\
 Examples:
   Register an HTTPS download location:
-    $ rad-artifact locate abc1234 baf...abc https://example.com/my-binary
+    $ rad-artifact location add abc1234 --cid baf...abc https://example.com/my-binary
 
   Register an iroh-blobs endpoint:
-    $ rad-artifact locate abc1234 baf...abc iroh://<endpoint-id>")]
-    pub struct Locate {
+    $ rad-artifact location add abc1234 --cid baf...abc iroh://<endpoint-id>")]
+    pub struct LocationAdd {
         /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact.
+        #[clap(long)]
         pub cid: Cid,
         /// URL where the artifact can be retrieved.
         pub url: Url,
@@ -900,6 +919,7 @@ Examples:
         /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact to attest.
+        #[clap(long)]
         pub cid: Cid,
     }
 
@@ -914,11 +934,12 @@ Examples:
     #[clap(after_long_help = "\
 Examples:
   Redact a compromised artifact:
-    $ rad-artifact redact abc1234 baf...abc -m \"build compromised, see advisory\"")]
+    $ rad-artifact redact abc1234 --cid baf...abc -m \"build compromised, see advisory\"")]
     pub struct Redact {
         /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact to redact.
+        #[clap(long)]
         pub cid: Cid,
         /// Reason for the redaction.
         #[clap(short = 'm', long = "reason")]
@@ -929,10 +950,11 @@ Examples:
     ///
     /// Retracts a previously announced location.
     #[derive(Parser)]
-    pub struct RemoveLocation {
+    pub struct LocationRemove {
         /// Git object id of the commit or tag the release was created for.
         pub oid: Oid,
         /// Content identifier for the artifact.
+        #[clap(long)]
         pub cid: Cid,
         /// URL to remove.
         pub url: Url,
