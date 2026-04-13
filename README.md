@@ -3,28 +3,13 @@
 A Radicle [Collaborative Object][cob] (COB) for recording content-addressed
 release artifacts and their discovery locations.
 
-A **Release** is associated with a Git OID (annotated tag or commit) and an
-author (the DID of the creating user). It contains one or more **Artifacts**,
-each identified by a content identifier (CID). Each artifact tracks the DID that
-originally added it (the artifact author), and only that DID can update the
-artifact's name. Each user can announce multiple discovery URLs for any artifact,
-enabling decentralized mirroring. Users can also **attest** to an artifact,
-recording that they independently verified the CID matches a build from the same
-commit. Users can also **redact** an artifact, signaling that it should not be
-used (e.g. due to a supply chain compromise or build reproducibility failure).
-Redaction is permanent: it supersedes any prior attestation from the same DID and
-prevents that DID from attesting again.
+A **Release** is associated with a Git OID (annotated tag or commit) and an author (the DID of the creating user). It contains one or more **Artifacts**, each identified by a content identifier (CID). Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Each user can announce multiple discovery URLs for any artifact, enabling decentralized mirroring. Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
 Each user is identified by a DID derived which is currently mapped 1:1 to the Radicle NodeID, an ED25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
 
 > **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
 
-This COB is **build-system agnostic**. It works with any toolchain or build
-process that produces addressable artifacts. Ideally your builds are
-deterministic (reproducible), which lets other delegates independently verify
-artifacts and record attestations. However, deterministic builds are not a
-requirement; you can use radicle-artifact purely for publishing and discovering
-release artifacts without attestation.
+This COB is **build-system agnostic**. It works with any toolchain or build process that produces addressable artifacts. Ideally your builds are deterministic (reproducible), which lets other delegates independently verify artifacts and record attestations. However, deterministic builds are not a requirement; you can use radicle-artifact purely for publishing and discovering release artifacts without attestation.
 
 ## Workflow
 
@@ -60,9 +45,9 @@ Release
 
 ## Collaboration model
 
-Any user can contribute to any release. There is no restriction to the original
-author. This means any user can add artifacts, announce discovery locations, and
-record attestations on releases created by others. The `author` field records who created the release but does not gate contributions.
+Any user can contribute to any release. There is no restriction to the original author. This means any user can add artifacts, announce discovery locations, and record attestations on releases created by others. The `author` field records who created the release but does not gate contributions.
+
+The CLI scopes release lookups to repository **delegates**. When you reference a commit, only releases authored by delegates are considered. This prevents non-delegate releases from shadowing or blocking delegate releases. Non-delegate releases still exist in the store and are visible via `list`.
 
 ## Actions
 
@@ -77,18 +62,24 @@ record attestations on releases created by others. The `author` field records wh
 
 ## CLI usage
 
+`<COMMIT>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**.
+
 ```
-rad-artifact add <OID> <CID> <NAME>              # add artifact (creates release if needed)
-rad-artifact locate <OID> <CID> <URL>            # add discovery URL
-rad-artifact remove-location <OID> <CID> <URL>   # remove discovery URL
-rad-artifact attest <OID> <CID>                  # attest to an artifact
-rad-artifact redact <OID> <CID> <REASON>         # redact an artifact
-rad-artifact show <OID> [--pretty]               # show release
-rad-artifact list [--pretty] [--verbose]          # list all releases
+rad-artifact add <COMMIT> --cid <CID> -n <NAME>              # add artifact (creates release if needed)
+rad-artifact location add <COMMIT> --cid <CID> <URL>         # add discovery URL
+rad-artifact location remove <COMMIT> --cid <CID> <URL>      # remove discovery URL
+rad-artifact attest <COMMIT> --cid <CID>                     # attest to an artifact
+rad-artifact redact <COMMIT> --cid <CID> -m <REASON>         # redact an artifact
+rad-artifact show <COMMIT> [--pretty]                        # show release
+rad-artifact list [--pretty] [--delegates-only]              # list all releases
+rad-artifact cid <PATH>                                      # compute BLAKE3 CID
+rad-artifact fetch [<COMMIT> --cid <CID>]                    # fetch artifact (interactive without args)
+rad-artifact serve <PATH> [--cid <CID>]                      # serve artifact via iroh-blobs
 ```
 
 Use `--repository <RID>` to target a specific repo (defaults to cwd).
 Use `--no-sync` to skip network announcement after writes.
+Use `--no-input` to disable interactive prompts (for scripts and CI).
 
 ## Project structure
 
