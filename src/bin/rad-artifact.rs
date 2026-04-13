@@ -15,7 +15,7 @@ use radicle::{
         sync::{Announcer, AnnouncerConfig, ReplicationFactor},
         AliasStore, Handle, Node,
     },
-    prelude::{Profile, ReadRepository, ReadStorage, RepoId},
+    prelude::{Profile, ReadRepository, ReadStorage, RepoId, WriteRepository},
     profile,
     storage::git::Repository,
 };
@@ -160,7 +160,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Add(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            add_artifact(cmd, &mut releases, &signer)?;
+            add_artifact(cmd, &mut releases, &repo, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -169,10 +169,10 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             let signer = profile.signer().map_err(error::Signer)?;
             match loc.command {
                 LocationCommand::Add(cmd) => {
-                    location_add(cmd, &mut releases, &signer)?;
+                    location_add(cmd, &mut releases, &repo, &signer)?;
                 }
                 LocationCommand::Remove(cmd) => {
-                    location_remove(cmd, &mut releases, &signer)?;
+                    location_remove(cmd, &mut releases, &repo, &signer)?;
                 }
             }
             if !args.no_sync {
@@ -181,14 +181,14 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Attest(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            attest_artifact(cmd, &mut releases, &signer)?;
+            attest_artifact(cmd, &mut releases, &repo, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Redact(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            redact_artifact(cmd, &mut releases, &signer)?;
+            redact_artifact(cmd, &mut releases, &repo, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -205,13 +205,15 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
 }
 
 fn add_artifact<G>(
-    command::Add { oid, cid, name }: command::Add,
+    command::Add { commit, cid, name }: command::Add,
     releases: &mut Releases<Repository>,
+    repo: &Repository,
     signer: &Device<G>,
 ) -> Result<(), error::Add>
 where
     G: Signer<crypto::Signature>,
 {
+    let oid = resolve_commit(&commit, repo)?;
     let mut release = releases
         .find_or_create_by_oid(oid, signer)
         .map_err(|err| error::Add::FindOrCreate { oid, err })?;
@@ -221,20 +223,22 @@ where
         .map_err(|err| error::Add::Store { id, err })?;
     eprintln!("Added artifact '{name}' to release {}", &oid.to_string()[..7]);
     if std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact location add {oid} --cid {cid} <url>` to add a download location");
+        eprintln!("Hint: use `rad-artifact location add {commit} --cid {cid} <url>` to add a download location");
     }
     println!("{cid}");
     Ok(())
 }
 
 fn location_add<G>(
-    command::LocationAdd { oid, cid, url }: command::LocationAdd,
+    command::LocationAdd { commit, cid, url }: command::LocationAdd,
     releases: &mut Releases<Repository>,
+    repo: &Repository,
     signer: &Device<G>,
 ) -> Result<(), error::Locate>
 where
     G: Signer<crypto::Signature>,
 {
+    let oid = resolve_commit(&commit, repo)?;
     let id = find_unique_by_oid(oid, releases)?;
     let mut release = releases
         .get_mut(&id)
@@ -244,19 +248,21 @@ where
         .map_err(|err| error::Locate::Store { id, err })?;
     eprintln!("Added location {url} for artifact {cid}");
     if std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact show --pretty {oid}` to verify the release");
+        eprintln!("Hint: use `rad-artifact show --pretty {commit}` to verify the release");
     }
     Ok(())
 }
 
 fn attest_artifact<G>(
-    command::Attest { oid, cid }: command::Attest,
+    command::Attest { commit, cid }: command::Attest,
     releases: &mut Releases<Repository>,
+    repo: &Repository,
     signer: &Device<G>,
 ) -> Result<(), error::Attest>
 where
     G: Signer<crypto::Signature>,
 {
+    let oid = resolve_commit(&commit, repo)?;
     let id = find_unique_by_oid(oid, releases)?;
     let mut release = releases
         .get_mut(&id)
@@ -269,13 +275,15 @@ where
 }
 
 fn redact_artifact<G>(
-    command::Redact { oid, cid, reason }: command::Redact,
+    command::Redact { commit, cid, reason }: command::Redact,
     releases: &mut Releases<Repository>,
+    repo: &Repository,
     signer: &Device<G>,
 ) -> Result<(), error::Redact>
 where
     G: Signer<crypto::Signature>,
 {
+    let oid = resolve_commit(&commit, repo)?;
     let id = find_unique_by_oid(oid, releases)?;
     let mut release = releases
         .get_mut(&id)
@@ -288,13 +296,15 @@ where
 }
 
 fn location_remove<G>(
-    command::LocationRemove { oid, cid, url }: command::LocationRemove,
+    command::LocationRemove { commit, cid, url }: command::LocationRemove,
     releases: &mut Releases<Repository>,
+    repo: &Repository,
     signer: &Device<G>,
 ) -> Result<(), error::RemoveLocation>
 where
     G: Signer<crypto::Signature>,
 {
+    let oid = resolve_commit(&commit, repo)?;
     let id = find_unique_by_oid(oid, releases)?;
     let mut release = releases
         .get_mut(&id)
@@ -323,12 +333,13 @@ fn show_release(
         pretty,
         json,
         redacted,
-        oid,
+        commit,
     }: command::Show,
     releases: &Releases<Repository>,
     repo: &Repository,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
+    let oid = resolve_commit(&commit, repo)?;
     let delegates = if redacted {
         None
     } else {
@@ -448,8 +459,11 @@ fn run_fetch(
     repo: &Repository,
 ) -> Result<(), RadArtifactError> {
     // clap's `requires` ensures both or neither are provided.
-    let (oid, cid) = match (args.oid, args.cid) {
-        (Some(oid), Some(cid)) => (oid, cid),
+    let (oid, cid) = match (args.commit, args.cid) {
+        (Some(commit), Some(cid)) => {
+            let oid = resolve_commit(&commit, repo)?;
+            (oid, cid)
+        }
         (None, None) => pick_interactive(no_input, releases, repo)?,
         _ => unreachable!("clap enforces both-or-neither"),
     };
@@ -614,7 +628,7 @@ fn pick_interactive(
 ) -> Result<(Oid, radicle_artifact::Cid), RadArtifactError> {
     if no_input || !std::io::stdin().is_terminal() {
         return Err(error::Share::Usage(
-            "interactive mode requires a terminal; pass <oid> and <cid> arguments, or remove --no-input".into(),
+            "interactive mode requires a terminal; pass <commit> and --cid arguments, or remove --no-input".into(),
         )
         .into());
     }
@@ -698,6 +712,18 @@ fn prompt_choice(label: &str, max: usize) -> Result<usize, RadArtifactError> {
     }
 }
 
+/// Resolve a commit reference (full OID, short OID, or tag name) to an [`Oid`].
+fn resolve_commit(commit: &str, repo: &Repository) -> Result<Oid, error::Resolve> {
+    let object = repo
+        .raw()
+        .revparse_single(commit)
+        .map_err(|err| error::Resolve {
+            commit: commit.to_owned(),
+            err,
+        })?;
+    Ok(object.id().into())
+}
+
 /// Find the unique release for a given OID. Errors if none or more than one exist.
 fn find_unique_by_oid(oid: Oid, releases: &Releases<Repository>) -> Result<ReleaseId, error::Find> {
     let mut iter = releases
@@ -744,6 +770,8 @@ enum RadArtifactError {
     Redact(#[from] error::Redact),
     #[error(transparent)]
     Find(#[from] error::Find),
+    #[error(transparent)]
+    Resolve(#[from] error::Resolve),
     #[cfg(feature = "share")]
     #[error(transparent)]
     Share(#[from] error::Share),
@@ -751,7 +779,6 @@ enum RadArtifactError {
 
 mod command {
     use clap::Parser;
-    use radicle::git::Oid;
     use url::Url;
 
     use radicle_artifact::Cid;
@@ -830,11 +857,11 @@ Examples:
   Fetch from a specific URL:
     $ rad-artifact fetch abc1234 --cid baf...abc --url https://example.com/my-binary")]
     pub struct Fetch {
-        /// Git object ID of the release. Required with --cid.
+        /// Git commit, tag, or abbreviated OID. Required with --cid.
         #[clap(requires = "cid")]
-        pub oid: Option<radicle::git::Oid>,
-        /// Content identifier of the artifact to fetch. Required with <OID>.
-        #[clap(long, requires = "oid")]
+        pub commit: Option<String>,
+        /// Content identifier of the artifact to fetch. Required with <COMMIT>.
+        #[clap(long, requires = "commit")]
         pub cid: Option<radicle_artifact::Cid>,
         /// Output file path. Defaults to the artifact name in the current directory.
         #[clap(short, long)]
@@ -876,11 +903,11 @@ Examples:
     $ rad-artifact cid ./my-binary
     $ rad-artifact add abc1234 --cid baf...abc -n \"my-binary v1.0\"
 
-  Add an artifact for a tagged release:
-    $ rad-artifact add v1.0.0 --cid baf...abc --name \"my-binary v1.0\"")]
+  Add an artifact for another commit:
+    $ rad-artifact add def5678 --cid baf...abc --name \"my-binary v1.0\"")]
     pub struct Add {
-        /// Git object id of the commit or tag the release was created for.
-        pub oid: Oid,
+        /// Git commit, tag, or abbreviated OID of the release.
+        pub commit: String,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -901,8 +928,8 @@ Examples:
   Register an iroh-blobs endpoint:
     $ rad-artifact location add abc1234 --cid baf...abc iroh://<endpoint-id>")]
     pub struct LocationAdd {
-        /// Git object id of the commit or tag the release was created for.
-        pub oid: Oid,
+        /// Git commit, tag, or abbreviated OID of the release.
+        pub commit: String,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -916,8 +943,8 @@ Examples:
     /// obtained the same CID. Idempotent — attesting twice is a no-op.
     #[derive(Parser)]
     pub struct Attest {
-        /// Git object id of the commit or tag the release was created for.
-        pub oid: Oid,
+        /// Git commit, tag, or abbreviated OID of the release.
+        pub commit: String,
         /// Content identifier for the artifact to attest.
         #[clap(long)]
         pub cid: Cid,
@@ -936,8 +963,8 @@ Examples:
   Redact a compromised artifact:
     $ rad-artifact redact abc1234 --cid baf...abc -m \"build compromised, see advisory\"")]
     pub struct Redact {
-        /// Git object id of the commit or tag the release was created for.
-        pub oid: Oid,
+        /// Git commit, tag, or abbreviated OID of the release.
+        pub commit: String,
         /// Content identifier for the artifact to redact.
         #[clap(long)]
         pub cid: Cid,
@@ -951,8 +978,8 @@ Examples:
     /// Retracts a previously announced location.
     #[derive(Parser)]
     pub struct LocationRemove {
-        /// Git object id of the commit or tag the release was created for.
-        pub oid: Oid,
+        /// Git commit, tag, or abbreviated OID of the release.
+        pub commit: String,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -986,8 +1013,8 @@ Examples:
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
-        /// Git object id of the commit or tag the release was created for.
-        pub oid: Oid,
+        /// Git commit, tag, or abbreviated OID of the release.
+        pub commit: String,
     }
 
     /// List all release COBs for a repository.
@@ -1041,6 +1068,8 @@ mod error {
     #[derive(Debug, Error)]
     pub enum Show {
         #[error(transparent)]
+        Resolve(#[from] Resolve),
+        #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to get repository delegates")]
         Delegates(#[source] RepositoryError),
@@ -1060,6 +1089,8 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum Add {
+        #[error(transparent)]
+        Resolve(#[from] Resolve),
         #[error("failed to find or create release for commit {oid}")]
         FindOrCreate {
             oid: Oid,
@@ -1077,6 +1108,8 @@ mod error {
     #[derive(Debug, Error)]
     pub enum Locate {
         #[error(transparent)]
+        Resolve(#[from] Resolve),
+        #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to add location to release {id}")]
         Store {
@@ -1089,6 +1122,8 @@ mod error {
     #[derive(Debug, Error)]
     pub enum Attest {
         #[error(transparent)]
+        Resolve(#[from] Resolve),
+        #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to attest artifact in release {id}")]
         Store {
@@ -1100,6 +1135,8 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum Redact {
+        #[error(transparent)]
+        Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to redact artifact in release {id}")]
@@ -1118,6 +1155,8 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum RemoveLocation {
+        #[error(transparent)]
+        Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to remove location from release {id}")]
@@ -1140,6 +1179,14 @@ mod error {
             #[source]
             err: cob::store::Error,
         },
+    }
+
+    #[derive(Debug, Error)]
+    #[error("could not resolve '{commit}' to a git object")]
+    pub struct Resolve {
+        pub commit: String,
+        #[source]
+        pub err: radicle::git::raw::Error,
     }
 
     #[derive(Debug, Error)]
