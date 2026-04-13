@@ -3,8 +3,10 @@
 //! These can be used in tools that wish to display data, such as the
 //! `rad-artifact` CLI tool.
 
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 
+use chrono::{DateTime, Utc};
 use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repository};
 use serde::Serialize;
 use url::Url;
@@ -38,6 +40,36 @@ fn push_line(s: &mut String, line: String) {
     s.push('\n');
 }
 
+/// Format rows as a column-aligned table, indented by `indent` spaces.
+///
+/// Computes column widths from all rows in a first pass, then emits each row
+/// with cells padded to those widths. Trailing whitespace on each line is
+/// trimmed.
+fn format_table(rows: &[Vec<String>], indent: usize) -> String {
+    let ncols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut widths = vec![0usize; ncols];
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+    let prefix = " ".repeat(indent);
+    let mut out = String::new();
+    for row in rows {
+        let mut line = prefix.clone();
+        for (i, cell) in row.iter().enumerate() {
+            if i + 1 < row.len() {
+                line.push_str(&format!("{:<width$}  ", cell, width = widths[i]));
+            } else {
+                line.push_str(cell);
+            }
+        }
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
 /// Resolve the first line of a git commit message for display.
 ///
 /// Implementations typically look up the commit via `git2` and return
@@ -65,10 +97,9 @@ impl CommitTitle for Repository {
     }
 }
 
-/// A set of [`Release`]s sorted by their [`ReleaseId`].
+/// A set of [`Release`]s sorted by creation time.
 #[derive(Serialize)]
 pub struct Releases {
-    count: usize,
     releases: Vec<Release>,
 }
 
@@ -102,19 +133,15 @@ impl Releases {
             })
             .filter(|r| show_empty || !r.artifacts.is_empty())
             .collect();
-        releases.sort_by_cached_key(|r| r.release_id);
+        releases.sort_by_key(|r| Reverse(r.created_at));
 
-        Self {
-            count: releases.len(),
-            releases,
-        }
+        Self { releases }
     }
 
-    /// Pretty print the set of [`Releases`] and their count.
+    /// Pretty print the set of [`Release`]s.
     pub fn pretty(&self) -> String {
         let mut s = String::new();
 
-        push_line(&mut s, format!("count: {}", self.count));
         for shown in self.releases.iter() {
             s.push_str(&shown.pretty());
             s.push('\n');
@@ -130,6 +157,8 @@ impl Releases {
 #[derive(Serialize)]
 pub struct Release {
     release_id: ReleaseId,
+    /// Unix seconds when this release COB was created.
+    created_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     author_alias: Option<String>,
     author: Did,
@@ -225,6 +254,7 @@ impl Release {
 
         Self {
             release_id,
+            created_at: release.timestamp(),
             author_alias,
             author,
             oid: *release.oid(),
@@ -238,26 +268,56 @@ impl Release {
         let mut s = String::new();
 
         let author = format_did(&self.author, &self.author_alias);
+        let short_id = &self.release_id.to_string()[..7];
         let short_oid = &self.oid.to_string()[..7];
         let title_suffix = match &self.title {
             Some(t) => format!(" {t}"),
             None => String::new(),
         };
+        let date = DateTime::<Utc>::from_timestamp(self.created_at as i64, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| self.created_at.to_string());
         push_line(
             &mut s,
             format!(
-                "release {} by {} (commit {short_oid}{title_suffix})",
-                self.release_id, author
+                "release {short_id} {date} by {author} (commit {short_oid}{title_suffix})",
             ),
         );
+        // Build a per-release artifact table: CID | name | DID | URL.
+        // Multiple locations use blank cells in the CID/name columns.
+        // Attestations and redactions follow as additional rows.
+        let mut rows: Vec<Vec<String>> = Vec::new();
         for artifact in self.artifacts.iter() {
-            push_line(
-                &mut s,
-                format!("  artifact {} ({})", artifact.cid, artifact.name),
-            );
+            // Truncate CID to 16 visible chars for column width.
+            let short_cid = if artifact.cid.len() > 16 {
+                format!("{}…", &artifact.cid[..15])
+            } else {
+                artifact.cid.clone()
+            };
+
+            let mut first = true;
             for loc in artifact.locations.iter() {
                 let did = format_did(&loc.did, &loc.alias);
-                push_line(&mut s, format!("    {did} {}", loc.url));
+                if first {
+                    rows.push(vec![
+                        short_cid.clone(),
+                        artifact.name.clone(),
+                        did,
+                        loc.url.to_string(),
+                    ]);
+                    first = false;
+                } else {
+                    rows.push(vec![
+                        String::new(),
+                        String::new(),
+                        did,
+                        loc.url.to_string(),
+                    ]);
+                }
+            }
+            if first {
+                // No locations — still show CID and name.
+                rows.push(vec![short_cid, artifact.name.clone()]);
             }
             if !artifact.attestations.is_empty() {
                 let nodes: Vec<_> = artifact
@@ -265,16 +325,23 @@ impl Release {
                     .iter()
                     .map(|a| format_did(&a.did, &a.alias))
                     .collect();
-                push_line(&mut s, format!("    attestations: {}", nodes.join(", ")));
+                rows.push(vec![
+                    String::new(),
+                    String::new(),
+                    format!("attestations: {}", nodes.join(", ")),
+                ]);
             }
-            if !artifact.redactions.is_empty() {
-                push_line(&mut s, "    redactions:".to_string());
-                for r in artifact.redactions.iter() {
-                    let did = format_did(&r.did, &r.alias);
-                    push_line(&mut s, format!("      {did} - {}", r.reason));
-                }
+            for r in artifact.redactions.iter() {
+                let did = format_did(&r.did, &r.alias);
+                rows.push(vec![
+                    String::new(),
+                    String::new(),
+                    format!("redacted: {did}"),
+                    r.reason.clone(),
+                ]);
             }
         }
+        s.push_str(&format_table(&rows, 2));
 
         s
     }

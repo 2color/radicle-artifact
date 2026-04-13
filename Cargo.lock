@@ -3698,6 +3698,7 @@ version = "0.7.0"
 dependencies = [
  "blake3",
  "bytes",
+ "chrono",
  "cid",
  "clap",
  "dunce",

@@ -141,6 +141,10 @@ pub struct Release {
     author: Did,
     oid: Oid,
     artifacts: IndexMap<Cid, Artifact>,
+    /// Unix seconds when this release COB was first created.
+    /// Derived from the first op's timestamp; not stored in the action payload.
+    #[serde(skip)]
+    timestamp: u64,
 }
 
 /// A single artifact identified by its [`Cid`].
@@ -311,11 +315,12 @@ impl CobAction for Action {
 
 impl Release {
     /// Construct a new [`Release`].
-    fn new(oid: Oid, author: Did) -> Self {
+    fn new(oid: Oid, author: Did, timestamp: u64) -> Self {
         Self {
             author,
             oid,
             artifacts: IndexMap::new(),
+            timestamp,
         }
     }
 
@@ -327,6 +332,11 @@ impl Release {
     /// Get the [`Oid`] this release is associated with.
     pub fn oid(&self) -> &Oid {
         &self.oid
+    }
+
+    /// Get the Unix timestamp (seconds) when this release was created.
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
     }
 
     /// Get all artifacts in this release.
@@ -417,7 +427,7 @@ impl store::Cob for Release {
         repo.commit(oid)
             .map_err(|err| error::Build::MissingCommit { oid, err })?;
         let author = Did::from(op.author);
-        let mut release = Self::new(oid, author);
+        let mut release = Self::new(oid, author, op.timestamp.as_secs());
         for action in actions {
             release.action(author, action);
         }
