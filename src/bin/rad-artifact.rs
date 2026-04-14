@@ -178,7 +178,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                     location_add(cmd, &mut releases, &repo, &delegates, &signer)?;
                 }
                 LocationCommand::Remove(cmd) => {
-                    location_remove(cmd, &mut releases, &repo, &delegates, &signer)?;
+                    location_remove(cmd, &mut releases, &repo, &signer)?;
                 }
             }
             if !args.no_sync {
@@ -316,14 +316,17 @@ fn location_remove<G>(
     command::LocationRemove { commit, cid, url }: command::LocationRemove,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    delegates: &BTreeSet<Did>,
     signer: &Device<G>,
 ) -> Result<(), error::RemoveLocation>
 where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
-    let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
+    // Unlike location_add, we don't restrict to delegate-authored releases: any
+    // user should be able to retract their own locations from any release, and
+    // the COB state machine already enforces that only the original announcer
+    // can remove a given location.
+    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
