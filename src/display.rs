@@ -299,8 +299,8 @@ impl Release {
             let cid_cell = if verbose {
                 artifact.cid.clone()
             } else {
-                // Truncate CID to 16 visible chars for column width.
-                format!("{}…", &artifact.cid[..15])
+                // Truncate CID to first 6 and last 6 visible chars for column width.
+                format!("{}…{}", &artifact.cid[..6], &artifact.cid[artifact.cid.len() - 6..])
             };
 
             let mut first = true;
