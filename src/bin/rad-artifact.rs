@@ -475,7 +475,7 @@ fn run_fetch(
             let oid = resolve_commit(&commit, repo)?;
             (oid, cid)
         }
-        (None, None) => pick_interactive(no_input, releases, repo)?,
+        (None, None) => prompt::pick_interactive(no_input, releases, repo)?,
         _ => unreachable!("clap enforces both-or-neither"),
     };
 
@@ -544,7 +544,7 @@ fn run_serve(
     let cid = match args.cid {
         Some(cid) => cid,
         None => {
-            let (_oid, cid) = pick_interactive(no_input, releases, repo)?;
+            let (_oid, cid) = prompt::pick_interactive(no_input, releases, repo)?;
             cid
         }
     };
@@ -559,7 +559,7 @@ fn run_serve(
 
     eprintln!("Artifact: {} (CID: {cid})", artifact.name());
 
-    let passphrase = radicle::profile::env::passphrase();
+    let passphrase = prompt::passphrase_for_keystore(&profile.keystore)?;
     let iroh_sk = share::radicle_secret_to_iroh(&profile.keystore, passphrase)
         .map_err(error::Share::Share)?;
     let preset = share::EndpointPreset::from_env().map_err(error::Share::Share)?;
@@ -627,99 +627,150 @@ fn artifact_locations(artifact: &Artifact) -> Result<Vec<share::Location<'_>>, R
     Ok(locations)
 }
 
-/// Interactive mode: list releases, pick one, list its artifacts, pick one.
-///
-/// Requires stdin to be a TTY. Errors if `no_input` is set or stdin is not
-/// interactive, so scripts don't hang waiting for input.
 #[cfg(feature = "share")]
-fn pick_interactive(
-    no_input: bool,
-    releases: &Releases<Repository>,
-    repo: &Repository,
-) -> Result<(Oid, radicle_artifact::Cid), RadArtifactError> {
-    if no_input || !std::io::stdin().is_terminal() {
-        return Err(error::Share::Usage(
-            "interactive mode requires a terminal; pass <commit> and --cid arguments, or remove --no-input".into(),
-        )
-        .into());
-    }
-    let mut all: Vec<(ReleaseId, Release)> = releases
-        .all()
-        .map_err(|e| error::Share::Usage(e.to_string()))?
-        .filter_map(|res| res.ok())
-        .map(|(id, release)| (ReleaseId::from(id), release))
-        .collect();
-    all.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
+mod prompt {
+    use std::io::{BufRead, IsTerminal, Write};
 
-    if all.is_empty() {
-        return Err(error::Share::Usage("no releases found in this repository".into()).into());
-    }
+    use radicle::crypto::ssh::keystore::{Keystore, Passphrase};
+    use radicle::git::Oid;
+    use radicle::storage::git::Repository;
 
-    eprintln!("Releases:");
-    for (i, (_, release)) in all.iter().enumerate() {
-        let oid = release.oid();
-        let short = &oid.to_string()[..7];
-        let title = display::CommitTitle::title(repo, oid).unwrap_or_default();
-        let artifact_count = release.artifacts().len();
-        eprintln!(
-            "  [{}] {} {} ({} artifact{})",
-            i + 1,
-            short,
-            title,
-            artifact_count,
-            if artifact_count == 1 { "" } else { "s" }
-        );
-    }
+    use radicle_artifact::*;
 
-    let release_idx = prompt_choice("Select release", all.len())?;
-    let (_, release) = &all[release_idx];
+    use super::{display, error, RadArtifactError};
 
-    let artifacts: Vec<(&radicle_artifact::Cid, &Artifact)> = release.artifacts().iter().collect();
-    if artifacts.is_empty() {
-        return Err(error::Share::Usage("selected release has no artifacts".into()).into());
-    }
+    /// Get the passphrase for an encrypted keystore, prompting interactively
+    /// if needed.
+    ///
+    /// Returns `None` for unencrypted keystores. For encrypted keystores,
+    /// checks the `RAD_PASSPHRASE` env var first, then prompts on stderr.
+    pub fn passphrase_for_keystore(
+        keystore: &Keystore,
+    ) -> Result<Option<Passphrase>, RadArtifactError> {
+        let is_encrypted = keystore
+            .is_encrypted()
+            .map_err(|e| error::Share::Usage(format!("failed to check keystore: {e}")))?;
 
-    eprintln!("Artifacts:");
-    for (i, (cid, artifact)) in artifacts.iter().enumerate() {
-        let redacted = if artifact.is_redacted() {
-            " [REDACTED]"
-        } else {
-            ""
-        };
-        eprintln!(
-            "  [{}] {} (CID: {}){}",
-            i + 1,
-            artifact.name(),
-            cid,
-            redacted
-        );
+        if !is_encrypted {
+            return Ok(None);
+        }
+
+        // Try env var first, matching radicle convention.
+        if let Some(passphrase) = radicle::profile::env::passphrase() {
+            return Ok(Some(passphrase));
+        }
+
+        if !std::io::stderr().is_terminal() {
+            return Err(error::Share::Usage(
+                "encrypted keystore requires RAD_PASSPHRASE (no terminal for prompt)".into(),
+            )
+            .into());
+        }
+
+        let passphrase = inquire::Password::new("Passphrase:")
+            .with_display_mode(inquire::PasswordDisplayMode::Masked)
+            .without_confirmation()
+            .prompt()
+            .map_err(|e| error::Share::Usage(format!("passphrase prompt failed: {e}")))?;
+
+        Ok(Some(Passphrase::from(passphrase)))
     }
 
-    let artifact_idx = prompt_choice("Select artifact", artifacts.len())?;
-    let (cid, _) = artifacts[artifact_idx];
+    /// Interactive mode: list releases, pick one, list its artifacts, pick one.
+    ///
+    /// Requires stdin to be a TTY. Errors if `no_input` is set or stdin is not
+    /// interactive, so scripts don't hang waiting for input.
+    pub fn pick_interactive(
+        no_input: bool,
+        releases: &Releases<Repository>,
+        repo: &Repository,
+    ) -> Result<(Oid, radicle_artifact::Cid), RadArtifactError> {
+        if no_input || !std::io::stdin().is_terminal() {
+            return Err(error::Share::Usage(
+                "interactive mode requires a terminal; pass <commit> and --cid arguments, or remove --no-input".into(),
+            )
+            .into());
+        }
+        let mut all: Vec<(ReleaseId, Release)> = releases
+            .all()
+            .map_err(|e| error::Share::Usage(e.to_string()))?
+            .filter_map(|res| res.ok())
+            .map(|(id, release)| (ReleaseId::from(id), release))
+            .collect();
+        all.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
 
-    Ok((*release.oid(), *cid))
-}
+        if all.is_empty() {
+            return Err(
+                error::Share::Usage("no releases found in this repository".into()).into(),
+            );
+        }
 
-/// Prompt user for a 1-indexed choice, return 0-indexed.
-#[cfg(feature = "share")]
-fn prompt_choice(label: &str, max: usize) -> Result<usize, RadArtifactError> {
-    use std::io::{BufRead, Write};
+        eprintln!("Releases:");
+        for (i, (_, release)) in all.iter().enumerate() {
+            let oid = release.oid();
+            let short = &oid.to_string()[..7];
+            let title = display::CommitTitle::title(repo, oid).unwrap_or_default();
+            let artifact_count = release.artifacts().len();
+            eprintln!(
+                "  [{}] {} {} ({} artifact{})",
+                i + 1,
+                short,
+                title,
+                artifact_count,
+                if artifact_count == 1 { "" } else { "s" }
+            );
+        }
 
-    let stdin = std::io::stdin();
-    loop {
-        eprint!("{label} [1-{max}]: ");
-        std::io::stderr().flush().map_err(error::Share::Io)?;
+        let release_idx = choice("Select release", all.len())?;
+        let (_, release) = &all[release_idx];
 
-        let mut line = String::new();
-        stdin
-            .lock()
-            .read_line(&mut line)
-            .map_err(error::Share::Io)?;
+        let artifacts: Vec<(&radicle_artifact::Cid, &Artifact)> =
+            release.artifacts().iter().collect();
+        if artifacts.is_empty() {
+            return Err(
+                error::Share::Usage("selected release has no artifacts".into()).into(),
+            );
+        }
 
-        match line.trim().parse::<usize>() {
-            Ok(n) if n >= 1 && n <= max => return Ok(n - 1),
-            _ => eprintln!("Invalid choice, try again."),
+        eprintln!("Artifacts:");
+        for (i, (cid, artifact)) in artifacts.iter().enumerate() {
+            let redacted = if artifact.is_redacted() {
+                " [REDACTED]"
+            } else {
+                ""
+            };
+            eprintln!(
+                "  [{}] {} (CID: {}){}",
+                i + 1,
+                artifact.name(),
+                cid,
+                redacted
+            );
+        }
+
+        let artifact_idx = choice("Select artifact", artifacts.len())?;
+        let (cid, _) = artifacts[artifact_idx];
+
+        Ok((*release.oid(), *cid))
+    }
+
+    /// Prompt user for a 1-indexed choice, return 0-indexed.
+    fn choice(label: &str, max: usize) -> Result<usize, RadArtifactError> {
+        let stdin = std::io::stdin();
+        loop {
+            eprint!("{label} [1-{max}]: ");
+            std::io::stderr().flush().map_err(error::Share::Io)?;
+
+            let mut line = String::new();
+            stdin
+                .lock()
+                .read_line(&mut line)
+                .map_err(error::Share::Io)?;
+
+            match line.trim().parse::<usize>() {
+                Ok(n) if n >= 1 && n <= max => return Ok(n - 1),
+                _ => eprintln!("Invalid choice, try again."),
+            }
         }
     }
 }
