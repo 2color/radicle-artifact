@@ -18,19 +18,21 @@ fn resolve(did: &Did, aliases: &impl AliasStore) -> Option<String> {
     aliases.alias(did.as_key()).map(|a| a.to_string())
 }
 
-/// Compact format for pretty output: `alice@z6MkfEa…z3bQ9Wk` when an alias
-/// is available, or just the truncated key otherwise. The `did:key:` prefix is
-/// stripped and keys longer than 14 chars are shown as first 7 + `…` + last 7.
-fn format_did(did: &Did, alias: &Option<String>) -> String {
+/// Format a DID for display. The `did:key:` prefix is always stripped.
+///
+/// When `full` is false: keys are shown as first 7 + `…` + last 7.
+/// When `full` is true the complete key is shown. In both cases an alias
+/// is prepended as `alice@<key>` when available.
+fn format_did(did: &Did, alias: &Option<String>, full: bool) -> String {
     let key = did.to_string().replace("did:key:", "");
-    let compact = if key.len() > 14 {
-        format!("{}…{}", &key[..7], &key[key.len() - 7..])
-    } else {
+    let displayed = if full {
         key
+    } else {
+        format!("{}…{}", &key[..7], &key[key.len() - 7..])
     };
     match alias {
-        Some(alias) => format!("{alias}@{compact}"),
-        None => compact,
+        Some(alias) => format!("{alias}@{displayed}"),
+        None => displayed,
     }
 }
 
@@ -139,11 +141,14 @@ impl Releases {
     }
 
     /// Pretty print the set of [`Release`]s.
-    pub fn pretty(&self) -> String {
+    ///
+    /// When `verbose` is true, CIDs and NodeIDs are rendered in full rather
+    /// than being truncated.
+    pub fn pretty(&self, verbose: bool) -> String {
         let mut s = String::new();
 
         for shown in self.releases.iter() {
-            s.push_str(&shown.pretty());
+            s.push_str(&shown.pretty(verbose));
             s.push('\n');
         }
 
@@ -264,10 +269,13 @@ impl Release {
     }
 
     /// Pretty print a release.
-    pub fn pretty(&self) -> String {
+    ///
+    /// When `verbose` is true, CIDs and NodeIDs are rendered in full rather
+    /// than being truncated.
+    pub fn pretty(&self, verbose: bool) -> String {
         let mut s = String::new();
 
-        let author = format_did(&self.author, &self.author_alias);
+        let author = format_did(&self.author, &self.author_alias, verbose);
         let short_id = &self.release_id.to_string()[..7];
         let short_oid = &self.oid.to_string()[..7];
         let title_suffix = match &self.title {
@@ -288,19 +296,19 @@ impl Release {
         // Attestations and redactions follow as additional rows.
         let mut rows: Vec<Vec<String>> = Vec::new();
         for artifact in self.artifacts.iter() {
-            // Truncate CID to 16 visible chars for column width.
-            let short_cid = if artifact.cid.len() > 16 {
-                format!("{}…", &artifact.cid[..15])
-            } else {
+            let cid_cell = if verbose {
                 artifact.cid.clone()
+            } else {
+                // Truncate CID to 16 visible chars for column width.
+                format!("{}…", &artifact.cid[..15])
             };
 
             let mut first = true;
             for loc in artifact.locations.iter() {
-                let did = format_did(&loc.did, &loc.alias);
+                let did = format_did(&loc.did, &loc.alias, verbose);
                 if first {
                     rows.push(vec![
-                        short_cid.clone(),
+                        cid_cell.clone(),
                         artifact.name.clone(),
                         did,
                         loc.url.to_string(),
@@ -317,13 +325,13 @@ impl Release {
             }
             if first {
                 // No locations — still show CID and name.
-                rows.push(vec![short_cid, artifact.name.clone()]);
+                rows.push(vec![cid_cell, artifact.name.clone()]);
             }
             if !artifact.attestations.is_empty() {
                 let nodes: Vec<_> = artifact
                     .attestations
                     .iter()
-                    .map(|a| format_did(&a.did, &a.alias))
+                    .map(|a| format_did(&a.did, &a.alias, verbose))
                     .collect();
                 rows.push(vec![
                     String::new(),
@@ -332,7 +340,7 @@ impl Release {
                 ]);
             }
             for r in artifact.redactions.iter() {
-                let did = format_did(&r.did, &r.alias);
+                let did = format_did(&r.did, &r.alias, verbose);
                 rows.push(vec![
                     String::new(),
                     String::new(),

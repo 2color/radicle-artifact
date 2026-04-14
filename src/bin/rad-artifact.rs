@@ -350,6 +350,7 @@ fn show_release(
     command::Show {
         pretty,
         json,
+        verbose,
         redacted,
         commit,
     }: command::Show,
@@ -370,7 +371,7 @@ fn show_release(
     let show =
         radicle_artifact::display::Release::new(id, &release, aliases, redaction_delegates, title);
     if use_pretty(pretty, json) {
-        println!("{}", show.pretty());
+        println!("{}", show.pretty(verbose));
     } else {
         println!(
             "{}",
@@ -432,7 +433,7 @@ fn list_releases(
     let redaction_filter = if redacted { None } else { delegates.as_ref() };
     let releases = display::Releases::new(iter, aliases, redaction_filter, empty, repo);
     if use_pretty(pretty, json) {
-        println!("{}", releases.pretty());
+        println!("{}", releases.pretty(verbose));
     } else {
         println!(
             "{}",
@@ -1033,6 +1034,9 @@ Examples:
         /// This is the default when stdout is not a terminal (e.g. piped).
         #[clap(long, conflicts_with = "pretty")]
         pub json: bool,
+        /// Output all information, including intermediate errors.
+        #[clap(long, short)]
+        pub verbose: bool,
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
