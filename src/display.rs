@@ -335,14 +335,12 @@ impl Release {
                     .collect();
                 rows.push(vec![
                     String::new(),
-                    String::new(),
                     format!("attestations: {}", nodes.join(", ")),
                 ]);
             }
             for r in artifact.redactions.iter() {
                 let did = format_did(&r.did, &r.alias, verbose);
                 rows.push(vec![
-                    String::new(),
                     String::new(),
                     format!("redacted: {did}"),
                     r.reason.clone(),
