@@ -637,7 +637,7 @@ mod prompt {
 
     use radicle_artifact::*;
 
-    use super::{display, error, RadArtifactError};
+    use super::{display, error};
 
     /// Get the passphrase for an encrypted keystore, prompting interactively
     /// if needed.
@@ -646,7 +646,7 @@ mod prompt {
     /// checks the `RAD_PASSPHRASE` env var first, then prompts on stderr.
     pub fn passphrase_for_keystore(
         keystore: &Keystore,
-    ) -> Result<Option<Passphrase>, RadArtifactError> {
+    ) -> Result<Option<Passphrase>, error::Share> {
         let is_encrypted = keystore
             .is_encrypted()
             .map_err(|e| error::Share::Usage(format!("failed to check keystore: {e}")))?;
@@ -663,8 +663,7 @@ mod prompt {
         if !std::io::stderr().is_terminal() {
             return Err(error::Share::Usage(
                 "encrypted keystore requires RAD_PASSPHRASE (no terminal for prompt)".into(),
-            )
-            .into());
+            ));
         }
 
         let passphrase = inquire::Password::new("Passphrase:")
@@ -684,12 +683,11 @@ mod prompt {
         no_input: bool,
         releases: &Releases<Repository>,
         repo: &Repository,
-    ) -> Result<(Oid, radicle_artifact::Cid), RadArtifactError> {
+    ) -> Result<(Oid, radicle_artifact::Cid), error::Share> {
         if no_input || !std::io::stdin().is_terminal() {
             return Err(error::Share::Usage(
                 "interactive mode requires a terminal; pass <commit> and --cid arguments, or remove --no-input".into(),
-            )
-            .into());
+            ));
         }
         let mut all: Vec<(ReleaseId, Release)> = releases
             .all()
@@ -700,9 +698,9 @@ mod prompt {
         all.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
 
         if all.is_empty() {
-            return Err(
-                error::Share::Usage("no releases found in this repository".into()).into(),
-            );
+            return Err(error::Share::Usage(
+                "no releases found in this repository".into(),
+            ));
         }
 
         eprintln!("Releases:");
@@ -727,9 +725,9 @@ mod prompt {
         let artifacts: Vec<(&radicle_artifact::Cid, &Artifact)> =
             release.artifacts().iter().collect();
         if artifacts.is_empty() {
-            return Err(
-                error::Share::Usage("selected release has no artifacts".into()).into(),
-            );
+            return Err(error::Share::Usage(
+                "selected release has no artifacts".into(),
+            ));
         }
 
         eprintln!("Artifacts:");
@@ -755,7 +753,7 @@ mod prompt {
     }
 
     /// Prompt user for a 1-indexed choice, return 0-indexed.
-    fn choice(label: &str, max: usize) -> Result<usize, RadArtifactError> {
+    fn choice(label: &str, max: usize) -> Result<usize, error::Share> {
         let stdin = std::io::stdin();
         loop {
             eprint!("{label} [1-{max}]: ");
