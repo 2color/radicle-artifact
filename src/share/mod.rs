@@ -35,10 +35,7 @@ pub use cid::{
     verify_cid, verify_cid_file, ArtifactKind, BLAKE3_HASHSEQ_CODEC, HASH_CODE_BLAKE3, RAW_CODEC,
 };
 pub use endpoint::EndpointPreset;
-pub use fetch::{
-    default_fetchers, download, download_collection, fetch_iroh_blob, fetch_iroh_collection,
-    Fetcher, HttpFetcher, Location,
-};
+pub use fetch::{download, download_collection, fetch_iroh_blob, fetch_iroh_collection, Location};
 pub use keys::{did_to_iroh_public_key, radicle_secret_to_iroh};
 pub use serve::{add_blob, add_collection, Server};
 

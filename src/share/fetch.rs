@@ -1,10 +1,7 @@
 //! Artifact fetching from registered locations.
 //!
-//! Provides a [`Fetcher`] trait for protocol-extensible artifact retrieval,
-//! a built-in [`HttpFetcher`], and iroh-blobs fetching via [`fetch_iroh_blob`]
-//! and [`fetch_iroh_collection`].
-//!
-//! Iroh downloads stream to disk via [`iroh_blobs::store::fs::FsStore`],
+//! Provides HTTP and iroh-blobs fetching for artifacts. HTTP uses [`ureq`];
+//! iroh downloads stream to disk via [`iroh_blobs::store::fs::FsStore`],
 //! avoiding in-memory buffering. Progress is reported via [`indicatif`].
 
 use std::io::{self, BufWriter, Write};
@@ -23,39 +20,22 @@ use super::cid as cid_util;
 use super::endpoint::EndpointPreset;
 use super::Error;
 
-/// A protocol handler that can fetch content from URLs with a given scheme.
-pub trait Fetcher {
-    /// URL schemes this fetcher handles (e.g. `["https", "http"]`).
-    fn schemes(&self) -> &[&str];
-
-    /// Fetch content at `url` into `dest`.
-    fn fetch(&self, url: &Url, dest: &mut dyn Write) -> Result<(), Error>;
-}
-
 /// A location to try fetching an artifact from.
 pub enum Location<'a> {
-    /// Fetch from a URL using a registered [`Fetcher`].
+    /// Fetch from an HTTP(S) URL.
     Url(&'a Url),
     /// Fetch via iroh-blobs. The BLAKE3 hash is extracted from the CID.
     Iroh(iroh::EndpointId),
 }
 
-/// HTTP(S) fetcher using ureq.
-pub struct HttpFetcher;
-
-impl Fetcher for HttpFetcher {
-    fn schemes(&self) -> &[&str] {
-        &["https", "http"]
-    }
-
-    fn fetch(&self, url: &Url, dest: &mut dyn Write) -> Result<(), Error> {
-        let resp = ureq::get(url.as_str())
-            .call()
-            .map_err(|e| Error::Http(e.to_string()))?;
-        let mut reader = resp.into_body().into_reader();
-        io::copy(&mut reader, dest).map_err(Error::Io)?;
-        Ok(())
-    }
+/// Fetch HTTP content at `url` into `dest` using ureq.
+fn fetch_http(url: &Url, dest: &mut dyn Write) -> Result<(), Error> {
+    let resp = ureq::get(url.as_str())
+        .call()
+        .map_err(|e| Error::Http(e.to_string()))?;
+    let mut reader = resp.into_body().into_reader();
+    io::copy(&mut reader, dest).map_err(Error::Io)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +302,6 @@ pub fn download(
     locations: &[Location],
     expected_cid: &Cid,
     dest: &Path,
-    fetchers: &[Box<dyn Fetcher>],
     preset: &EndpointPreset,
 ) -> Result<(), Error> {
     if locations.is_empty() {
@@ -333,16 +312,13 @@ pub fn download(
 
     for location in locations {
         let result = match location {
-            Location::Url(url) => {
-                let scheme = url.scheme();
-                match fetchers.iter().find(|f| f.schemes().contains(&scheme)) {
-                    Some(fetcher) => download_http(fetcher.as_ref(), url, expected_cid, dest),
-                    None => {
-                        errors.push(Error::UnsupportedScheme(scheme.to_string()));
-                        continue;
-                    }
+            Location::Url(url) => match url.scheme() {
+                "https" | "http" => download_http(url, expected_cid, dest),
+                scheme => {
+                    errors.push(Error::UnsupportedScheme(scheme.to_string()));
+                    continue;
                 }
-            }
+            },
             Location::Iroh(endpoint_id) => {
                 fetch_iroh_blob(expected_cid, *endpoint_id, dest, preset.clone())
             }
@@ -361,17 +337,12 @@ pub fn download(
 }
 
 /// Fetch via HTTP to a partial file, verify CID from disk, then rename to dest.
-fn download_http(
-    fetcher: &dyn Fetcher,
-    url: &Url,
-    expected_cid: &Cid,
-    dest: &Path,
-) -> Result<(), Error> {
+fn download_http(url: &Url, expected_cid: &Cid, dest: &Path) -> Result<(), Error> {
     // Write to a .partial file next to the destination, then rename on success.
     let partial = dest.with_extension("partial");
     let file = std::fs::File::create(&partial).map_err(Error::Io)?;
     let mut writer = BufWriter::new(file);
-    let fetch_result = fetcher.fetch(url, &mut writer);
+    let fetch_result = fetch_http(url, &mut writer);
 
     // Clean up the partial file on any error.
     if let Err(e) = fetch_result {
@@ -437,11 +408,6 @@ pub fn download_collection(
     }
 }
 
-/// Returns the default set of URL-based fetchers.
-pub fn default_fetchers() -> Vec<Box<dyn Fetcher>> {
-    vec![Box::new(HttpFetcher)]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,7 +426,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("out");
         let preset = EndpointPreset::default();
-        let result = download(&[], &cid, &dest, &default_fetchers(), &preset);
+        let result = download(&[], &cid, &dest, &preset);
         assert!(matches!(result, Err(Error::NoLocations)));
     }
 
@@ -471,13 +437,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("out");
         let preset = EndpointPreset::default();
-        let result = download(
-            &[Location::Url(&url)],
-            &cid,
-            &dest,
-            &default_fetchers(),
-            &preset,
-        );
+        let result = download(&[Location::Url(&url)], &cid, &dest, &preset);
         assert!(matches!(result, Err(Error::AllFailed(_))));
     }
 }

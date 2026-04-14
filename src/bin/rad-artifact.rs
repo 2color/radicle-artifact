@@ -519,8 +519,7 @@ fn run_fetch(
 
     match kind {
         share::ArtifactKind::Blob => {
-            let fetchers = share::default_fetchers();
-            share::download(&locations, &cid, &output_path, &fetchers, &preset)
+            share::download(&locations, &cid, &output_path, &preset)
                 .map_err(error::Share::Share)?;
         }
         share::ArtifactKind::Collection => {
