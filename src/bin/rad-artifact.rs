@@ -187,14 +187,14 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Attest(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            attest_artifact(cmd, args.no_input, &mut releases, &repo, &delegates, &signer)?;
+            attest_artifact(cmd, args.no_input, &mut releases, &repo, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Redact(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            redact_artifact(cmd, args.no_input, &mut releases, &repo, &delegates, &signer)?;
+            redact_artifact(cmd, args.no_input, &mut releases, &repo, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -273,7 +273,6 @@ fn attest_artifact<G>(
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    delegates: &BTreeSet<Did>,
     signer: &Device<G>,
 ) -> Result<(), error::Attest>
 where
@@ -285,7 +284,8 @@ where
             .map_err(error::Attest::Usage)?,
         _ => unreachable!("clap enforces both-or-neither"),
     };
-    let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
+    // The COB state machine enforces per-signer ownership; no delegate filter needed.
+    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Attest::Store { id, err })?;
@@ -301,7 +301,6 @@ fn redact_artifact<G>(
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    delegates: &BTreeSet<Did>,
     signer: &Device<G>,
 ) -> Result<(), error::Redact>
 where
@@ -327,7 +326,8 @@ where
         }
         _ => unreachable!("clap enforces both-or-neither"),
     };
-    let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
+    // The COB state machine enforces per-signer ownership; no delegate filter needed.
+    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Redact::Store { id, err })?;
