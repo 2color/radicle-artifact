@@ -628,7 +628,7 @@ fn artifact_locations(artifact: &Artifact) -> Result<Vec<share::Location<'_>>, R
 
 #[cfg(feature = "share")]
 mod prompt {
-    use std::io::{BufRead, IsTerminal, Write};
+    use std::io::IsTerminal;
 
     use radicle::crypto::ssh::keystore::{Keystore, Passphrase};
     use radicle::git::Oid;
@@ -702,24 +702,25 @@ mod prompt {
             ));
         }
 
-        eprintln!("Releases:");
-        for (i, (_, release)) in all.iter().enumerate() {
-            let oid = release.oid();
-            let short = &oid.to_string()[..7];
-            let title = display::CommitTitle::title(repo, oid).unwrap_or_default();
-            let artifact_count = release.artifacts().len();
-            eprintln!(
-                "  [{}] {} {} ({} artifact{})",
-                i + 1,
-                short,
-                title,
-                artifact_count,
-                if artifact_count == 1 { "" } else { "s" }
-            );
-        }
+        // Build display strings for each release.
+        let release_labels: Vec<String> = all
+            .iter()
+            .map(|(_, release)| {
+                let oid = release.oid();
+                let short = &oid.to_string()[..7];
+                let title = display::CommitTitle::title(repo, oid).unwrap_or_default();
+                let n = release.artifacts().len();
+                format!(
+                    "{short} {title} ({n} artifact{})",
+                    if n == 1 { "" } else { "s" }
+                )
+            })
+            .collect();
 
-        let release_idx = choice("Select release", all.len())?;
-        let (_, release) = &all[release_idx];
+        let selection = inquire::Select::new("Select release:", release_labels)
+            .raw_prompt()
+            .map_err(|e| error::Share::Usage(format!("selection cancelled: {e}")))?;
+        let (_, release) = &all[selection.index];
 
         let artifacts: Vec<(&radicle_artifact::Cid, &Artifact)> =
             release.artifacts().iter().collect();
@@ -729,46 +730,24 @@ mod prompt {
             ));
         }
 
-        eprintln!("Artifacts:");
-        for (i, (cid, artifact)) in artifacts.iter().enumerate() {
-            let redacted = if artifact.is_redacted() {
-                " [REDACTED]"
-            } else {
-                ""
-            };
-            eprintln!(
-                "  [{}] {} (CID: {}){}",
-                i + 1,
-                artifact.name(),
-                cid,
-                redacted
-            );
-        }
+        let artifact_labels: Vec<String> = artifacts
+            .iter()
+            .map(|(cid, artifact)| {
+                let redacted = if artifact.is_redacted() {
+                    " [REDACTED]"
+                } else {
+                    ""
+                };
+                format!("{} (CID: {cid}){redacted}", artifact.name())
+            })
+            .collect();
 
-        let artifact_idx = choice("Select artifact", artifacts.len())?;
-        let (cid, _) = artifacts[artifact_idx];
+        let selection = inquire::Select::new("Select artifact:", artifact_labels)
+            .raw_prompt()
+            .map_err(|e| error::Share::Usage(format!("selection cancelled: {e}")))?;
+        let (cid, _) = artifacts[selection.index];
 
         Ok((*release.oid(), *cid))
-    }
-
-    /// Prompt user for a 1-indexed choice, return 0-indexed.
-    fn choice(label: &str, max: usize) -> Result<usize, error::Share> {
-        let stdin = std::io::stdin();
-        loop {
-            eprint!("{label} [1-{max}]: ");
-            std::io::stderr().flush().map_err(error::Share::Io)?;
-
-            let mut line = String::new();
-            stdin
-                .lock()
-                .read_line(&mut line)
-                .map_err(error::Share::Io)?;
-
-            match line.trim().parse::<usize>() {
-                Ok(n) if n >= 1 && n <= max => return Ok(n - 1),
-                _ => eprintln!("Invalid choice, try again."),
-            }
-        }
     }
 }
 
