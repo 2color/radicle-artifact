@@ -1,6 +1,6 @@
-//! A program to create and inspect artifact release COBs for a repository.
+//! A cli to create and inspect artifact release COBs for a repository.
 //!
-//! Run `rad-artifact --help` to see how to use the program.
+//! Run `rad-artifact --help` to see how to use the cli.
 
 use std::{collections::BTreeSet, error::Error as _, io::IsTerminal, time::Duration};
 
@@ -187,14 +187,14 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Attest(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            attest_artifact(cmd, &mut releases, &repo, &delegates, &signer)?;
+            attest_artifact(cmd, args.no_input, &mut releases, &repo, &delegates, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Redact(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            redact_artifact(cmd, &mut releases, &repo, &delegates, &signer)?;
+            redact_artifact(cmd, args.no_input, &mut releases, &repo, &delegates, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -270,6 +270,7 @@ where
 
 fn attest_artifact<G>(
     command::Attest { commit, cid }: command::Attest,
+    no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
@@ -278,7 +279,12 @@ fn attest_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_commit(&commit, repo)?;
+    let (oid, cid) = match (commit, cid) {
+        (Some(commit), Some(cid)) => (resolve_commit(&commit, repo)?, cid),
+        (None, None) => prompt::pick_interactive(no_input, releases, repo)
+            .map_err(error::Attest::Usage)?,
+        _ => unreachable!("clap enforces both-or-neither"),
+    };
     let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -292,6 +298,7 @@ where
 
 fn redact_artifact<G>(
     command::Redact { commit, cid, reason }: command::Redact,
+    no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
@@ -300,7 +307,26 @@ fn redact_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_commit(&commit, repo)?;
+    let (oid, cid, reason) = match (commit, cid) {
+        (Some(commit), Some(cid)) => {
+            let oid = resolve_commit(&commit, repo)?;
+            let reason = match reason {
+                Some(r) => r,
+                None => prompt::prompt_reason(no_input).map_err(error::Redact::Usage)?,
+            };
+            (oid, cid, reason)
+        }
+        (None, None) => {
+            let (oid, cid) = prompt::pick_interactive(no_input, releases, repo)
+                .map_err(error::Redact::Usage)?;
+            let reason = match reason {
+                Some(r) => r,
+                None => prompt::prompt_reason(no_input).map_err(error::Redact::Usage)?,
+            };
+            (oid, cid, reason)
+        }
+        _ => unreachable!("clap enforces both-or-neither"),
+    };
     let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -308,7 +334,7 @@ where
     release
         .redact(cid, reason, signer)
         .map_err(|err| error::Redact::Redact { id, err })?;
-    eprintln!("redacted {cid}");
+    eprintln!("Redacted artifact {cid}");
     Ok(())
 }
 
@@ -479,7 +505,8 @@ fn run_fetch(
             let oid = resolve_commit(&commit, repo)?;
             (oid, cid)
         }
-        (None, None) => prompt::pick_interactive(no_input, releases, repo)?,
+        (None, None) => prompt::pick_interactive(no_input, releases, repo)
+            .map_err(error::Share::Usage)?,
         _ => unreachable!("clap enforces both-or-neither"),
     };
 
@@ -547,7 +574,8 @@ fn run_serve(
     let cid = match args.cid {
         Some(cid) => cid,
         None => {
-            let (_oid, cid) = prompt::pick_interactive(no_input, releases, repo)?;
+            let (_oid, cid) = prompt::pick_interactive(no_input, releases, repo)
+                .map_err(error::Share::Usage)?;
             cid
         }
     };
@@ -630,53 +658,15 @@ fn artifact_locations(artifact: &Artifact) -> Result<Vec<share::Location<'_>>, R
     Ok(locations)
 }
 
-#[cfg(feature = "share")]
 mod prompt {
     use std::io::IsTerminal;
 
-    use radicle::crypto::ssh::keystore::{Keystore, Passphrase};
     use radicle::git::Oid;
     use radicle::storage::git::Repository;
 
     use radicle_artifact::*;
 
-    use super::{display, error};
-
-    /// Get the passphrase for an encrypted keystore, prompting interactively
-    /// if needed.
-    ///
-    /// Returns `None` for unencrypted keystores. For encrypted keystores,
-    /// checks the `RAD_PASSPHRASE` env var first, then prompts on stderr.
-    pub fn passphrase_for_keystore(
-        keystore: &Keystore,
-    ) -> Result<Option<Passphrase>, error::Share> {
-        let is_encrypted = keystore
-            .is_encrypted()
-            .map_err(|e| error::Share::Usage(format!("failed to check keystore: {e}")))?;
-
-        if !is_encrypted {
-            return Ok(None);
-        }
-
-        // Try env var first, matching radicle convention.
-        if let Some(passphrase) = radicle::profile::env::passphrase() {
-            return Ok(Some(passphrase));
-        }
-
-        if !std::io::stderr().is_terminal() {
-            return Err(error::Share::Usage(
-                "encrypted keystore requires RAD_PASSPHRASE (no terminal for prompt)".into(),
-            ));
-        }
-
-        let passphrase = inquire::Password::new("Passphrase:")
-            .with_display_mode(inquire::PasswordDisplayMode::Masked)
-            .without_confirmation()
-            .prompt()
-            .map_err(|e| error::Share::Usage(format!("passphrase prompt failed: {e}")))?;
-
-        Ok(Some(Passphrase::from(passphrase)))
-    }
+    use super::display;
 
     /// Interactive mode: list releases, pick one, list its artifacts, pick one.
     ///
@@ -686,24 +676,22 @@ mod prompt {
         no_input: bool,
         releases: &Releases<Repository>,
         repo: &Repository,
-    ) -> Result<(Oid, radicle_artifact::Cid), error::Share> {
+    ) -> Result<(Oid, radicle_artifact::Cid), String> {
         if no_input || !std::io::stdin().is_terminal() {
-            return Err(error::Share::Usage(
-                "interactive mode requires a terminal; pass <commit> and --cid arguments, or remove --no-input".into(),
-            ));
+            return Err(
+                "interactive mode requires a terminal; pass <commit> and --cid, or use --no-input to disable".into(),
+            );
         }
         let mut all: Vec<(ReleaseId, Release)> = releases
             .all()
-            .map_err(|e| error::Share::Usage(e.to_string()))?
+            .map_err(|e| e.to_string())?
             .filter_map(|res| res.ok())
             .map(|(id, release)| (ReleaseId::from(id), release))
             .collect();
         all.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
 
         if all.is_empty() {
-            return Err(error::Share::Usage(
-                "no releases found in this repository".into(),
-            ));
+            return Err("no releases found in this repository".into());
         }
 
         // Build display strings for each release.
@@ -723,35 +711,77 @@ mod prompt {
 
         let selection = inquire::Select::new("Select release:", release_labels)
             .raw_prompt()
-            .map_err(|e| error::Share::Usage(format!("selection cancelled: {e}")))?;
+            .map_err(|e| format!("selection cancelled: {e}"))?;
         let (_, release) = &all[selection.index];
 
         let artifacts: Vec<(&radicle_artifact::Cid, &Artifact)> =
             release.artifacts().iter().collect();
         if artifacts.is_empty() {
-            return Err(error::Share::Usage(
-                "selected release has no artifacts".into(),
-            ));
+            return Err("selected release has no artifacts".into());
         }
 
         let artifact_labels: Vec<String> = artifacts
             .iter()
             .map(|(cid, artifact)| {
-                let redacted = if artifact.is_redacted() {
-                    " [REDACTED]"
-                } else {
-                    ""
-                };
+                let redacted = if artifact.is_redacted() { " [REDACTED]" } else { "" };
                 format!("{} (CID: {cid}){redacted}", artifact.name())
             })
             .collect();
 
         let selection = inquire::Select::new("Select artifact:", artifact_labels)
             .raw_prompt()
-            .map_err(|e| error::Share::Usage(format!("selection cancelled: {e}")))?;
+            .map_err(|e| format!("selection cancelled: {e}"))?;
         let (cid, _) = artifacts[selection.index];
 
         Ok((*release.oid(), *cid))
+    }
+
+    /// Prompt for a redaction reason at the terminal.
+    ///
+    /// Errors if `no_input` is set or stdin is not a TTY.
+    pub fn prompt_reason(no_input: bool) -> Result<String, String> {
+        if no_input || !std::io::stdin().is_terminal() {
+            return Err(
+                "interactive mode requires a terminal; pass -m/--reason, or use --no-input to disable".into(),
+            );
+        }
+        inquire::Text::new("Reason for redaction:")
+            .prompt()
+            .map_err(|e| format!("prompt cancelled: {e}"))
+    }
+
+    #[cfg(feature = "share")]
+    pub fn passphrase_for_keystore(
+        keystore: &radicle::crypto::ssh::keystore::Keystore,
+    ) -> Result<Option<radicle::crypto::ssh::keystore::Passphrase>, super::error::Share> {
+        use radicle::crypto::ssh::keystore::Passphrase;
+
+        let is_encrypted = keystore
+            .is_encrypted()
+            .map_err(|e| super::error::Share::Usage(format!("failed to check keystore: {e}")))?;
+
+        if !is_encrypted {
+            return Ok(None);
+        }
+
+        // Try env var first, matching radicle convention.
+        if let Some(passphrase) = radicle::profile::env::passphrase() {
+            return Ok(Some(passphrase));
+        }
+
+        if !std::io::stderr().is_terminal() {
+            return Err(super::error::Share::Usage(
+                "encrypted keystore requires RAD_PASSPHRASE (no terminal for prompt)".into(),
+            ));
+        }
+
+        let passphrase = inquire::Password::new("Passphrase:")
+            .with_display_mode(inquire::PasswordDisplayMode::Masked)
+            .without_confirmation()
+            .prompt()
+            .map_err(|e| super::error::Share::Usage(format!("passphrase prompt failed: {e}")))?;
+
+        Ok(Some(Passphrase::from(passphrase)))
     }
 }
 
@@ -968,13 +998,24 @@ Examples:
     ///
     /// Records that the signing node built from the same commit and
     /// obtained the same CID. Idempotent — attesting twice is a no-op.
+    ///
+    /// Without arguments, interactively lists releases and artifacts to
+    /// pick from. Pass both <COMMIT> and --cid to skip the prompts.
     #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Interactive mode (pick from available releases):
+    $ rad-artifact attest
+
+  Attest a specific artifact:
+    $ rad-artifact attest abc1234 --cid baf...abc")]
     pub struct Attest {
-        /// Git commit, tag, or abbreviated OID of the release.
-        pub commit: String,
-        /// Content identifier for the artifact to attest.
-        #[clap(long)]
-        pub cid: Cid,
+        /// Git commit, tag, or abbreviated OID of the release. Required with --cid.
+        #[clap(requires = "cid")]
+        pub commit: Option<String>,
+        /// Content identifier for the artifact to attest. Required with <COMMIT>.
+        #[clap(long, requires = "commit")]
+        pub cid: Option<Cid>,
     }
 
     /// Redact an artifact, indicating it should not be used.
@@ -984,20 +1025,29 @@ Examples:
     /// bytes). The act of redaction is permanent; the reason text can be
     /// amended by redacting again. A redaction supersedes any prior
     /// attestation from the same DID.
+    ///
+    /// Without arguments, interactively lists releases and artifacts to
+    /// pick from and prompts for a reason. Pass both <COMMIT> and --cid
+    /// to skip the release/artifact prompts; -m is still optional and
+    /// will be prompted if omitted at a terminal.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
-  Redact a compromised artifact:
+  Interactive mode (pick from available releases):
+    $ rad-artifact redact
+
+  Redact a specific artifact:
     $ rad-artifact redact abc1234 --cid baf...abc -m \"build compromised, see advisory\"")]
     pub struct Redact {
-        /// Git commit, tag, or abbreviated OID of the release.
-        pub commit: String,
-        /// Content identifier for the artifact to redact.
-        #[clap(long)]
-        pub cid: Cid,
+        /// Git commit, tag, or abbreviated OID of the release. Required with --cid.
+        #[clap(requires = "cid")]
+        pub commit: Option<String>,
+        /// Content identifier for the artifact to redact. Required with <COMMIT>.
+        #[clap(long, requires = "commit")]
+        pub cid: Option<Cid>,
         /// Reason for the redaction.
         #[clap(short = 'm', long = "reason")]
-        pub reason: String,
+        pub reason: Option<String>,
     }
 
     /// Remove a discovery location for an artifact.
@@ -1151,6 +1201,8 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum Attest {
+        #[error("{0}")]
+        Usage(String),
         #[error(transparent)]
         Resolve(#[from] Resolve),
         #[error(transparent)]
@@ -1165,6 +1217,8 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum Redact {
+        #[error("{0}")]
+        Usage(String),
         #[error(transparent)]
         Resolve(#[from] Resolve),
         #[error(transparent)]
