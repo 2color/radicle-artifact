@@ -90,6 +90,18 @@ pub fn verify_cid(data: &[u8], expected: &Cid) -> Result<(), Error> {
     Ok(())
 }
 
+/// Compute the CID of a file on disk.
+///
+/// Streams the file through a BLAKE3 hasher to avoid loading it into memory.
+pub fn compute_blob_cid(path: &std::path::Path) -> Result<Cid, Error> {
+    let file = std::fs::File::open(path).map_err(Error::Io)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut reader, &mut hasher).map_err(Error::Io)?;
+    let hash: iroh_blobs::Hash = hasher.finalize().into();
+    Ok(blake3_hash_to_cid(hash, ArtifactKind::Blob))
+}
+
 /// Verify that a file on disk matches the expected CID.
 ///
 /// Streams the file through a BLAKE3 hasher to avoid loading it into memory.

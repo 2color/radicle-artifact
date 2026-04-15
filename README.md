@@ -74,7 +74,7 @@ rad-artifact show <COMMIT> [--pretty]                        # show release
 rad-artifact list [--pretty] [--delegates-only]              # list all releases
 rad-artifact cid <PATH>                                      # compute BLAKE3 CID
 rad-artifact fetch [<COMMIT> --cid <CID>]                    # fetch artifact (interactive without args)
-rad-artifact serve <PATH> [--cid <CID>]                      # serve artifact via iroh-blobs
+rad-artifact serve <PATH>                                     # serve artifact via iroh-blobs
 ```
 
 Use `--repository <RID>` to target a specific repo (defaults to cwd).

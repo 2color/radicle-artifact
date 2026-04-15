@@ -204,7 +204,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         #[cfg(feature = "share")]
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
         #[cfg(feature = "share")]
-        Command::Serve(cmd) => run_serve(cmd, args.no_input, &profile, &mut releases, &repo)?,
+        Command::Serve(cmd) => run_serve(cmd, args.no_input, &profile, &mut releases)?,
     }
 
     Ok(())
@@ -569,15 +569,12 @@ fn run_serve(
     no_input: bool,
     profile: &Profile,
     releases: &mut Releases<Repository>,
-    repo: &Repository,
 ) -> Result<(), RadArtifactError> {
-    let cid = match args.cid {
-        Some(cid) => cid,
-        None => {
-            let (_oid, cid) = prompt::pick_interactive(no_input, releases, repo)
-                .map_err(error::Share::Usage)?;
-            cid
-        }
+    // Compute CID from the provided path.
+    let cid = if args.path.is_dir() {
+        share::compute_content_id(&args.path).map_err(error::Share::Io)?
+    } else {
+        share::compute_blob_cid(&args.path).map_err(error::Share::Share)?
     };
 
     let (release_id, release) = releases
@@ -589,6 +586,17 @@ fn run_serve(
     let kind = share::artifact_kind(&cid).map_err(error::Share::Share)?;
 
     eprintln!("Artifact: {} (CID: {cid})", artifact.name());
+
+    if !no_input && std::io::stdin().is_terminal() {
+        let confirmed =
+            inquire::Confirm::new("Add yourself as a location for this artifact?")
+                .with_default(true)
+                .prompt()
+                .map_err(|e| error::Share::Usage(format!("confirmation cancelled: {e}")))?;
+        if !confirmed {
+            return Ok(());
+        }
+    }
 
     let passphrase = prompt::passphrase_for_keystore(&profile.keystore)?;
     let iroh_sk = share::radicle_secret_to_iroh(&profile.keystore, passphrase)
@@ -614,9 +622,9 @@ fn run_serve(
             }
         }
 
-        let endpoint_id = server.endpoint().id();
-        let iroh_url = url::Url::parse(&format!("iroh://{endpoint_id}"))
-            .map_err(|e| error::Share::Usage(format!("failed to build iroh URL: {e}")))?;
+        // Scheme-only marker; artifact_locations derives the iroh public key
+        // from the DID that authored the location, not from the URL.
+        let iroh_url = url::Url::parse("iroh://").expect("static URL is valid");
 
         let signer = profile.signer().map_err(error::Signer)?;
         let mut release_mut = releases
@@ -626,12 +634,23 @@ fn run_serve(
             .add_location(cid, iroh_url.clone(), &signer)
             .map_err(|e| error::Share::Usage(e.to_string()))?;
 
-        eprintln!("Serving at {iroh_url}");
+        eprintln!("Serving artifact via iroh-blobs");
         eprintln!("Press Ctrl+C to stop");
 
         tokio::signal::ctrl_c().await.map_err(error::Share::Io)?;
 
         eprintln!("\nShutting down...");
+
+        // Remove location registration before stopping the server.
+        let mut release_mut = releases
+            .get_mut(&release_id)
+            .map_err(|e| error::Share::Usage(e.to_string()))?;
+        if let Err(e) = release_mut.remove_location(cid, iroh_url, &signer) {
+            eprintln!("Warning: failed to remove location: {e}");
+        } else {
+            eprintln!("Removed location");
+        }
+
         server.shutdown().await.map_err(error::Share::Share)?;
 
         Ok::<_, RadArtifactError>(())
@@ -930,24 +949,19 @@ Examples:
 
     /// Serve an artifact via iroh-blobs using your radicle identity.
     ///
-    /// Verifies the file/directory matches the artifact CID, registers an
-    /// `iroh://<endpoint_id>` location in the release COB, and serves the
-    /// content until interrupted.
+    /// Computes the CID from the given path, looks up the matching artifact
+    /// in existing releases, registers an `iroh://` location in the release
+    /// COB, and serves the content until interrupted. The location is removed
+    /// on graceful shutdown (Ctrl+C).
     #[cfg(feature = "share")]
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
-  Serve with interactive artifact picker:
-    $ rad-artifact serve ./my-binary
-
-  Serve a specific artifact:
-    $ rad-artifact serve ./my-binary --cid baf...abc")]
+  Serve an artifact:
+    $ rad-artifact serve ./my-binary")]
     pub struct Serve {
         /// Path to file or directory to serve.
         pub path: std::path::PathBuf,
-        /// Artifact CID. If omitted, launches interactive picker.
-        #[clap(long)]
-        pub cid: Option<radicle_artifact::Cid>,
     }
 
     /// Add an artifact to a release, creating it if needed.
