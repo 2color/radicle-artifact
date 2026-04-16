@@ -169,8 +169,11 @@ pub fn compute_content_id(dir: &Path) -> Result<Cid, io::Error> {
     let entries: Vec<(String, iroh_blobs::Hash)> = canonical_walk(dir)?
         .into_iter()
         .map(|(name, path)| {
-            let contents = std::fs::read(&path)?;
-            Ok((name, blake3::hash(&contents).into()))
+            let file = std::fs::File::open(&path)?;
+            let mut reader = io::BufReader::new(file);
+            let mut hasher = blake3::Hasher::new();
+            io::copy(&mut reader, &mut hasher)?;
+            Ok((name, hasher.finalize().into()))
         })
         .collect::<Result<_, io::Error>>()?;
 
