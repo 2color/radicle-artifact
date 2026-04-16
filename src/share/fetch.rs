@@ -16,7 +16,7 @@ use iroh_blobs::{BlobFormat, HashAndFormat};
 use n0_future::StreamExt;
 use url::Url;
 
-use super::cid as cid_util;
+use super::cid_utils;
 use super::endpoint::EndpointPreset;
 use super::Error;
 
@@ -171,7 +171,7 @@ pub fn fetch_iroh_blob(
     dest: &Path,
     preset: EndpointPreset,
 ) -> Result<(), Error> {
-    let hash = cid_util::cid_to_blake3_hash(cid)?;
+    let hash = cid_utils::cid_to_blake3_hash(cid)?;
     let hash_and_format = HashAndFormat {
         hash,
         format: BlobFormat::Raw,
@@ -228,7 +228,7 @@ pub fn fetch_iroh_collection(
     dest_dir: &Path,
     preset: EndpointPreset,
 ) -> Result<(), Error> {
-    let hash = cid_util::cid_to_blake3_hash(cid)?;
+    let hash = cid_utils::cid_to_blake3_hash(cid)?;
     let hash_and_format = HashAndFormat {
         hash,
         format: BlobFormat::HashSeq,
@@ -353,7 +353,7 @@ fn download_http(url: &Url, expected_cid: &Cid, dest: &Path) -> Result<(), Error
     drop(writer);
 
     // Verify CID by hashing the partial file from disk (no memory buffering).
-    if let Err(e) = cid_util::verify_cid_file(&partial, expected_cid) {
+    if let Err(e) = cid_utils::verify_cid_file(&partial, expected_cid) {
         std::fs::remove_file(&partial).ok();
         return Err(e);
     }
@@ -415,9 +415,9 @@ mod tests {
     fn blob_cid(data: &[u8]) -> Cid {
         let digest = blake3::hash(data);
         let mh =
-            cid::multihash::Multihash::<64>::wrap(cid_util::HASH_CODE_BLAKE3, digest.as_bytes())
+            cid::multihash::Multihash::<64>::wrap(cid_utils::HASH_CODE_BLAKE3, digest.as_bytes())
                 .unwrap();
-        Cid::new_v1(cid_util::RAW_CODEC, mh)
+        Cid::new_v1(cid_utils::RAW_CODEC, mh)
     }
 
     #[test]
