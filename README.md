@@ -13,12 +13,14 @@ This COB is **build-system agnostic**. It works with any toolchain or build proc
 
 ## Workflow
 
-1. **Tag** — Create a canonical reference with an annotated tag for the release
-2. **Build** — Build the release artifacts and compute their content identifiers (CIDs)
-3. **Publish** — Add artifacts to the commit using the CLI (the release COB is created automatically)
-4. **Host** — Upload artifacts to any server or IPFS and register discovery locations per DID
-5. **Verify** — Other delegates check out the tagged version, build independently, and attest artifacts whose CIDs match. Attestation can be limited to the artifacts a delegate is able to reproduce locally
-6. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, any DID can redact it with a reason. Redactions are permanent: they supersede prior attestations from the same DID and block future attestations from that DID
+1. **Tag** — Create a [canonical reference](https://radicle.xyz/2025/08/12/canonical-references) from an annotated tag or commit.
+2. **Build** — Build the release artifacts and derive their content identifiers (CIDs).
+3. **Compute CID** — Compute the CID of each artifact by hashing the contents. Folders are hashed as [iroh-blob collections](https://docs.iroh.computer/protocols/blobs#collections).
+4. **Add** — Add artifacts to a release using the `rad-artifact add` command, which creates the release if it doesn't exist and records the artifact CID.
+5. **Serve** — Upload artifacts to an HTTP server, or serve directly from the CLI using `rad-artifact serve` and register discovery locations per DID.
+6. **Fetch** — Fetch artifacts using the `rad-artifact fetch` command.
+7. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
+8. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
 
 ## COB type
 
@@ -40,7 +42,7 @@ Release
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
-- **Locations** — plain URLs (`https://`, `ipfs://`, `iroh://`, etc.)
+- **Locations** — plain URLs (`https://`, `ipfs://`, [`rasl://`](https://dasl.ing/rasl.html), `iroh://`, etc.)
 - Each user can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
 
 ## Collaboration model
@@ -74,7 +76,7 @@ rad-artifact show <COMMIT> [--pretty]                        # show release
 rad-artifact list [--pretty] [--delegates-only]              # list all releases
 rad-artifact cid <PATH>                                      # compute BLAKE3 CID
 rad-artifact fetch [<COMMIT> --cid <CID>]                    # fetch artifact (interactive without args)
-rad-artifact serve <PATH>                                     # serve artifact via iroh-blobs
+rad-artifact serve <PATH>                                    # serve artifact via iroh-blobs
 ```
 
 Use `--repository <RID>` to target a specific repo (defaults to cwd).
@@ -121,15 +123,10 @@ Requires [cargo-release](https://github.com/crate-ci/cargo-release) and
 cargo release minor --execute
 ```
 
-You can use `minor`, `major`, or `patch` and cargo-release will automatically
-calculate the next version number. You can also pass an explicit version like
-`cargo release 0.3.0 --execute` if needed.
-
-This will bump the version in `Cargo.toml`, generate the changelog via git-cliff,
+You can use `minor`, `major`, or `patch` and cargo-release will automatically calculate the next version number. You can also pass an explicit version like `cargo release 0.3.0 --execute` if needed. This will bump the version in `Cargo.toml`, generate the changelog via git-cliff,
 commit, tag, and publish to crates.io.
 
-By default, `cargo release` runs in dry-run mode — omit `--execute` to preview
-what will happen. To preview just the changelog: `git cliff --tag 0.3.0`
+By default, `cargo release` runs in dry-run mode — omit `--execute` to preview what will happen. To preview just the changelog: `git cliff --tag 0.3.0`
 
 ## License
 
