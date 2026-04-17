@@ -1,11 +1,25 @@
 # radicle-artifact
 
-A Radicle [Collaborative Object][cob] (COB) for recording content-addressed
-release artifacts and their discovery locations.
+The missing link between code provenance and secure artifact distribution.
+
+Git has no native way to distribute artifacts — static site builds, binaries,
+datasets. The moment you build and ship, the provenance link from code to
+artifact is broken. `radicle-artifact` closes that gap: a Radicle
+[Collaborative Object][cob] (COB) that ties content-addressed release artifacts
+back to the exact commit they were built from, and distributes them in a
+participatory, transport-agnostic way.
+
+It inherits Radicle's social layer of trust. Anyone can contribute artifacts
+and serve as a mirror, but releases authored by repository **delegates** are
+shown by default — the same trusted identities that establish canonical branches
+and tags. Delegates can independently verify a build and **attest** that their
+CID matches, turning artifact verification into a multi-party act. **Redactions**
+from delegates carry the most weight: a delegate flagging an artifact as
+compromised is a strong signal from the project's own trusted members.
 
 A **Release** is associated with a Git OID (annotated tag or commit) and an author (the DID of the creating user). It contains one or more **Artifacts**, each identified by a content identifier (CID). Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Each user can announce multiple discovery URLs for any artifact, enabling decentralized mirroring. Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
-Each user is identified by a DID derived which is currently mapped 1:1 to the Radicle NodeID, an ED25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
+Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
 
 > **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
 
