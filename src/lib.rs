@@ -134,11 +134,11 @@ impl From<ObjectId> for ReleaseId {
 /// (annotated tag or commit).
 ///
 /// Multiple artifacts can exist per release, and multiple users can announce
-/// discovery locations for each artifact.
+/// discovery locations for each artifact. A release has no distinguished
+/// "creator" — the signer of the first COB op is incidental and confers no
+/// privileges. Per-artifact attribution lives on [`Artifact::author`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
-    /// The DID of the user that created this release.
-    author: Did,
     oid: Oid,
     artifacts: IndexMap<Cid, Artifact>,
     /// Unix seconds when this release COB was first created.
@@ -315,18 +315,12 @@ impl CobAction for Action {
 
 impl Release {
     /// Construct a new [`Release`].
-    fn new(oid: Oid, author: Did, timestamp: u64) -> Self {
+    fn new(oid: Oid, timestamp: u64) -> Self {
         Self {
-            author,
             oid,
             artifacts: IndexMap::new(),
             timestamp,
         }
-    }
-
-    /// Get the [`Did`] of the user that created this release.
-    pub fn author(&self) -> &Did {
-        &self.author
     }
 
     /// Get the [`Oid`] this release is associated with.
@@ -426,8 +420,10 @@ impl store::Cob for Release {
         };
         repo.commit(oid)
             .map_err(|err| error::Build::MissingCommit { oid, err })?;
+        // Per-op author is still needed for artifact/attestation/redaction
+        // attribution, but is no longer recorded at the release level.
         let author = Did::from(op.author);
-        let mut release = Self::new(oid, author, op.timestamp.as_secs());
+        let mut release = Self::new(oid, op.timestamp.as_secs());
         for action in actions {
             release.action(author, action);
         }
@@ -542,34 +538,10 @@ where
         found.ok_or(error::FindRelease::NoRelease(oid))
     }
 
-    /// Find the unique delegate-authored release for a given OID.
+    /// Find the first release containing an artifact with the given CID.
     ///
-    /// Only considers releases authored by repository delegates, ignoring any
-    /// non-delegate releases. Errors if no delegate release exists or if
-    /// multiple delegates created releases for the same OID.
-    pub fn find_delegate_release(
-        &self,
-        oid: Oid,
-        delegates: &BTreeSet<Did>,
-    ) -> Result<ReleaseId, error::FindRelease> {
-        let mut found: Option<ReleaseId> = None;
-        for result in self
-            .find_by_oid(oid)
-            .map_err(|err| error::FindRelease::Store { oid, err })?
-        {
-            let (id, release) = result.map_err(|err| error::FindRelease::Store { oid, err })?;
-            if !delegates.contains(release.author()) {
-                continue;
-            }
-            if found.is_some() {
-                return Err(error::FindRelease::Ambiguous(oid));
-            }
-            found = Some(id);
-        }
-        found.ok_or(error::FindRelease::NoRelease(oid))
-    }
-
-    /// Find the release containing an artifact with the given CID.
+    /// Stops at the first match. For aggregate retrieval across multiple
+    /// releases that contain the same CID, use [`Releases::find_all_by_cid`].
     pub fn find_by_cid(
         &self,
         cid: &Cid,
@@ -581,6 +553,27 @@ where
             }
         }
         Ok(None)
+    }
+
+    /// Return every release containing an artifact with the given CID.
+    ///
+    /// The same CID may appear in multiple releases — either across different
+    /// commits, or within duplicate release COBs for the same commit when two
+    /// nodes concurrently created the release before syncing. Retrieval should
+    /// union locations across all of them, so callers should use this method
+    /// rather than [`Releases::find_by_cid`] when building a fetch plan.
+    pub fn find_all_by_cid(
+        &self,
+        cid: &Cid,
+    ) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
+        let mut out = Vec::new();
+        for result in self.all()? {
+            let (id, release) = result?;
+            if release.artifact(cid).is_some() {
+                out.push((ReleaseId::from(id), release));
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -647,6 +640,11 @@ where
     }
 
     /// Create a new [`Release`] in the repository.
+    ///
+    /// The signer's DID confers no release-level privilege — it's the git
+    /// committer of the wrapping COB op, not the "owner" of the release.
+    /// Prefer [`Releases::find_or_create_by_oid`] to avoid creating duplicate
+    /// releases for the same commit.
     pub fn create<'g, G>(
         &'g mut self,
         oid: Oid,
@@ -975,9 +973,6 @@ mod test {
 
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let mut release = releases.create(oid, &alice.signer).unwrap();
-
-        // The release author should be Alice.
-        assert_eq!(release.author(), &Did::from(alice.signer.public_key()));
 
         // Alice adds an artifact.
         let cid = test_cid(1);
@@ -1823,7 +1818,6 @@ mod test {
         // No release exists yet — find_or_create_by_oid should create one.
         let release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
         assert_eq!(release.oid(), &oid);
-        assert_eq!(release.author(), &Did::from(alice.signer.public_key()));
     }
 
     #[test]
@@ -1865,62 +1859,89 @@ mod test {
     }
 
     #[test]
-    fn find_delegate_release_ignores_non_delegate() {
+    fn find_or_create_reuses_release_across_signers() {
+        // Exercises the post-refactor invariant: a non-delegate calling
+        // find_or_create_by_oid on a commit that already has a release
+        // (regardless of who created it) must reuse the existing release
+        // rather than creating a duplicate.
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-
         let oid = commit(&repo.backend, "v1.0");
         let mut releases = Releases::open(&*repo).unwrap();
 
-        // Bob (non-delegate) creates a release.
-        releases.create(oid, &bob.signer).unwrap();
+        let alice_id = {
+            let r = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+            *r.id()
+        };
+        let bob_id = {
+            let r = releases.find_or_create_by_oid(oid, &bob.signer).unwrap();
+            *r.id()
+        };
 
-        // Alice is the only delegate.
-        let delegates: BTreeSet<Did> = [Did::from(alice.signer.public_key())].into();
-
-        // Lookup should not find Bob's release.
-        let err = releases.find_delegate_release(oid, &delegates).unwrap_err();
-        assert!(
-            matches!(err, crate::error::FindRelease::NoRelease(_)),
-            "expected NoRelease, got {err:?}"
-        );
-
-        // Alice (delegate) creates a release for the same OID.
-        let alice_release = releases.create(oid, &alice.signer).unwrap();
-        let alice_id = *alice_release.id();
-
-        // Now lookup should find Alice's release.
-        let found = releases.find_delegate_release(oid, &delegates).unwrap();
-        assert_eq!(found, alice_id);
+        assert_eq!(alice_id, bob_id);
+        let all: Vec<_> = releases
+            .find_by_oid(oid)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(all.len(), 1);
     }
 
     #[test]
-    fn find_delegate_release_detects_ambiguity() {
-        // Use the Network setup which has alice and bob as delegates of the same repo.
+    fn find_all_by_cid_aggregates_duplicate_oid_releases() {
+        // Two releases exist for the same OID (legacy state from before the
+        // refactor, or concurrent creation across unsynced nodes), and both
+        // contain an artifact with the same CID. find_all_by_cid returns both.
         let test::setup::Network {
             alice, bob, rid, ..
         } = test::setup::Network::default();
-
         let repo = alice.storage.repository(rid).unwrap();
         let oid = commit(&repo.backend, "v1.0");
         let mut releases = Releases::open(&repo).unwrap();
 
-        let delegates: BTreeSet<Did> = [
-            Did::from(alice.signer.public_key()),
-            Did::from(bob.signer.public_key()),
-        ]
-        .into();
+        let cid = test_cid(1);
+        {
+            let mut r = releases.create(oid, &alice.signer).unwrap();
+            r.add_artifact(cid, "alice-built".into(), &alice.signer).unwrap();
+        }
+        {
+            let mut r = releases.create(oid, &bob.signer).unwrap();
+            r.add_artifact(cid, "bob-built".into(), &bob.signer).unwrap();
+        }
 
-        // Both delegates create releases for the same OID.
-        releases.create(oid, &alice.signer).unwrap();
-        releases.create(oid, &bob.signer).unwrap();
+        let found = releases.find_all_by_cid(&cid).unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|(_, r)| r.oid() == &oid));
+    }
 
-        let err = releases.find_delegate_release(oid, &delegates).unwrap_err();
-        assert!(
-            matches!(err, crate::error::FindRelease::Ambiguous(_)),
-            "expected Ambiguous, got {err:?}"
-        );
+    #[test]
+    fn find_all_by_cid_aggregates_across_different_oids() {
+        // The same artifact CID is attached to releases for two different
+        // commits (e.g. an artifact that's identical across versions).
+        // find_all_by_cid surfaces both so retrieval can union locations.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid1 = commit(&repo.backend, "v1.0");
+        let oid2 = commit(&repo.backend, "v1.1");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let cid = test_cid(1);
+        {
+            let mut r = releases.create(oid1, &alice.signer).unwrap();
+            r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
+        }
+        {
+            let mut r = releases.create(oid2, &alice.signer).unwrap();
+            r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
+        }
+
+        let found = releases.find_all_by_cid(&cid).unwrap();
+        assert_eq!(found.len(), 2);
+        let oids: BTreeSet<_> = found.iter().map(|(_, r)| *r.oid()).collect();
+        assert!(oids.contains(&oid1));
+        assert!(oids.contains(&oid2));
     }
 }

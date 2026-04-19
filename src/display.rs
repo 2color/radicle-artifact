@@ -112,8 +112,8 @@ impl Releases {
     /// The `aliases` store is used to resolve human-readable aliases for DIDs.
     ///
     /// When `delegates` is provided, artifacts that have been redacted by the
-    /// release author, the artifact author, or any delegate are hidden.
-    /// Pass `None` to show all artifacts including redacted ones.
+    /// artifact author or any repository delegate are hidden. Pass `None` to
+    /// show all artifacts including redacted ones.
     ///
     /// When `show_empty` is false, releases with no visible artifacts are
     /// excluded from the output.
@@ -164,9 +164,6 @@ pub struct Release {
     release_id: ReleaseId,
     /// Unix seconds when this release COB was created.
     created_at: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    author_alias: Option<String>,
-    author: Did,
     oid: Oid,
     /// Locally-resolved commit summary; not persisted in the COB.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -180,8 +177,8 @@ impl Release {
     /// The `aliases` store is used to resolve human-readable aliases for DIDs.
     ///
     /// When `delegates` is provided, artifacts that have been redacted by the
-    /// release author, the artifact author, or any delegate are hidden.
-    /// Pass `None` to show all artifacts including redacted ones.
+    /// artifact author or any repository delegate are hidden. Pass `None` to
+    /// show all artifacts including redacted ones.
     ///
     /// `title` is the first line of the commit message, if available.
     pub fn new(
@@ -191,17 +188,15 @@ impl Release {
         delegates: Option<&BTreeSet<Did>>,
         title: Option<String>,
     ) -> Self {
-        let author = *release.author();
-        let author_alias = resolve(&author, aliases);
         let mut artifacts: Vec<_> = release
             .artifacts()
             .iter()
             .filter(|(_cid, artifact)| {
-                // Hide artifacts redacted by a trusted party: the release
-                // author, the artifact author, or a repository delegate.
+                // Hide artifacts redacted by a trusted party: the artifact
+                // author or any repository delegate.
                 if let Some(delegates) = delegates {
                     !artifact.redactions().keys().any(|did| {
-                        *did == author || *did == *artifact.author() || delegates.contains(did)
+                        *did == *artifact.author() || delegates.contains(did)
                     })
                 } else {
                     true
@@ -260,8 +255,6 @@ impl Release {
         Self {
             release_id,
             created_at: release.timestamp(),
-            author_alias,
-            author,
             oid: *release.oid(),
             title,
             artifacts,
@@ -275,7 +268,6 @@ impl Release {
     pub fn pretty(&self, verbose: bool) -> String {
         let mut s = String::new();
 
-        let author = format_did(&self.author, &self.author_alias, verbose);
         let short_id = &self.release_id.to_string()[..7];
         let short_oid = &self.oid.to_string()[..7];
         let title_suffix = match &self.title {
@@ -287,9 +279,7 @@ impl Release {
             .unwrap_or_else(|| self.created_at.to_string());
         push_line(
             &mut s,
-            format!(
-                "release {short_id} {date} by {author} (commit {short_oid}{title_suffix})",
-            ),
+            format!("release {short_id} {date} (commit {short_oid}{title_suffix})"),
         );
         // Build a per-release artifact table: CID | name | DID | URL.
         // Multiple locations use blank cells in the CID/name columns.

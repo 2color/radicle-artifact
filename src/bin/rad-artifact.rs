@@ -106,6 +106,14 @@ fn open_releases(repo: &Repository) -> Result<Releases<'_, Repository>, error::R
     Releases::open(repo).map_err(|err| error::Releases { rid: repo.id, err })
 }
 
+fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> {
+    Ok(repo
+        .delegates()
+        .map_err(error::Delegates)?
+        .into_iter()
+        .collect())
+}
+
 fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
     let mut node = Node::new(profile.home.socket());
 
@@ -155,18 +163,13 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
 
     let profile = load_profile()?;
     let repo = args.repository(&profile)?;
-    let delegates: BTreeSet<Did> = repo
-        .delegates()
-        .map_err(error::Delegates)?
-        .into_iter()
-        .collect();
     let mut releases = open_releases(&repo)?;
     match args.command {
         #[cfg(feature = "share")]
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Add(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            add_artifact(cmd, &mut releases, &repo, &delegates, &signer)?;
+            add_artifact(cmd, &mut releases, &repo, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -175,7 +178,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             let signer = profile.signer().map_err(error::Signer)?;
             match loc.command {
                 LocationCommand::Add(cmd) => {
-                    location_add(cmd, &mut releases, &repo, &delegates, &signer)?;
+                    location_add(cmd, &mut releases, &repo, &signer)?;
                 }
                 LocationCommand::Remove(cmd) => {
                     location_remove(cmd, &mut releases, &repo, &signer)?;
@@ -199,7 +202,10 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
-        Command::Show(cmd) => show_release(cmd, &releases, &repo, &delegates, &profile)?,
+        Command::Show(cmd) => {
+            let delegates = repo_delegates(&repo)?;
+            show_release(cmd, &releases, &repo, &delegates, &profile)?;
+        }
         Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
         #[cfg(feature = "share")]
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
@@ -214,23 +220,22 @@ fn add_artifact<G>(
     command::Add { commit, cid, name }: command::Add,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    delegates: &BTreeSet<Did>,
     signer: &Device<G>,
 ) -> Result<(), error::Add>
 where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
-    // Find existing delegate release, or create a new one.
-    let mut release = match releases.find_delegate_release(oid, delegates) {
-        Ok(id) => releases
-            .get_mut(&id)
-            .map_err(|err| error::Add::Store { id, err })?,
-        Err(radicle_artifact::error::FindRelease::NoRelease(_)) => releases
-            .create(oid, signer)
-            .map_err(|err| error::Add::Create { oid, err })?,
-        Err(e) => return Err(error::Find::from(e).into()),
-    };
+    // One release per OID: reuse the existing release regardless of who
+    // created it, otherwise create a fresh one.
+    let mut release = releases
+        .find_or_create_by_oid(oid, signer)
+        .map_err(|err| match err {
+            radicle_artifact::FindOrCreateError::Ambiguous(o) => {
+                error::Add::Find(error::Find::Ambiguous(o))
+            }
+            radicle_artifact::FindOrCreateError::Store(err) => error::Add::Create { oid, err },
+        })?;
     let id = *release.id();
     release
         .add_artifact(cid, name.clone(), signer)
@@ -247,14 +252,13 @@ fn location_add<G>(
     command::LocationAdd { commit, cid, url }: command::LocationAdd,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    delegates: &BTreeSet<Did>,
     signer: &Device<G>,
 ) -> Result<(), error::Locate>
 where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
-    let id = releases.find_delegate_release(oid, delegates).map_err(error::Find::from)?;
+    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
@@ -450,9 +454,11 @@ fn list_releases(
             let delegates = delegates.clone();
             move |(_id, release)| {
                 if delegates_only {
-                    delegates
-                        .as_ref()
-                        .map_or(true, |ds| ds.contains(release.author()))
+                    // A release is "delegate-curated" when at least one of its
+                    // artifacts was added by a delegate.
+                    delegates.as_ref().is_none_or(|ds| {
+                        release.artifacts().values().any(|a| ds.contains(a.author()))
+                    })
                 } else {
                     true
                 }
@@ -510,19 +516,48 @@ fn run_fetch(
         _ => unreachable!("clap enforces both-or-neither"),
     };
 
-    let release_id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
-    let release = releases
-        .get(&release_id)
-        .map_err(|err| error::Find::Lookup { oid, err })?
-        .ok_or(error::Find::NoRelease(oid))?;
+    // Retrieval is CID-centric: the same artifact may appear in multiple
+    // releases (duplicate release COBs for one OID, or an identical build
+    // reused across different commits). We union locations across all of
+    // them so the fetcher sees every known source.
+    let matching = releases
+        .find_all_by_cid(&cid)
+        .map_err(|err| error::Share::Usage(err.to_string()))?;
+    if matching.is_empty() {
+        return Err(error::Share::ArtifactNotFound(cid).into());
+    }
+    // Sanity check: at least one release for the requested commit contains
+    // this CID. Catches callers who pair a valid CID with the wrong OID.
+    if !matching.iter().any(|(_, r)| r.oid() == &oid) {
+        return Err(error::Share::Usage(format!(
+            "artifact {cid} is not associated with commit {oid}"
+        ))
+        .into());
+    }
 
-    let artifact = release
-        .artifact(&cid)
-        .ok_or(error::Share::ArtifactNotFound(cid))?;
+    // Prefer the name/redactions view from a release that matches the
+    // requested OID; fall back to any release containing the CID.
+    let primary = matching
+        .iter()
+        .find(|(_, r)| r.oid() == &oid)
+        .or_else(|| matching.first())
+        .expect("matching is non-empty");
+    let artifact = primary.1.artifact(&cid).expect("find_all_by_cid guarantees this");
 
-    if artifact.is_redacted() {
+    // Aggregate redactions across all releases containing the CID so the
+    // user sees every trusted-party warning, not just those on one release.
+    let mut aggregated_redactions: std::collections::BTreeMap<Did, String> =
+        std::collections::BTreeMap::new();
+    for (_, release) in matching.iter() {
+        if let Some(a) = release.artifact(&cid) {
+            for (did, reason) in a.redactions() {
+                aggregated_redactions.entry(*did).or_insert_with(|| reason.clone());
+            }
+        }
+    }
+    if !aggregated_redactions.is_empty() {
         eprintln!("WARNING: this artifact has been redacted");
-        for (did, reason) in artifact.redactions() {
+        for (did, reason) in aggregated_redactions.iter() {
             eprintln!("  {did}: {reason}");
         }
     }
@@ -532,7 +567,10 @@ fn run_fetch(
     let locations = if let Some(ref url) = args.url {
         vec![share::Location::Url(url)]
     } else {
-        artifact_locations(artifact)?
+        let artifacts = matching
+            .iter()
+            .filter_map(|(_, r)| r.artifact(&cid));
+        artifact_locations(artifacts)?
     };
     eprintln!(
         "Trying {} location{}...",
@@ -577,15 +615,29 @@ fn run_serve(
         share::compute_blob_cid(&args.path).map_err(error::Share::Share)?
     };
 
-    let (release_id, release) = releases
-        .find_by_cid(&cid)
-        .map_err(|e| error::Share::Usage(e.to_string()))?
-        .ok_or(error::Share::ArtifactNotFound(cid))?;
-
-    let artifact = release.artifact(&cid).expect("find_by_cid guarantees this");
+    // Register the serving location on every release that contains this
+    // CID: the artifact may appear in duplicate releases for the same OID
+    // or in releases for different commits. Fetchers look up by CID and
+    // union locations across releases, so registering on one release only
+    // would leave other lookup paths blind to the local server.
+    let matching = releases
+        .find_all_by_cid(&cid)
+        .map_err(|e| error::Share::Usage(e.to_string()))?;
+    if matching.is_empty() {
+        return Err(error::Share::ArtifactNotFound(cid).into());
+    }
+    let release_ids: Vec<ReleaseId> = matching.iter().map(|(id, _)| *id).collect();
+    let primary = &matching[0].1;
+    let artifact = primary.artifact(&cid).expect("find_all_by_cid guarantees this");
     let kind = share::artifact_kind(&cid).map_err(error::Share::Share)?;
 
     eprintln!("Artifact: {} (CID: {cid})", artifact.name());
+    if release_ids.len() > 1 {
+        eprintln!(
+            "Registering location on {} releases that contain this CID",
+            release_ids.len()
+        );
+    }
 
     if !no_input && std::io::stdin().is_terminal() {
         let confirmed =
@@ -627,12 +679,14 @@ fn run_serve(
         let iroh_url = url::Url::parse("iroh://").expect("static URL is valid");
 
         let signer = profile.signer().map_err(error::Signer)?;
-        let mut release_mut = releases
-            .get_mut(&release_id)
-            .map_err(|e| error::Share::Usage(e.to_string()))?;
-        release_mut
-            .add_location(cid, iroh_url.clone(), &signer)
-            .map_err(|e| error::Share::Usage(e.to_string()))?;
+        for release_id in release_ids.iter() {
+            let mut release_mut = releases
+                .get_mut(release_id)
+                .map_err(|e| error::Share::Usage(e.to_string()))?;
+            release_mut
+                .add_location(cid, iroh_url.clone(), &signer)
+                .map_err(|e| error::Share::Usage(e.to_string()))?;
+        }
 
         eprintln!("Serving artifact via iroh-blobs");
         eprintln!("Press Ctrl+C to stop");
@@ -641,15 +695,24 @@ fn run_serve(
 
         eprintln!("\nShutting down...");
 
-        // Remove location registration before stopping the server.
-        let mut release_mut = releases
-            .get_mut(&release_id)
-            .map_err(|e| error::Share::Usage(e.to_string()))?;
-        if let Err(e) = release_mut.remove_location(cid, iroh_url, &signer) {
-            eprintln!("Warning: failed to remove location: {e}");
-        } else {
-            eprintln!("Removed location");
+        // Remove location from every release we registered on. Errors on
+        // individual releases are surfaced as warnings so one failure
+        // doesn't leak registrations on the others.
+        for release_id in release_ids.iter() {
+            match releases.get_mut(release_id) {
+                Ok(mut release_mut) => {
+                    if let Err(e) =
+                        release_mut.remove_location(cid, iroh_url.clone(), &signer)
+                    {
+                        eprintln!("Warning: failed to remove location from {release_id}: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to open release {release_id} for cleanup: {e}");
+                }
+            }
         }
+        eprintln!("Removed location from {} release(s)", release_ids.len());
 
         server.shutdown().await.map_err(error::Share::Share)?;
 
@@ -657,20 +720,32 @@ fn run_serve(
     })
 }
 
-/// Convert artifact locations into fetch locations.
+/// Convert locations from one or more artifacts into fetch locations.
 ///
-/// For `iroh://` URLs, derives the endpoint ID from the DID that
-/// authored the location (same Ed25519 key).
+/// For `iroh://` URLs, derives the endpoint ID from the DID that authored the
+/// location (same Ed25519 key). Locations are deduplicated across artifacts —
+/// a plain URL contributed by the same or different users collapses to one
+/// entry, and a DID's iroh endpoint collapses to one entry regardless of how
+/// many releases record it.
 #[cfg(feature = "share")]
-fn artifact_locations(artifact: &Artifact) -> Result<Vec<share::Location<'_>>, RadArtifactError> {
+fn artifact_locations<'a>(
+    artifacts: impl IntoIterator<Item = &'a Artifact>,
+) -> Result<Vec<share::Location<'a>>, RadArtifactError> {
+    let mut seen_urls: BTreeSet<&url::Url> = BTreeSet::new();
+    let mut seen_iroh: BTreeSet<Did> = BTreeSet::new();
     let mut locations = Vec::new();
-    for (did, urls) in artifact.locations() {
-        for url in urls {
-            if url.scheme() == "iroh" {
-                let pk = share::did_to_iroh_public_key(did).map_err(error::Share::Share)?;
-                locations.push(share::Location::Iroh(pk));
-            } else {
-                locations.push(share::Location::Url(url));
+    for artifact in artifacts {
+        for (did, urls) in artifact.locations() {
+            for url in urls {
+                if url.scheme() == "iroh" {
+                    if seen_iroh.insert(*did) {
+                        let pk = share::did_to_iroh_public_key(did)
+                            .map_err(error::Share::Share)?;
+                        locations.push(share::Location::Iroh(pk));
+                    }
+                } else if seen_urls.insert(url) {
+                    locations.push(share::Location::Url(url));
+                }
             }
         }
     }
@@ -687,10 +762,17 @@ mod prompt {
 
     use super::display;
 
-    /// Interactive mode: list releases, pick one, list its artifacts, pick one.
+    /// Interactive mode: list commits with releases, pick one, list its
+    /// artifacts, pick one.
     ///
-    /// Requires stdin to be a TTY. Errors if `no_input` is set or stdin is not
-    /// interactive, so scripts don't hang waiting for input.
+    /// Releases are deduplicated by commit OID: if two release COBs exist
+    /// for the same commit (e.g. concurrent creation before sync), their
+    /// artifacts are merged into a single entry in the picker. Returns the
+    /// chosen `(commit OID, CID)`; downstream callers look up by CID and
+    /// union locations across all releases.
+    ///
+    /// Requires stdin to be a TTY. Errors if `no_input` is set or stdin is
+    /// not interactive, so scripts don't hang waiting for input.
     pub fn pick_interactive(
         no_input: bool,
         releases: &Releases<Repository>,
@@ -701,26 +783,48 @@ mod prompt {
                 "interactive mode requires a terminal; pass <commit> and --cid, or use --no-input to disable".into(),
             );
         }
-        let mut all: Vec<(ReleaseId, Release)> = releases
+        let all: Vec<Release> = releases
             .all()
             .map_err(|e| e.to_string())?
             .filter_map(|res| res.ok())
-            .map(|(id, release)| (ReleaseId::from(id), release))
+            .map(|(_, release)| release)
             .collect();
-        all.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
 
         if all.is_empty() {
             return Err("no releases found in this repository".into());
         }
 
-        // Build display strings for each release.
-        let release_labels: Vec<String> = all
+        // Group releases by OID. Artifacts are merged (dedupe by CID) so
+        // the picker shows one entry per commit even when multiple release
+        // COBs exist for the same OID.
+        let mut groups: std::collections::BTreeMap<Oid, CommitGroup> =
+            std::collections::BTreeMap::new();
+        for release in all.into_iter() {
+            let oid = *release.oid();
+            let ts = release.timestamp();
+            let group = groups.entry(oid).or_insert_with(|| CommitGroup {
+                oid,
+                timestamp: ts,
+                artifacts: Vec::new(),
+            });
+            // Track the earliest creation timestamp for this commit.
+            group.timestamp = group.timestamp.min(ts);
+            for (cid, artifact) in release.artifacts().iter() {
+                if !group.artifacts.iter().any(|(c, _)| c == cid) {
+                    group.artifacts.push((*cid, artifact.clone()));
+                }
+            }
+        }
+        let mut groups: Vec<CommitGroup> = groups.into_values().collect();
+        // Most recently seen commit first.
+        groups.sort_by_key(|g| std::cmp::Reverse(g.timestamp));
+
+        let release_labels: Vec<String> = groups
             .iter()
-            .map(|(_, release)| {
-                let oid = release.oid();
-                let short = &oid.to_string()[..7];
-                let title = display::CommitTitle::title(repo, oid).unwrap_or_default();
-                let n = release.artifacts().len();
+            .map(|group| {
+                let short = &group.oid.to_string()[..7];
+                let title = display::CommitTitle::title(repo, &group.oid).unwrap_or_default();
+                let n = group.artifacts.len();
                 format!(
                     "{short} {title} ({n} artifact{})",
                     if n == 1 { "" } else { "s" }
@@ -731,15 +835,14 @@ mod prompt {
         let selection = inquire::Select::new("Select release:", release_labels)
             .raw_prompt()
             .map_err(|e| format!("selection cancelled: {e}"))?;
-        let (_, release) = &all[selection.index];
+        let group = &groups[selection.index];
 
-        let artifacts: Vec<(&radicle_artifact::Cid, &Artifact)> =
-            release.artifacts().iter().collect();
-        if artifacts.is_empty() {
+        if group.artifacts.is_empty() {
             return Err("selected release has no artifacts".into());
         }
 
-        let artifact_labels: Vec<String> = artifacts
+        let artifact_labels: Vec<String> = group
+            .artifacts
             .iter()
             .map(|(cid, artifact)| {
                 let redacted = if artifact.is_redacted() { " [REDACTED]" } else { "" };
@@ -750,9 +853,16 @@ mod prompt {
         let selection = inquire::Select::new("Select artifact:", artifact_labels)
             .raw_prompt()
             .map_err(|e| format!("selection cancelled: {e}"))?;
-        let (cid, _) = artifacts[selection.index];
+        let (cid, _) = &group.artifacts[selection.index];
 
-        Ok((*release.oid(), *cid))
+        Ok((group.oid, *cid))
+    }
+
+    /// Merged view of all release COBs for a given commit.
+    struct CommitGroup {
+        oid: Oid,
+        timestamp: u64,
+        artifacts: Vec<(radicle_artifact::Cid, Artifact)>,
     }
 
     /// Prompt for a redaction reason at the terminal.
@@ -1137,7 +1247,8 @@ Examples:
         /// Output all information, including intermediate errors.
         #[clap(long, short)]
         pub verbose: bool,
-        /// Only show releases created by delegates of the repository.
+        /// Only show releases that contain at least one artifact
+        /// authored by a repository delegate.
         #[clap(long)]
         pub delegates_only: bool,
         /// Also show artifacts that have been redacted by a trusted party.

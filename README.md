@@ -17,7 +17,7 @@ CID matches, turning artifact verification into a multi-party act. **Redactions*
 from delegates carry the most weight: a delegate flagging an artifact as
 compromised is a strong signal from the project's own trusted members.
 
-A **Release** is associated with a Git OID (annotated tag or commit) and an author (the DID of the creating user). It contains one or more **Artifacts**, each identified by a content identifier (CID). Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Each user can announce multiple discovery URLs for any artifact, enabling decentralized mirroring. Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
+A **Release** is associated with a Git OID (annotated tag or commit). There is one release per commit: any contributor's `add` either reuses the existing release for that commit or creates it if none exists. A release contains one or more **Artifacts**, each identified by a content identifier (CID). Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Each user can announce multiple discovery URLs for any artifact, enabling decentralized mirroring. Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
 Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
 
@@ -44,8 +44,7 @@ This COB is **build-system agnostic**. It works with any toolchain or build proc
 
 ```
 Release
-├── oid: Oid                          # git commit or annotated tag
-├── author: Did                       # user that created this release
+├── oid: Oid                          # git commit or annotated tag (one release per OID)
 └── artifacts: Map<Cid, Artifact>
     └── Artifact
         ├── author: Did               # user that added this artifact
@@ -61,9 +60,11 @@ Release
 
 ## Collaboration model
 
-Any user can contribute to any release. There is no restriction to the original author. This means any user can add artifacts, announce discovery locations, and record attestations on releases created by others. The `author` field records who created the release but does not gate contributions.
+A release is identified by its commit OID, not by the person who created it. Any user can add artifacts, announce discovery locations, or attest and redact on any release. The first contributor's `add` creates the release COB; subsequent contributors reuse it. Artifact-level attribution is still recorded — only the DID that added an artifact can update its name, and attestations/redactions are attributed to their signer.
 
-The CLI scopes release lookups to repository **delegates**. When you reference a commit, only releases authored by delegates are considered. This prevents non-delegate releases from shadowing or blocking delegate releases. Non-delegate releases still exist in the store and are visible via `list`.
+Trust weighting happens at the artifact level: redactions and attestations from repository **delegates** are highlighted, and `list --delegates-only` filters to releases that contain at least one artifact from a delegate.
+
+Two unsynced nodes can independently create a release COB for the same commit. After they sync, retrieval (`fetch`, `serve`) unions artifacts and locations across every release COB for the given commit or CID, so duplicate COBs don't break discovery. A fully deterministic per-OID COB ID — so that both nodes produce the same COB identity before syncing — would require upstream changes to the `radicle-cob` crate and is not implemented here.
 
 ## Actions
 
@@ -87,7 +88,7 @@ rad-artifact location remove <COMMIT> --cid <CID> <URL>      # remove discovery 
 rad-artifact attest <COMMIT> --cid <CID>                     # attest to an artifact
 rad-artifact redact <COMMIT> --cid <CID> -m <REASON>         # redact an artifact
 rad-artifact show <COMMIT> [--pretty]                        # show release
-rad-artifact list [--pretty] [--delegates-only]              # list all releases
+rad-artifact list [--pretty] [--delegates-only]              # list releases (--delegates-only: with ≥1 delegate-authored artifact)
 rad-artifact cid <PATH>                                      # compute BLAKE3 CID
 rad-artifact fetch [<COMMIT> --cid <CID>]                    # fetch artifact (interactive without args)
 rad-artifact serve <PATH>                                    # serve artifact via iroh-blobs
