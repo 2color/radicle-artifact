@@ -271,15 +271,15 @@ impl Release {
         let short_id = &self.release_id.to_string()[..7];
         let short_oid = &self.oid.to_string()[..7];
         let title_suffix = match &self.title {
-            Some(t) => format!(" {t}"),
-            None => String::new(),
+            Some(t) => t,
+            None => "",
         };
         let date = DateTime::<Utc>::from_timestamp(self.created_at as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
             .unwrap_or_else(|| self.created_at.to_string());
         push_line(
             &mut s,
-            format!("release {short_id} {date} (commit {short_oid}{title_suffix})"),
+            format!("ID {short_id} | commit {short_oid} | {date} {title_suffix}"),
         );
         // Build a per-release artifact table: CID | name | DID | URL.
         // Multiple locations use blank cells in the CID/name columns.
