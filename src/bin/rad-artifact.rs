@@ -227,15 +227,12 @@ where
 {
     let oid = resolve_commit(&commit, repo)?;
     // One release per OID: reuse the existing release regardless of who
-    // created it, otherwise create a fresh one.
+    // created it, otherwise create a fresh one. If duplicate release COBs
+    // exist for this OID (concurrent creation across unsynced nodes), the
+    // store deterministically picks one so all replicas converge on it.
     let mut release = releases
         .find_or_create_by_oid(oid, signer)
-        .map_err(|err| match err {
-            radicle_artifact::FindOrCreateError::Ambiguous(o) => {
-                error::Add::Find(error::Find::Ambiguous(o))
-            }
-            radicle_artifact::FindOrCreateError::Store(err) => error::Add::Create { oid, err },
-        })?;
+        .map_err(|err| error::Add::Create { oid, err })?;
     let id = *release.id();
     release
         .add_artifact(cid, name.clone(), signer)

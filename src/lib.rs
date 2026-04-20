@@ -559,7 +559,7 @@ where
     ///
     /// The same CID may appear in multiple releases — either across different
     /// commits, or within duplicate release COBs for the same commit when two
-    /// nodes concurrently created the release before syncing. Retrieval should
+    /// users concurrently created the release before syncing. Retrieval should
     /// union locations across all of them, so callers should use this method
     /// rather than [`Releases::find_by_cid`] when building a fetch plan.
     pub fn find_all_by_cid(
@@ -670,42 +670,35 @@ where
         })
     }
 
-    /// Find the unique [`Release`] for the given OID, or create one if none exists.
+    /// Find a [`Release`] for the given OID, or create one if none exists.
     ///
-    /// Errors if multiple releases exist for the same OID (ambiguous).
+    /// When duplicate release COBs exist for the same OID (concurrent creation
+    /// across unsynced nodes), returns the one with the smallest [`ReleaseId`].
+    /// The tie-break is deterministic across replicas, so subsequent writes
+    /// converge on a single release rather than spawning more duplicates; the
+    /// read path already unions across duplicates via [`Releases::find_all_by_cid`].
     pub fn find_or_create_by_oid<'g, G>(
         &'g mut self,
         oid: Oid,
         signer: &Device<G>,
-    ) -> Result<ReleaseMut<'a, 'g, R>, FindOrCreateError>
+    ) -> Result<ReleaseMut<'a, 'g, R>, store::Error>
     where
         G: Signer<crypto::Signature>,
     {
-        let mut found: Option<ReleaseId> = None;
+        let mut canonical: Option<ReleaseId> = None;
         for result in self.find_by_oid(oid)? {
             let (id, _) = result?;
-            if found.is_some() {
-                return Err(FindOrCreateError::Ambiguous(oid));
-            }
-            found = Some(id);
+            canonical = Some(match canonical {
+                Some(current) if current <= id => current,
+                _ => id,
+            });
         }
 
-        match found {
-            None => Ok(self.create(oid, signer)?),
-            Some(id) => Ok(self.get_mut(&id)?),
+        match canonical {
+            None => self.create(oid, signer),
+            Some(id) => self.get_mut(&id),
         }
     }
-}
-
-/// Errors from [`Releases::find_or_create_by_oid`].
-#[derive(Debug, thiserror::Error)]
-pub enum FindOrCreateError {
-    /// Multiple releases exist for the same OID.
-    #[error("multiple releases found for commit {0}, use a release ID to disambiguate")]
-    Ambiguous(Oid),
-    /// An error occurred in the underlying COB store.
-    #[error(transparent)]
-    Store(#[from] store::Error),
 }
 
 /// A `ReleaseMut` is a [`Release`] where the underlying `Release` can be
@@ -1839,7 +1832,11 @@ mod test {
     }
 
     #[test]
-    fn find_or_create_errors_on_ambiguous_oid() {
+    fn find_or_create_picks_smallest_id_when_duplicates_exist() {
+        // Duplicate release COBs for the same OID can exist when two nodes
+        // concurrently create a release before syncing. find_or_create_by_oid
+        // must deterministically return the same one on every replica so that
+        // subsequent writes converge rather than spawning more duplicates.
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -1847,15 +1844,23 @@ mod test {
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
 
-        // Two different signers create releases for the same OID.
-        releases.create(oid, &alice.signer).unwrap();
-        releases.create(oid, &bob.signer).unwrap();
+        let a = *releases.create(oid, &alice.signer).unwrap().id();
+        let b = *releases.create(oid, &bob.signer).unwrap().id();
+        let expected = std::cmp::min(a, b);
 
-        match releases.find_or_create_by_oid(oid, &alice.signer) {
-            Err(crate::FindOrCreateError::Ambiguous(_)) => {}
-            Err(err) => panic!("expected Ambiguous error, got: {err}"),
-            Ok(_) => panic!("expected Ambiguous error, got Ok"),
-        }
+        let picked = *releases
+            .find_or_create_by_oid(oid, &alice.signer)
+            .unwrap()
+            .id();
+        assert_eq!(picked, expected);
+
+        // A different signer must pick the same release — the tie-break is
+        // signer-independent so replicas converge.
+        let picked_again = *releases
+            .find_or_create_by_oid(oid, &bob.signer)
+            .unwrap()
+            .id();
+        assert_eq!(picked_again, expected);
     }
 
     #[test]
