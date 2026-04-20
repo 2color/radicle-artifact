@@ -569,6 +569,10 @@ fn run_fetch(
             .filter_map(|(_, r)| r.artifact(&cid));
         artifact_locations(artifacts)?
     };
+    // Short-circuit when no usable source exists
+    if locations.is_empty() {
+        return Err(error::Share::NoLocationsForCid { cid }.into());
+    }
     eprintln!(
         "Trying {} location{}...",
         locations.len(),
@@ -1445,6 +1449,11 @@ mod error {
         Usage(String),
         #[error("artifact with CID {0} not found")]
         ArtifactNotFound(radicle_artifact::Cid),
+        // Distinct from `ArtifactNotFound`: the artifact is known, but no
+        // usable source has been announced. Surface the actionable recovery
+        // paths so the user doesn't get a generic "no locations" error.
+        #[error("no download locations known for artifact {cid}\n  hint: pass --url <URL> to fetch directly, or ask a seed to run `rad-artifact serve`")]
+        NoLocationsForCid { cid: radicle_artifact::Cid },
         #[error(transparent)]
         Share(radicle_artifact::share::Error),
         #[error("I/O error")]
