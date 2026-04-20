@@ -7,15 +7,15 @@
 //!
 //! # Sync/async design
 //!
-//! The fetch functions ([`fetch_iroh_blob`], [`fetch_iroh_collection`],
-//! [`download`], [`download_collection`]) are **synchronous**. They create
-//! ephemeral `tokio::Runtime` and `iroh::Endpoint` instances per call,
+//! The fetch entry points [`download`] and [`download_collection`] are
+//! **synchronous**. Each call creates an ephemeral `tokio::Runtime`, a
+//! single `iroh::Endpoint` shared across all iroh providers, and a
+//! temporary blob store — torn down before the function returns. This is
 //! intended for CLI tools that perform isolated, one-shot fetches.
 //!
 //! Applications with a long-lived async runtime and persistent iroh endpoint
 //! (e.g. a Tauri desktop app) should use `iroh_blobs::api::downloader::Downloader`
-//! directly instead of these functions. See the individual function docs for
-//! details.
+//! directly instead of these functions.
 //!
 //! The [`Server`] type similarly uses an in-memory store suited for ephemeral
 //! CLI serving. Long-running apps should build their own
@@ -36,7 +36,7 @@ pub use cid_utils::{
     verify_cid, verify_cid_file, ArtifactKind, BLAKE3_HASHSEQ_CODEC, HASH_CODE_BLAKE3, RAW_CODEC,
 };
 pub use endpoint::EndpointPreset;
-pub use fetch::{download, download_collection, fetch_iroh_blob, fetch_iroh_collection, Location};
+pub use fetch::{download, download_collection, Location};
 pub use keys::{did_to_iroh_public_key, radicle_secret_to_iroh};
 pub use serve::{add_blob, add_collection, Server};
 

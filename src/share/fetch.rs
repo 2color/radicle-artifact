@@ -3,22 +3,50 @@
 //! Provides HTTP and iroh-blobs fetching for artifacts. HTTP uses [`ureq`];
 //! iroh downloads stream to disk via [`iroh_blobs::store::fs::FsStore`],
 //! avoiding in-memory buffering. Progress is reported via [`indicatif`].
+//!
+//! Both transports bound how long an unreachable provider can tie up a
+//! fetch. HTTP sets connect and receive-response timeouts on the
+//! `ureq::Agent`; iroh sets a connect timeout on the connection pool and
+//! an idle-progress timeout around the Downloader stream. Mid-body HTTP
+//! stalls are intentionally not bounded — ureq 3.3 only offers a
+//! total-body timeout, which would break large artifact downloads.
+//!
+//! Per-provider iroh causes are not preserved (the [`iroh_blobs`]
+//! downloader drops them on `ProviderFailed`); set
+//! `RUST_LOG=iroh_blobs=debug` for detail.
 
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use cid::Cid;
 use indicatif::{ProgressBar, ProgressStyle};
-use iroh_blobs::api::remote::GetProgressItem;
+use iroh::EndpointId;
+//
+use iroh_blobs::api::downloader::{DownloadProgressItem, Downloader, Shuffled};
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::util::connection_pool::Options as PoolOptions;
 use iroh_blobs::{BlobFormat, HashAndFormat};
 use n0_future::StreamExt;
 use url::Url;
 
-use super::cid_utils;
+use super::cid_utils::{self, ArtifactKind};
 use super::endpoint::EndpointPreset;
 use super::Error;
+
+/// Per-provider connect bound. A provider that cannot establish a usable
+/// connection (HTTP TCP handshake or iroh QUIC+relay path) within this
+/// window is abandoned so the next one is tried. More generous than
+/// iroh's 1s default to accommodate slower relay paths without giving up
+/// on reachable but cold providers.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Idle (no-progress) bound. Reset only on `Progress` / `PartComplete`
+/// events — control events like `TryProvider` or `ProviderFailed` do not
+/// count as progress, so a cascade of dead providers can't keep the
+/// download alive past this window.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A location to try fetching an artifact from.
 pub enum Location<'a> {
@@ -28,9 +56,23 @@ pub enum Location<'a> {
     Iroh(iroh::EndpointId),
 }
 
-/// Fetch HTTP content at `url` into `dest` using ureq.
-fn fetch_http(url: &Url, dest: &mut dyn Write) -> Result<(), Error> {
-    let resp = ureq::get(url.as_str())
+/// Build a ureq agent with connect and response-header timeouts.
+///
+/// No total-body timeout: large artifact downloads must be allowed to
+/// stream for as long as they make progress, and ureq 3.3 does not offer
+/// a per-read socket timeout that would bound only stalls.
+fn http_agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(CONNECT_TIMEOUT))
+        .build();
+    ureq::Agent::new_with_config(config)
+}
+
+/// Fetch HTTP content at `url` into `dest` using a pre-configured agent.
+fn fetch_http(agent: &ureq::Agent, url: &Url, dest: &mut dyn Write) -> Result<(), Error> {
+    let resp = agent
+        .get(url.as_str())
         .call()
         .map_err(|e| Error::Http(e.to_string()))?;
     let mut reader = resp.into_body().into_reader();
@@ -39,12 +81,12 @@ fn fetch_http(url: &Url, dest: &mut dyn Write) -> Result<(), Error> {
 }
 
 // ---------------------------------------------------------------------------
-// Progress bar helpers (following sendme conventions)
+// Progress bar
 // ---------------------------------------------------------------------------
 
 fn make_download_progress() -> ProgressBar {
     let pb = ProgressBar::new_spinner();
-    pb.enable_steady_tick(std::time::Duration::from_millis(250));
+    pb.enable_steady_tick(Duration::from_millis(250));
     pb.set_style(
         ProgressStyle::with_template(
             "{spinner:.green} Downloading {bytes} ({binary_bytes_per_sec})",
@@ -54,250 +96,259 @@ fn make_download_progress() -> ProgressBar {
     pb
 }
 
-/// Drive a progress bar from a channel of byte offsets.
-///
-/// Runs as a spawned task so the download stream and the UI update are
-/// decoupled — this supports future multi-connection downloads where
-/// multiple providers feed the same store.
-async fn show_download_progress(pb: ProgressBar, mut recv: tokio::sync::mpsc::Receiver<u64>) {
-    while let Some(offset) = recv.recv().await {
-        pb.set_position(offset);
-    }
-    pb.finish_and_clear();
-}
-
 // ---------------------------------------------------------------------------
 // Iroh internals
 // ---------------------------------------------------------------------------
 
-/// Ephemeral store directory for an iroh download, following sendme's convention.
-/// Placed in the current working directory and cleaned up after the download.
+/// Ephemeral store directory for an iroh download, following sendme's
+/// convention. Placed in the current working directory and cleaned up
+/// after the download.
 fn iroh_store_dir(hash: &iroh_blobs::Hash) -> std::path::PathBuf {
     let hex = hash.to_hex();
     std::path::PathBuf::from(format!(".rad-artifact-fetch-{hex}"))
 }
 
-/// Connect to an iroh endpoint and return the connection.
-///
-/// The endpoint is returned alongside the connection because the
-/// connection cannot outlive the endpoint that created it.
-async fn iroh_connect(
-    endpoint_id: iroh::EndpointId,
-    preset: EndpointPreset,
-) -> Result<(iroh::Endpoint, iroh::endpoint::Connection), Error> {
-    let endpoint = iroh::Endpoint::builder(preset)
-        .bind()
-        .await
-        .map_err(|e| Error::Iroh(format!("endpoint bind: {e}")))?;
-
-    let connection = endpoint
-        .connect(endpoint_id, iroh_blobs::ALPN)
-        .await
-        .map_err(|e| Error::Iroh(format!("connect: {e}")))?;
-    Ok((endpoint, connection))
-}
-
-/// Download content into a [`FsStore`] via `execute_get`, showing progress.
-///
-/// This is the shared core used by both [`fetch_iroh_blob`] and
-/// [`fetch_iroh_collection`]. The caller is responsible for exporting
-/// from the store after this returns.
-async fn fetch_iroh_to_store(
-    hash_and_format: HashAndFormat,
-    endpoint_id: iroh::EndpointId,
-    db: &FsStore,
-    preset: EndpointPreset,
-) -> Result<iroh::Endpoint, Error> {
-    let (endpoint, connection) = iroh_connect(endpoint_id, preset).await?;
-    let local = db
-        .remote()
-        .local(hash_and_format)
-        .await
-        .map_err(|e| Error::Iroh(format!("local info: {e}")))?;
-
-    if !local.is_complete() {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
-        let pb = make_download_progress();
-        let task = tokio::spawn(show_download_progress(pb, rx));
-
-        let get = db.remote().execute_get(connection, local.missing());
-        let mut stream = get.stream();
-        while let Some(item) = stream.next().await {
-            match item {
-                GetProgressItem::Progress(offset) => {
-                    tx.send(offset).await.ok();
-                }
-                GetProgressItem::Done(_stats) => break,
-                GetProgressItem::Error(cause) => {
-                    return Err(Error::Iroh(format!("download: {cause}")));
-                }
-            }
-        }
-        drop(tx);
-        task.await.ok();
+/// Map the CID codec to the iroh-blobs on-wire format.
+fn blob_format_for_cid(cid: &Cid) -> Result<BlobFormat, Error> {
+    match cid_utils::artifact_kind(cid)? {
+        ArtifactKind::Blob => Ok(BlobFormat::Raw),
+        ArtifactKind::Collection => Ok(BlobFormat::HashSeq),
     }
-
-    Ok(endpoint)
 }
 
-// ---------------------------------------------------------------------------
-// Public iroh fetch API
-// ---------------------------------------------------------------------------
-
-/// Fetch a single blob via iroh-blobs from the given endpoint.
+/// Run a multi-provider iroh download
 ///
-/// Downloads into a temporary [`FsStore`], then exports the blob to `dest`.
-/// No in-memory buffering — data streams through the store to disk.
-/// BLAKE3 verification happens during transfer (iroh-blobs verifies natively).
+/// One `Endpoint` and one [`Downloader`] are reused across providers, so we pay the
+/// endpoint-bind cost once and partial progress persists across providers
+/// (the second provider only supplies what the first didn't deliver).
 ///
-/// # Sync/async design
-///
-/// This function is **synchronous** — it creates an ephemeral `tokio::Runtime`,
-/// connects to the remote endpoint, downloads the blob, and tears everything
-/// down before returning. This is intentional for CLI use where each fetch is
-/// a one-shot operation with no pre-existing async context.
-///
-/// **Callers already in an async context** (e.g. a Tauri app with a long-lived
-/// iroh endpoint and persistent blob store) should NOT use this function.
-/// Instead, use `iroh_blobs::api::downloader::Downloader` directly — it
-/// integrates with an existing endpoint and store, supports multi-provider
-/// downloads, and avoids the overhead of creating a throwaway runtime and
-/// endpoint per fetch.
-///
-/// The same applies to [`fetch_iroh_collection`].
-pub fn fetch_iroh_blob(
-    cid: &Cid,
-    endpoint_id: iroh::EndpointId,
-    dest: &Path,
+/// Returns per-provider errors on failure. `DownloadProgressItem::ProviderFailed`
+/// intentionally drops the underlying cause — the errors vector therefore
+/// records only which provider failed plus the final stream-level cause if
+/// the download terminates fatally.
+async fn iroh_fetch_to_store(
+    hash_and_format: HashAndFormat,
+    providers: Vec<EndpointId>,
     preset: EndpointPreset,
-) -> Result<(), Error> {
-    let hash = cid_utils::cid_to_blake3_hash(cid)?;
-    let hash_and_format = HashAndFormat {
-        hash,
-        format: BlobFormat::Raw,
+    db: &FsStore,
+) -> Result<(), Vec<Error>> {
+    let endpoint = match iroh::Endpoint::builder(preset).bind().await {
+        Ok(ep) => ep,
+        Err(e) => return Err(vec![Error::Iroh(format!("endpoint bind: {e}"))]),
     };
-    // iroh-blobs export requires an absolute path.
-    let dest = std::path::absolute(dest).map_err(Error::Io)?;
 
-    let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
-    rt.block_on(async {
-        let store_dir = iroh_store_dir(&hash);
-        std::fs::create_dir_all(&store_dir).map_err(Error::Io)?;
-        let db = FsStore::load(&store_dir)
-            .await
-            .map_err(|e| Error::Iroh(format!("store load: {e}")))?;
+    let pool_opts = PoolOptions {
+        connect_timeout: CONNECT_TIMEOUT,
+        ..PoolOptions::default()
+    };
+    let downloader = Downloader::new_with_opts(db.as_ref(), &endpoint, pool_opts);
 
-        let result = async {
-            let endpoint =
-                fetch_iroh_to_store(hash_and_format, endpoint_id, &db, preset).await?;
-            db.blobs()
-                .export(hash, dest)
-                .await
-                .map_err(|e| Error::Iroh(format!("export: {e}")))?;
+    let pb: ProgressBar = make_download_progress();
+
+    // below we shuffle to avoid overloading a single provider, but the
+    // trade-off is that we may lose freshness ordering if providers are prioritized by the caller.
+    let progress = downloader.download(hash_and_format, Shuffled::new(providers));
+    let mut stream = match progress.stream().await {
+        Ok(s) => s,
+        Err(e) => {
+            pb.finish_and_clear();
             endpoint.close().await;
-            Ok(())
+            return Err(vec![Error::Iroh(format!("downloader rpc: {e}"))]);
         }
-        .await;
-
-        // Always shut down the store before removing the directory.
-        db.shutdown().await.ok();
-        std::fs::remove_dir_all(&store_dir).ok();
-        result
-    })
-}
-
-/// Fetch an iroh-blobs collection and write each entry as a file under `dest_dir`.
-///
-/// The CID must use the `blake3-hashseq` codec (0x80). Each entry in the
-/// collection is written to `dest_dir/<name>`.
-///
-/// # Sync/async design
-///
-/// Like [`fetch_iroh_blob`], this function is synchronous and creates an
-/// ephemeral runtime and endpoint per call. This is suited for CLI tools
-/// that perform isolated, one-shot fetches.
-///
-/// Async callers with a long-lived iroh endpoint should use
-/// `iroh_blobs::api::downloader::Downloader` instead, which downloads into
-/// an existing blob store without ephemeral runtime overhead. After
-/// downloading, use [`iroh_blobs::format::collection::Collection::load`] to
-/// read the collection from the store and extract entries.
-pub fn fetch_iroh_collection(
-    cid: &Cid,
-    endpoint_id: iroh::EndpointId,
-    dest_dir: &Path,
-    preset: EndpointPreset,
-) -> Result<(), Error> {
-    let hash = cid_utils::cid_to_blake3_hash(cid)?;
-    let hash_and_format = HashAndFormat {
-        hash,
-        format: BlobFormat::HashSeq,
     };
-    // iroh-blobs export requires an absolute path.
-    let dest_dir = std::path::absolute(dest_dir).map_err(Error::Io)?;
 
-    let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Iroh(e.to_string()))?;
-    rt.block_on(async {
-        let store_dir = iroh_store_dir(&hash);
-        std::fs::create_dir_all(&store_dir).map_err(Error::Io)?;
-        let db = FsStore::load(&store_dir)
-            .await
-            .map_err(|e| Error::Iroh(format!("store load: {e}")))?;
-
-        let result = async {
-            let endpoint =
-                fetch_iroh_to_store(hash_and_format, endpoint_id, &db, preset).await?;
-
-            let collection = Collection::load(hash, db.as_ref())
-                .await
-                .map_err(|e| Error::Iroh(format!("load collection: {e}")))?;
-
-            std::fs::create_dir_all(&dest_dir).map_err(Error::Io)?;
-            for (name, entry_hash) in collection.iter() {
-                let target = dest_dir.join(name);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).map_err(Error::Io)?;
-                }
-                db.blobs()
-                    .export(*entry_hash, &target)
-                    .await
-                    .map_err(|e| Error::Iroh(format!("export '{name}': {e}")))?;
+    let mut errors: Vec<Error> = Vec::new();
+    let mut fatal: Option<Error> = None;
+    // Idle deadline is only bumped by data-movement events (`Progress`,
+    // `PartComplete`). Control events from the downloader — `TryProvider`,
+    // `ProviderFailed` — do not reset it, so a stream of dead providers
+    // can't silently extend the wait beyond IDLE_TIMEOUT of real progress.
+    let mut deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
+    loop {
+        match tokio::time::timeout_at(deadline, stream.next()).await {
+            Err(_) => {
+                fatal = Some(Error::Iroh(format!(
+                    "no progress for {}s",
+                    IDLE_TIMEOUT.as_secs()
+                )));
+                break;
             }
+            Ok(None) => break, // Download completed!
+            Ok(Some(item)) => match item {
+                DownloadProgressItem::TryProvider { id, .. } => {
+                    eprintln!("Trying iroh provider {id}...");
+                }
+                DownloadProgressItem::ProviderFailed { id, .. } => {
+                    errors.push(Error::Iroh(format!("provider {id}: download failed")));
+                }
+                DownloadProgressItem::Progress(offset) => {
+                    pb.set_position(offset);
+                    deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
+                }
+                DownloadProgressItem::PartComplete { .. } => {
+                    deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
+                }
+                DownloadProgressItem::DownloadError => {
+                    fatal = Some(Error::Iroh("download error".into()));
+                    break;
+                }
+                DownloadProgressItem::Error(cause) => {
+                    fatal = Some(Error::Iroh(format!("{cause}")));
+                    break;
+                }
+            },
+        }
+    }
+    pb.finish_and_clear();
+    endpoint.close().await;
 
-            endpoint.close().await;
-            Ok(())
+    // Trust the store: if nothing is missing, we have the content — even
+    // if individual providers emitted `ProviderFailed` along the way. If
+    // the completeness check itself errors, treat the attempt as failed
+    // and surface the cause so it isn't silently swallowed.
+    let done = match db.remote().local(hash_and_format).await {
+        Ok(local) => local.is_complete(),
+        Err(e) => {
+            errors.push(Error::Iroh(format!("store completeness check: {e}")));
+            false
+        }
+    };
+    if done {
+        Ok(())
+    } else {
+        if let Some(e) = fatal {
+            errors.push(e);
+        }
+        Err(errors)
+    }
+}
+
+/// What to write to disk after the iroh download completes.
+enum ExportTarget {
+    /// Export the single raw blob to this file path.
+    Blob(std::path::PathBuf),
+    /// Load the hashseq collection and export each entry under this dir.
+    Collection(std::path::PathBuf),
+}
+
+/// Synchronous wrapper around one iroh download attempt.
+///
+/// Creates an ephemeral tokio runtime and on-disk store, runs the
+/// multi-provider download via [`iroh_fetch_to_store`], then performs the
+/// blob-or-collection export step described by `target`. The store and
+/// runtime are torn down before returning.
+fn run_iroh_attempt(
+    cid: &Cid,
+    providers: Vec<EndpointId>,
+    preset: &EndpointPreset,
+    target: ExportTarget,
+) -> Result<(), Vec<Error>> {
+    let hash = cid_utils::cid_to_blake3_hash(cid).map_err(|e| vec![e])?;
+    // iroh-blobs export requires absolute paths, so resolve before moving
+    // into the async block.
+    let target = match target {
+        ExportTarget::Blob(p) => {
+            ExportTarget::Blob(std::path::absolute(&p).map_err(|e| vec![Error::Io(e)])?)
+        }
+        ExportTarget::Collection(p) => {
+            ExportTarget::Collection(std::path::absolute(&p).map_err(|e| vec![Error::Io(e)])?)
+        }
+    };
+    let format = match &target {
+        ExportTarget::Blob(_) => BlobFormat::Raw,
+        ExportTarget::Collection(_) => BlobFormat::HashSeq,
+    };
+    let hash_and_format = HashAndFormat { hash, format };
+
+    let rt =
+        tokio::runtime::Runtime::new().map_err(|e| vec![Error::Iroh(format!("runtime: {e}"))])?;
+    rt.block_on(async move {
+        let (db, store_dir) = open_ephemeral_store(&hash).await?;
+        let result = async {
+            iroh_fetch_to_store(hash_and_format, providers, preset.clone(), &db).await?;
+            match target {
+                ExportTarget::Blob(dest) => {
+                    db.blobs()
+                        .export(hash, dest)
+                        .await
+                        .map_err(|e| vec![Error::Iroh(format!("export: {e}"))])?;
+                }
+                ExportTarget::Collection(dest_dir) => {
+                    let collection = Collection::load(hash, db.as_ref())
+                        .await
+                        .map_err(|e| vec![Error::Iroh(format!("load collection: {e}"))])?;
+                    std::fs::create_dir_all(&dest_dir).map_err(|e| vec![Error::Io(e)])?;
+                    for (name, entry_hash) in collection.iter() {
+                        let target = dest_dir.join(name);
+                        if let Some(parent) = target.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| vec![Error::Io(e)])?;
+                        }
+                        db.blobs()
+                            .export(*entry_hash, &target)
+                            .await
+                            .map_err(|e| vec![Error::Iroh(format!("export '{name}': {e}"))])?;
+                    }
+                }
+            }
+            Ok::<(), Vec<Error>>(())
         }
         .await;
-
         db.shutdown().await.ok();
         std::fs::remove_dir_all(&store_dir).ok();
         result
     })
+}
+
+/// Create the ephemeral on-disk store used for the duration of one fetch.
+async fn open_ephemeral_store(
+    hash: &iroh_blobs::Hash,
+) -> Result<(FsStore, std::path::PathBuf), Vec<Error>> {
+    let store_dir = iroh_store_dir(hash);
+    std::fs::create_dir_all(&store_dir).map_err(|e| vec![Error::Io(e)])?;
+    let db = FsStore::load(&store_dir)
+        .await
+        .map_err(|e| vec![Error::Iroh(format!("store load: {e}"))])?;
+    Ok((db, store_dir))
 }
 
 // ---------------------------------------------------------------------------
 // Location-fallback orchestrators
 // ---------------------------------------------------------------------------
 
-/// Try each location in order until one succeeds.
+/// Split locations into iroh providers and HTTP URLs.
 ///
-/// Only supports single-blob artifacts (raw codec). For collections, use
-/// [`download_collection`].
+/// The iroh side is batched into a single multi-provider download attempt
+/// (one shared endpoint, one connection pool); the URL side stays as a
+/// sequential per-location fallback. Ordering from the input is lost — all
+/// iroh providers are tried together before any URL is tried.
+fn partition_locations<'a>(locations: &'a [Location<'a>]) -> (Vec<EndpointId>, Vec<&'a Url>) {
+    let mut iroh = Vec::new();
+    let mut urls = Vec::new();
+    for loc in locations {
+        match loc {
+            Location::Iroh(id) => iroh.push(*id),
+            Location::Url(url) => urls.push(*url),
+        }
+    }
+    (iroh, urls)
+}
+
+/// Download a single-blob artifact. Raw-codec CID required; collections
+/// go through [`download_collection`].
 ///
-/// - **HTTP locations:** stream to a temp file, verify CID from disk, rename
-///   to `dest`. No in-memory buffering.
-/// - **Iroh locations:** download via [`FsStore`] and export to `dest`.
-///   BLAKE3 is verified during transfer, so no separate CID check is needed.
+/// Strategy: all iroh providers are attempted together through a single
+/// shared endpoint (partial progress reuses across providers), then each
+/// HTTP URL is tried in sequence.
 ///
 /// # Sync/async design
 ///
-/// This is a synchronous, location-fallback orchestrator built for CLI use.
-/// HTTP locations use `ureq` (blocking); iroh locations create an ephemeral
-/// runtime per attempt via [`fetch_iroh_blob`].
+/// This is a synchronous, CLI-oriented orchestrator. HTTP uses blocking
+/// `ureq` with connect/read timeouts; iroh creates an ephemeral runtime,
+/// endpoint, and store for the duration of the call.
 ///
 /// Async callers with a persistent iroh endpoint and store should build
 /// their own fetch logic using `iroh_blobs::api::downloader::Downloader`
-/// for iroh sources and an async HTTP client for URL sources.
+/// directly, plus an async HTTP client for URL sources.
 pub fn download(
     locations: &[Location],
     expected_cid: &Cid,
@@ -307,28 +358,34 @@ pub fn download(
     if locations.is_empty() {
         return Err(Error::NoLocations);
     }
+    // Defensive: `download` is the blob entry point. A hashseq CID indicates
+    // caller misuse and should fail cleanly rather than producing garbage.
+    if !matches!(blob_format_for_cid(expected_cid)?, BlobFormat::Raw) {
+        return Err(Error::Cid(
+            "download() requires a raw-blob CID; use download_collection".into(),
+        ));
+    }
 
-    let mut errors = Vec::new();
+    let (iroh_ids, urls) = partition_locations(locations);
+    let mut errors: Vec<Error> = Vec::new();
 
-    for location in locations {
-        let result = match location {
-            Location::Url(url) => match url.scheme() {
-                "https" | "http" => download_http(url, expected_cid, dest),
-                scheme => {
-                    errors.push(Error::UnsupportedScheme(scheme.to_string()));
-                    continue;
-                }
-            },
-            Location::Iroh(endpoint_id) => {
-                fetch_iroh_blob(expected_cid, *endpoint_id, dest, preset.clone())
-            }
-        };
-
-        match result {
+    if !iroh_ids.is_empty() {
+        let target = ExportTarget::Blob(dest.to_path_buf());
+        match run_iroh_attempt(expected_cid, iroh_ids, preset, target) {
             Ok(()) => return Ok(()),
-            Err(e) => {
-                errors.push(e);
-                continue;
+            Err(mut per_provider) => errors.append(&mut per_provider),
+        }
+    }
+
+    if !urls.is_empty() {
+        let agent = http_agent();
+        for url in urls {
+            match url.scheme() {
+                "https" | "http" => match download_http(&agent, url, expected_cid, dest) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => errors.push(e),
+                },
+                scheme => errors.push(Error::UnsupportedScheme(scheme.to_string())),
             }
         }
     }
@@ -337,12 +394,17 @@ pub fn download(
 }
 
 /// Fetch via HTTP to a partial file, verify CID from disk, then rename to dest.
-fn download_http(url: &Url, expected_cid: &Cid, dest: &Path) -> Result<(), Error> {
+fn download_http(
+    agent: &ureq::Agent,
+    url: &Url,
+    expected_cid: &Cid,
+    dest: &Path,
+) -> Result<(), Error> {
     // Write to a .partial file next to the destination, then rename on success.
     let partial = dest.with_extension("partial");
     let file = std::fs::File::create(&partial).map_err(Error::Io)?;
     let mut writer = BufWriter::new(file);
-    let fetch_result = fetch_http(url, &mut writer);
+    let fetch_result = fetch_http(agent, url, &mut writer);
 
     // Clean up the partial file on any error.
     if let Err(e) = fetch_result {
@@ -363,14 +425,10 @@ fn download_http(url: &Url, expected_cid: &Cid, dest: &Path) -> Result<(), Error
     Ok(())
 }
 
-/// Try each iroh location until one succeeds at fetching a collection.
+/// Download a hashseq-collection artifact, writing each entry under `dest_dir`.
 ///
-/// Only iroh locations support collections; URL locations are skipped.
-///
-/// # Sync/async design
-///
-/// Same as [`download`] — synchronous, ephemeral runtime per attempt.
-/// Async callers should use `Downloader` directly.
+/// Only iroh providers are used — HTTP collection fetch is not implemented.
+/// All iroh providers run through one shared endpoint.
 pub fn download_collection(
     locations: &[Location],
     expected_cid: &Cid,
@@ -380,31 +438,28 @@ pub fn download_collection(
     if locations.is_empty() {
         return Err(Error::NoLocations);
     }
-
-    let mut errors = Vec::new();
-
-    for location in locations {
-        match location {
-            Location::Url(_) => {
-                // HTTP doesn't support collection fetching (yet).
-                continue;
-            }
-            Location::Iroh(endpoint_id) => {
-                match fetch_iroh_collection(expected_cid, *endpoint_id, dest_dir, preset.clone()) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => {
-                        errors.push(e);
-                        continue;
-                    }
-                }
-            }
-        }
+    if !matches!(blob_format_for_cid(expected_cid)?, BlobFormat::HashSeq) {
+        return Err(Error::Cid(
+            "download_collection() requires a hashseq CID; use download".into(),
+        ));
     }
 
-    if errors.is_empty() {
-        Err(Error::NoLocations)
-    } else {
-        Err(Error::AllFailed(errors))
+    let (iroh_ids, urls) = partition_locations(locations);
+    if iroh_ids.is_empty() {
+        // HTTP collection fetch is unsupported, so URL-only inputs cannot be
+        // served. Surface each URL as an UnsupportedScheme error so the
+        // caller sees *why* no attempt was made, not a generic "no locations".
+        let errors = urls
+            .into_iter()
+            .map(|u| Error::UnsupportedScheme(u.scheme().to_string()))
+            .collect();
+        return Err(Error::AllFailed(errors));
+    }
+
+    let target = ExportTarget::Collection(dest_dir.to_path_buf());
+    match run_iroh_attempt(expected_cid, iroh_ids, preset, target) {
+        Ok(()) => Ok(()),
+        Err(errors) => Err(Error::AllFailed(errors)),
     }
 }
 
@@ -418,6 +473,14 @@ mod tests {
             cid::multihash::Multihash::<64>::wrap(cid_utils::HASH_CODE_BLAKE3, digest.as_bytes())
                 .unwrap();
         Cid::new_v1(cid_utils::RAW_CODEC, mh)
+    }
+
+    fn collection_cid(data: &[u8]) -> Cid {
+        let digest = blake3::hash(data);
+        let mh =
+            cid::multihash::Multihash::<64>::wrap(cid_utils::HASH_CODE_BLAKE3, digest.as_bytes())
+                .unwrap();
+        Cid::new_v1(cid_utils::BLAKE3_HASHSEQ_CODEC, mh)
     }
 
     #[test]
@@ -439,5 +502,67 @@ mod tests {
         let preset = EndpointPreset::default();
         let result = download(&[Location::Url(&url)], &cid, &dest, &preset);
         assert!(matches!(result, Err(Error::AllFailed(_))));
+    }
+
+    #[test]
+    fn partition_locations_splits_iroh_and_url() {
+        let url_a = Url::parse("https://a.example/x").unwrap();
+        let url_b = Url::parse("https://b.example/y").unwrap();
+        // EndpointId is a PublicKey; derive two distinct ones from fixed
+        // Ed25519 secret-key bytes so the test is deterministic.
+        let id1 = iroh::SecretKey::from_bytes(&[1u8; 32]).public();
+        let id2 = iroh::SecretKey::from_bytes(&[2u8; 32]).public();
+        let locs = [
+            Location::Url(&url_a),
+            Location::Iroh(id1),
+            Location::Url(&url_b),
+            Location::Iroh(id2),
+        ];
+        let (iroh, urls) = partition_locations(&locs);
+        assert_eq!(iroh, vec![id1, id2]);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].as_str(), "https://a.example/x");
+        assert_eq!(urls[1].as_str(), "https://b.example/y");
+    }
+
+    // Regression guard for the timeout wiring: a URL pointing at an
+    // unroutable RFC5737 address should fail via the ureq connect timeout
+    // rather than hanging. We allow generous slack — CI may be slow — but
+    // still bound the test well under "forever".
+    #[test]
+    fn download_http_connect_times_out_fast() {
+        let url = Url::parse("http://192.0.2.1:1/not-there").unwrap();
+        let cid = blob_cid(b"test");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        let preset = EndpointPreset::default();
+        let start = std::time::Instant::now();
+        let result = download(&[Location::Url(&url)], &cid, &dest, &preset);
+        let elapsed = start.elapsed();
+        assert!(matches!(result, Err(Error::AllFailed(_))));
+        // Must complete within CONNECT_TIMEOUT + generous slack.
+        assert!(
+            elapsed < CONNECT_TIMEOUT + Duration::from_secs(10),
+            "expected fast timeout, took {elapsed:?}"
+        );
+    }
+
+    // URL-only locations for a collection CID cannot be served (HTTP
+    // collection fetch is unsupported). The caller should see each URL
+    // reported as UnsupportedScheme, not a generic NoLocations.
+    #[test]
+    fn download_collection_url_only_reports_unsupported() {
+        let cid = collection_cid(b"test");
+        let url = Url::parse("https://example.com/x").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let preset = EndpointPreset::default();
+        let result = download_collection(&[Location::Url(&url)], &cid, dir.path(), &preset);
+        match result {
+            Err(Error::AllFailed(errors)) => {
+                assert_eq!(errors.len(), 1);
+                assert!(matches!(errors[0], Error::UnsupportedScheme(_)));
+            }
+            other => panic!("expected AllFailed with UnsupportedScheme, got {other:?}"),
+        }
     }
 }
