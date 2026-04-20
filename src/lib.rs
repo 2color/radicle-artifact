@@ -538,31 +538,14 @@ where
         found.ok_or(error::FindRelease::NoRelease(oid))
     }
 
-    /// Find the first release containing an artifact with the given CID.
-    ///
-    /// Stops at the first match. For aggregate retrieval across multiple
-    /// releases that contain the same CID, use [`Releases::find_all_by_cid`].
-    pub fn find_by_cid(
-        &self,
-        cid: &Cid,
-    ) -> Result<Option<(ReleaseId, Release)>, cob::store::Error> {
-        for result in self.all()? {
-            let (id, release) = result?;
-            if release.artifact(cid).is_some() {
-                return Ok(Some((ReleaseId::from(id), release)));
-            }
-        }
-        Ok(None)
-    }
-
     /// Return every release containing an artifact with the given CID.
     ///
     /// The same CID may appear in multiple releases — either across different
     /// commits, or within duplicate release COBs for the same commit when two
     /// users concurrently created the release before syncing. Retrieval should
-    /// union locations across all of them, so callers should use this method
-    /// rather than [`Releases::find_by_cid`] when building a fetch plan.
-    pub fn find_all_by_cid(
+    /// union locations across all of them, so callers building a fetch plan
+    /// should aggregate across the returned releases.
+    pub fn find_by_cid(
         &self,
         cid: &Cid,
     ) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
@@ -676,7 +659,7 @@ where
     /// across unsynced nodes), returns the one with the smallest [`ReleaseId`].
     /// The tie-break is deterministic across replicas, so subsequent writes
     /// converge on a single release rather than spawning more duplicates; the
-    /// read path already unions across duplicates via [`Releases::find_all_by_cid`].
+    /// read path already unions across duplicates via [`Releases::find_by_cid`].
     pub fn find_or_create_by_oid<'g, G>(
         &'g mut self,
         oid: Oid,
@@ -1787,17 +1770,19 @@ mod test {
         }
 
         // find_by_cid locates cid1 in the first release.
-        let (_, found) = releases.find_by_cid(&cid1).unwrap().unwrap();
-        assert_eq!(found.oid(), &oid1);
-        assert!(found.artifact(&cid1).is_some());
+        let found = releases.find_by_cid(&cid1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.oid(), &oid1);
+        assert!(found[0].1.artifact(&cid1).is_some());
 
         // find_by_cid locates cid2 in the second release.
-        let (_, found) = releases.find_by_cid(&cid2).unwrap().unwrap();
-        assert_eq!(found.oid(), &oid2);
-        assert!(found.artifact(&cid2).is_some());
+        let found = releases.find_by_cid(&cid2).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.oid(), &oid2);
+        assert!(found[0].1.artifact(&cid2).is_some());
 
-        // A CID not in any release returns None.
-        assert!(releases.find_by_cid(&cid_missing).unwrap().is_none());
+        // A CID not in any release returns an empty vec.
+        assert!(releases.find_by_cid(&cid_missing).unwrap().is_empty());
     }
 
     #[test]
@@ -1895,10 +1880,10 @@ mod test {
     }
 
     #[test]
-    fn find_all_by_cid_aggregates_duplicate_oid_releases() {
+    fn find_by_cid_aggregates_duplicate_oid_releases() {
         // Two releases exist for the same OID (legacy state from before the
         // refactor, or concurrent creation across unsynced nodes), and both
-        // contain an artifact with the same CID. find_all_by_cid returns both.
+        // contain an artifact with the same CID. find_by_cid returns both.
         let test::setup::Network {
             alice, bob, rid, ..
         } = test::setup::Network::default();
@@ -1916,16 +1901,16 @@ mod test {
             r.add_artifact(cid, "bob-built".into(), &bob.signer).unwrap();
         }
 
-        let found = releases.find_all_by_cid(&cid).unwrap();
+        let found = releases.find_by_cid(&cid).unwrap();
         assert_eq!(found.len(), 2);
         assert!(found.iter().all(|(_, r)| r.oid() == &oid));
     }
 
     #[test]
-    fn find_all_by_cid_aggregates_across_different_oids() {
+    fn find_by_cid_aggregates_across_different_oids() {
         // The same artifact CID is attached to releases for two different
         // commits (e.g. an artifact that's identical across versions).
-        // find_all_by_cid surfaces both so retrieval can union locations.
+        // find_by_cid surfaces both so retrieval can union locations.
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -1943,7 +1928,7 @@ mod test {
             r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
         }
 
-        let found = releases.find_all_by_cid(&cid).unwrap();
+        let found = releases.find_by_cid(&cid).unwrap();
         assert_eq!(found.len(), 2);
         let oids: BTreeSet<_> = found.iter().map(|(_, r)| *r.oid()).collect();
         assert!(oids.contains(&oid1));

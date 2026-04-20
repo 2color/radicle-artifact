@@ -518,7 +518,7 @@ fn run_fetch(
     // reused across different commits). We union locations across all of
     // them so the fetcher sees every known source.
     let matching = releases
-        .find_all_by_cid(&cid)
+        .find_by_cid(&cid)
         .map_err(|err| error::Share::Usage(err.to_string()))?;
     if matching.is_empty() {
         return Err(error::Share::ArtifactNotFound(cid).into());
@@ -539,7 +539,7 @@ fn run_fetch(
         .find(|(_, r)| r.oid() == &oid)
         .or_else(|| matching.first())
         .expect("matching is non-empty");
-    let artifact = primary.1.artifact(&cid).expect("find_all_by_cid guarantees this");
+    let artifact = primary.1.artifact(&cid).expect("find_by_cid guarantees this");
 
     // Aggregate redactions across all releases containing the CID so the
     // user sees every trusted-party warning, not just those on one release.
@@ -612,29 +612,22 @@ fn run_serve(
         share::compute_blob_cid(&args.path).map_err(error::Share::Share)?
     };
 
-    // Register the serving location on every release that contains this
-    // CID: the artifact may appear in duplicate releases for the same OID
-    // or in releases for different commits. Fetchers look up by CID and
-    // union locations across releases, so registering on one release only
-    // would leave other lookup paths blind to the local server.
+    // Register the serving location on a single release. Fetchers look up
+    // by CID and union locations across every release that contains it, so
+    // one registration is sufficient to make the server discoverable. Pick
+    // the most recently created release as the most representative home
+    // for the new location.
     let matching = releases
-        .find_all_by_cid(&cid)
+        .find_by_cid(&cid)
         .map_err(|e| error::Share::Usage(e.to_string()))?;
-    if matching.is_empty() {
-        return Err(error::Share::ArtifactNotFound(cid).into());
-    }
-    let release_ids: Vec<ReleaseId> = matching.iter().map(|(id, _)| *id).collect();
-    let primary = &matching[0].1;
-    let artifact = primary.artifact(&cid).expect("find_all_by_cid guarantees this");
+    let (release_id, release) = matching
+        .into_iter()
+        .max_by_key(|(_, r)| r.timestamp())
+        .ok_or(error::Share::ArtifactNotFound(cid))?;
+    let artifact = release.artifact(&cid).expect("find_by_cid guarantees this");
     let kind = share::artifact_kind(&cid).map_err(error::Share::Share)?;
 
     eprintln!("Artifact: {} (CID: {cid})", artifact.name());
-    if release_ids.len() > 1 {
-        eprintln!(
-            "Registering location on {} releases that contain this CID",
-            release_ids.len()
-        );
-    }
 
     if !no_input && std::io::stdin().is_terminal() {
         let confirmed =
@@ -676,9 +669,9 @@ fn run_serve(
         let iroh_url = url::Url::parse("iroh://").expect("static URL is valid");
 
         let signer = profile.signer().map_err(error::Signer)?;
-        for release_id in release_ids.iter() {
+        {
             let mut release_mut = releases
-                .get_mut(release_id)
+                .get_mut(&release_id)
                 .map_err(|e| error::Share::Usage(e.to_string()))?;
             release_mut
                 .add_location(cid, iroh_url.clone(), &signer)
@@ -692,24 +685,20 @@ fn run_serve(
 
         eprintln!("\nShutting down...");
 
-        // Remove location from every release we registered on. Errors on
-        // individual releases are surfaced as warnings so one failure
-        // doesn't leak registrations on the others.
-        for release_id in release_ids.iter() {
-            match releases.get_mut(release_id) {
-                Ok(mut release_mut) => {
-                    if let Err(e) =
-                        release_mut.remove_location(cid, iroh_url.clone(), &signer)
-                    {
-                        eprintln!("Warning: failed to remove location from {release_id}: {e}");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Warning: failed to open release {release_id} for cleanup: {e}");
+        // Retract the location we added. Surface failure as a warning so
+        // shutdown still proceeds to the server teardown below.
+        match releases.get_mut(&release_id) {
+            Ok(mut release_mut) => {
+                if let Err(e) = release_mut.remove_location(cid, iroh_url.clone(), &signer) {
+                    eprintln!("Warning: failed to remove location from {release_id}: {e}");
+                } else {
+                    eprintln!("Removed location from release {release_id}");
                 }
             }
+            Err(e) => {
+                eprintln!("Warning: failed to open release {release_id} for cleanup: {e}");
+            }
         }
-        eprintln!("Removed location from {} release(s)", release_ids.len());
 
         server.shutdown().await.map_err(error::Share::Share)?;
 
