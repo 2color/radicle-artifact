@@ -20,7 +20,6 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
-#[cfg(feature = "share")]
 use radicle_artifact::share;
 use radicle_artifact::*;
 
@@ -156,7 +155,6 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     use command::*;
 
     // The Cid subcommand doesn't need a profile or repo.
-    #[cfg(feature = "share")]
     if let Command::ComputeCid(cmd) = args.command {
         return run_cid(cmd);
     }
@@ -165,11 +163,10 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     let repo = args.repository(&profile)?;
     let mut releases = open_releases(&repo)?;
     match args.command {
-        #[cfg(feature = "share")]
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Add(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            add_artifact(cmd, &mut releases, &repo, &signer)?;
+            add_artifact(cmd, args.no_input, &mut releases, &repo, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -207,9 +204,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             show_release(cmd, &releases, &repo, &delegates, &profile)?;
         }
         Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
-        #[cfg(feature = "share")]
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
-        #[cfg(feature = "share")]
         Command::Serve(cmd) => run_serve(cmd, args.no_input, &profile, &mut releases)?,
     }
 
@@ -217,7 +212,13 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
 }
 
 fn add_artifact<G>(
-    command::Add { commit, cid, name }: command::Add,
+    command::Add {
+        path,
+        cid,
+        commit,
+        name,
+    }: command::Add,
+    no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
     signer: &Device<G>,
@@ -225,7 +226,45 @@ fn add_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_commit(&commit, repo)?;
+    // Clap's ArgGroup enforces exactly one of `path` / `cid`, so exactly one
+    // branch is taken here.
+    let cid = match (path.as_deref(), cid) {
+        (Some(path), None) => compute_cid_from_path(path)?,
+        (None, Some(cid)) => cid,
+        // ArgGroup guarantees this is unreachable, but we surface a clear
+        // usage error rather than panic if clap ever changes its mind.
+        (Some(_), Some(_)) => {
+            return Err(error::Add::Usage(
+                "cannot pass --cid together with a path; the CID is computed from the contents"
+                    .into(),
+            ));
+        }
+        (None, None) => {
+            return Err(error::Add::Usage(
+                "missing artifact source; pass a <PATH> or --cid <CID>".into(),
+            ));
+        }
+    };
+
+    // Resolve commit/tag: use --commit if given, otherwise prompt.
+    let oid = match commit.as_deref() {
+        Some(rev) => resolve_commit(rev, repo)?,
+        None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::Add::Usage)?,
+    };
+
+    // Resolve name: use -n if given, otherwise prompt with the path basename
+    // as default (no default available when --cid was used without a path).
+    let name = match name {
+        Some(n) => n,
+        None => {
+            let default = path
+                .as_deref()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str());
+            prompt::prompt_name(no_input, default).map_err(error::Add::Usage)?
+        }
+    };
+
     // One release per OID: reuse the existing release regardless of who
     // created it, otherwise create a fresh one. If duplicate release COBs
     // exist for this OID (concurrent creation across unsynced nodes), the
@@ -237,12 +276,30 @@ where
     release
         .add_artifact(cid, name.clone(), signer)
         .map_err(|err| error::Add::Store { id, err })?;
-    eprintln!("Added artifact '{name}' to release {}", &oid.to_string()[..7]);
+    let short_oid = &oid.to_string()[..7];
+    eprintln!("Added artifact '{name}' to release {short_oid} ({id})");
     if std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact location add {commit} --cid {cid} <url>` to add a download location");
+        eprintln!("Hint: use `rad-artifact location add {short_oid} --cid {cid} <url>` to register a download location");
+        if let Some(p) = path.as_deref() {
+            eprintln!(
+                "      or `rad-artifact serve {}` to seed it yourself over iroh",
+                p.display()
+            );
+        }
     }
     println!("{cid}");
     Ok(())
+}
+
+/// Compute a CID by hashing the file or directory at `path`. Mirrors the
+/// dispatch used by `serve` so both commands agree on what CID a given path
+/// produces.
+fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::Add> {
+    if path.is_dir() {
+        share::compute_content_id(path).map_err(error::Add::Io)
+    } else {
+        share::compute_blob_cid(path).map_err(error::Add::Protocol)
+    }
 }
 
 fn location_add<G>(
@@ -255,7 +312,9 @@ where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
-    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
+    let id = releases
+        .find_unique_by_oid(oid)
+        .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
@@ -281,12 +340,15 @@ where
 {
     let (oid, cid) = match (commit, cid) {
         (Some(commit), Some(cid)) => (resolve_commit(&commit, repo)?, cid),
-        (None, None) => prompt::pick_interactive(no_input, releases, repo)
-            .map_err(error::Attest::Usage)?,
+        (None, None) => {
+            prompt::pick_interactive(no_input, releases, repo).map_err(error::Attest::Usage)?
+        }
         _ => unreachable!("clap enforces both-or-neither"),
     };
     // The COB state machine enforces per-signer ownership; no delegate filter needed.
-    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
+    let id = releases
+        .find_unique_by_oid(oid)
+        .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Attest::Store { id, err })?;
@@ -298,7 +360,11 @@ where
 }
 
 fn redact_artifact<G>(
-    command::Redact { commit, cid, reason }: command::Redact,
+    command::Redact {
+        commit,
+        cid,
+        reason,
+    }: command::Redact,
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
@@ -317,8 +383,8 @@ where
             (oid, cid, reason)
         }
         (None, None) => {
-            let (oid, cid) = prompt::pick_interactive(no_input, releases, repo)
-                .map_err(error::Redact::Usage)?;
+            let (oid, cid) =
+                prompt::pick_interactive(no_input, releases, repo).map_err(error::Redact::Usage)?;
             let reason = match reason {
                 Some(r) => r,
                 None => prompt::prompt_reason(no_input).map_err(error::Redact::Usage)?,
@@ -328,7 +394,9 @@ where
         _ => unreachable!("clap enforces both-or-neither"),
     };
     // The COB state machine enforces per-signer ownership; no delegate filter needed.
-    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
+    let id = releases
+        .find_unique_by_oid(oid)
+        .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Redact::Store { id, err })?;
@@ -353,7 +421,9 @@ where
     // user should be able to retract their own locations from any release, and
     // the COB state machine already enforces that only the original announcer
     // can remove a given location.
-    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
+    let id = releases
+        .find_unique_by_oid(oid)
+        .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
@@ -390,7 +460,9 @@ fn show_release(
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
     let oid = resolve_commit(&commit, repo)?;
-    let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
+    let id = releases
+        .find_unique_by_oid(oid)
+        .map_err(error::Find::from)?;
     let release = releases
         .get(&id)
         .map_err(|err| error::Find::Lookup { oid, err })?
@@ -454,7 +526,10 @@ fn list_releases(
                     // A release is "delegate-curated" when at least one of its
                     // artifacts was added by a delegate.
                     delegates.as_ref().is_none_or(|ds| {
-                        release.artifacts().values().any(|a| ds.contains(a.author()))
+                        release
+                            .artifacts()
+                            .values()
+                            .any(|a| ds.contains(a.author()))
                     })
                 } else {
                     true
@@ -476,10 +551,9 @@ fn list_releases(
 }
 
 // ---------------------------------------------------------------------------
-// Share commands (behind "share" feature)
+// Share commands
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "share")]
 fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
     let path = &args.path;
     if path.is_dir() {
@@ -494,7 +568,6 @@ fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
     Ok(())
 }
 
-#[cfg(feature = "share")]
 fn run_fetch(
     args: command::Fetch,
     no_input: bool,
@@ -508,8 +581,9 @@ fn run_fetch(
             let oid = resolve_commit(&commit, repo)?;
             (oid, cid)
         }
-        (None, None) => prompt::pick_interactive(no_input, releases, repo)
-            .map_err(error::Share::Usage)?,
+        (None, None) => {
+            prompt::pick_interactive(no_input, releases, repo).map_err(error::Share::Usage)?
+        }
         _ => unreachable!("clap enforces both-or-neither"),
     };
 
@@ -539,7 +613,10 @@ fn run_fetch(
         .find(|(_, r)| r.oid() == &oid)
         .or_else(|| matching.first())
         .expect("matching is non-empty");
-    let artifact = primary.1.artifact(&cid).expect("find_by_cid guarantees this");
+    let artifact = primary
+        .1
+        .artifact(&cid)
+        .expect("find_by_cid guarantees this");
 
     // Aggregate redactions across all releases containing the CID so the
     // user sees every trusted-party warning, not just those on one release.
@@ -548,7 +625,9 @@ fn run_fetch(
     for (_, release) in matching.iter() {
         if let Some(a) = release.artifact(&cid) {
             for (did, reason) in a.redactions() {
-                aggregated_redactions.entry(*did).or_insert_with(|| reason.clone());
+                aggregated_redactions
+                    .entry(*did)
+                    .or_insert_with(|| reason.clone());
             }
         }
     }
@@ -564,9 +643,7 @@ fn run_fetch(
     let locations = if let Some(ref url) = args.url {
         vec![share::Location::Url(url)]
     } else {
-        let artifacts = matching
-            .iter()
-            .filter_map(|(_, r)| r.artifact(&cid));
+        let artifacts = matching.iter().filter_map(|(_, r)| r.artifact(&cid));
         artifact_locations(artifacts)?
     };
     // Short-circuit when no usable source exists
@@ -602,7 +679,6 @@ fn run_fetch(
     Ok(())
 }
 
-#[cfg(feature = "share")]
 fn run_serve(
     args: command::Serve,
     no_input: bool,
@@ -634,11 +710,10 @@ fn run_serve(
     eprintln!("Artifact: {} (CID: {cid})", artifact.name());
 
     if !no_input && std::io::stdin().is_terminal() {
-        let confirmed =
-            inquire::Confirm::new("Add yourself as a location for this artifact?")
-                .with_default(true)
-                .prompt()
-                .map_err(|e| error::Share::Usage(format!("confirmation cancelled: {e}")))?;
+        let confirmed = inquire::Confirm::new("Add yourself as a location for this artifact?")
+            .with_default(true)
+            .prompt()
+            .map_err(|e| error::Share::Usage(format!("confirmation cancelled: {e}")))?;
         if !confirmed {
             return Ok(());
         }
@@ -717,7 +792,6 @@ fn run_serve(
 /// a plain URL contributed by the same or different users collapses to one
 /// entry, and a DID's iroh endpoint collapses to one entry regardless of how
 /// many releases record it.
-#[cfg(feature = "share")]
 fn artifact_locations<'a>(
     artifacts: impl IntoIterator<Item = &'a Artifact>,
 ) -> Result<Vec<share::Location<'a>>, RadArtifactError> {
@@ -729,8 +803,8 @@ fn artifact_locations<'a>(
             for url in urls {
                 if url.scheme() == "iroh" {
                     if seen_iroh.insert(*did) {
-                        let pk = share::did_to_iroh_public_key(did)
-                            .map_err(error::Share::Protocol)?;
+                        let pk =
+                            share::did_to_iroh_public_key(did).map_err(error::Share::Protocol)?;
                         locations.push(share::Location::Iroh(pk));
                     }
                 } else if seen_urls.insert(url) {
@@ -746,6 +820,7 @@ mod prompt {
     use std::io::IsTerminal;
 
     use radicle::git::Oid;
+    use radicle::prelude::WriteRepository;
     use radicle::storage::git::Repository;
 
     use radicle_artifact::*;
@@ -835,7 +910,11 @@ mod prompt {
             .artifacts
             .iter()
             .map(|(cid, artifact)| {
-                let redacted = if artifact.is_redacted() { " [REDACTED]" } else { "" };
+                let redacted = if artifact.is_redacted() {
+                    " [REDACTED]"
+                } else {
+                    ""
+                };
                 format!("{} (CID: {cid}){redacted}", artifact.name())
             })
             .collect();
@@ -869,7 +948,140 @@ mod prompt {
             .map_err(|e| format!("prompt cancelled: {e}"))
     }
 
-    #[cfg(feature = "share")]
+    /// Prompt for an artifact name at the terminal.
+    ///
+    /// `default` is presented as a pre-filled value when provided (typically
+    /// the basename of the artifact path). Errors if `no_input` is set or
+    /// stdin is not a TTY, so scripts don't hang.
+    pub fn prompt_name(no_input: bool, default: Option<&str>) -> Result<String, String> {
+        if no_input || !std::io::stdin().is_terminal() {
+            return Err("pass -n/--name for non-interactive use".into());
+        }
+        let mut text = inquire::Text::new("Artifact name:");
+        if let Some(d) = default {
+            text = text.with_default(d);
+        }
+        text.prompt().map_err(|e| format!("prompt cancelled: {e}"))
+    }
+
+    /// Interactively pick a commit or annotated tag from the repository.
+    ///
+    /// Presents annotated tags (peeled to their target commit) first,
+    /// followed by recent commits reachable from HEAD, up to
+    /// [`PICKER_COMMIT_LIMIT`] total commit entries. Commits already covered
+    /// by an annotated tag entry are skipped. Errors if `no_input` is set or
+    /// stdin is not a TTY.
+    pub fn pick_commit_or_tag(no_input: bool, repo: &Repository) -> Result<Oid, String> {
+        if no_input || !std::io::stdin().is_terminal() {
+            return Err("pass --commit <REF> for non-interactive use".into());
+        }
+        let raw = repo.raw();
+        let mut entries: Vec<Entry> = Vec::new();
+        let mut seen: std::collections::BTreeSet<Oid> = std::collections::BTreeSet::new();
+
+        // Annotated tags first — they're the common "pick a release" case.
+        // Lightweight tags are intentionally skipped: their ref points
+        // directly at a commit already covered by the HEAD walk below.
+        // Sort by the peeled commit's committer time (newest first) so
+        // releases read top-down instead of alphabetically, where e.g.
+        // `v0.10.0` would otherwise appear before `v0.9.0`.
+        let tag_names = raw
+            .tag_names(None)
+            .map_err(|e| format!("failed to list tags: {e}"))?;
+        let mut tag_entries: Vec<(i64, String, Oid)> = Vec::new();
+        for maybe_name in tag_names.iter() {
+            let Some(name) = maybe_name else { continue };
+            let full = format!("refs/tags/{name}");
+            let Ok(reference) = raw.find_reference(&full) else {
+                continue;
+            };
+            let Some(ref_target) = reference.target() else {
+                continue;
+            };
+            let Ok(obj) = raw.find_object(ref_target, None) else {
+                continue;
+            };
+            if obj.kind() != Some(radicle::git::raw::ObjectType::Tag) {
+                continue;
+            }
+            let Ok(peeled) = reference.peel(radicle::git::raw::ObjectType::Commit) else {
+                continue;
+            };
+            let commit_oid: Oid = peeled.id().into();
+            let time = peeled.as_commit().map(|c| c.time().seconds()).unwrap_or(0);
+            tag_entries.push((time, name.to_string(), commit_oid));
+        }
+        tag_entries.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, name, commit_oid) in tag_entries {
+            if seen.insert(commit_oid) {
+                entries.push(Entry::Tag {
+                    name,
+                    oid: commit_oid,
+                });
+            }
+        }
+
+        // Recent commits walked from HEAD, dedup against tag targets. The
+        // default revwalk order visits each commit before its parents, i.e.
+        // reverse chronological on a linear history — good enough for a
+        // picker cap at `PICKER_COMMIT_LIMIT`.
+        if let Ok(mut revwalk) = raw.revwalk() {
+            if revwalk.push_head().is_ok() {
+                let mut added = 0usize;
+                for oid_res in revwalk {
+                    if added >= PICKER_COMMIT_LIMIT {
+                        break;
+                    }
+                    let Ok(oid) = oid_res else { continue };
+                    let commit_oid: Oid = oid.into();
+                    if seen.insert(commit_oid) {
+                        entries.push(Entry::Commit { oid: commit_oid });
+                        added += 1;
+                    }
+                }
+            }
+        }
+
+        if entries.is_empty() {
+            return Err("no commits or annotated tags found in this repository".into());
+        }
+
+        let labels: Vec<String> = entries
+            .iter()
+            .map(|entry| {
+                let oid = entry.oid();
+                let short = &oid.to_string()[..7];
+                let title = display::CommitTitle::title(repo, &oid).unwrap_or_default();
+                match entry {
+                    Entry::Tag { name, .. } => format!("{name} -> {short}  {title}"),
+                    Entry::Commit { .. } => format!("{short}  {title}"),
+                }
+            })
+            .collect();
+
+        let selection = inquire::Select::new("Select commit or tag:", labels)
+            .raw_prompt()
+            .map_err(|e| format!("selection cancelled: {e}"))?;
+        Ok(entries[selection.index].oid())
+    }
+
+    /// Cap on commits shown in the picker — enough to cover typical recent
+    /// activity without overwhelming the terminal UI.
+    const PICKER_COMMIT_LIMIT: usize = 30;
+
+    enum Entry {
+        Tag { name: String, oid: Oid },
+        Commit { oid: Oid },
+    }
+
+    impl Entry {
+        fn oid(&self) -> Oid {
+            match self {
+                Entry::Tag { oid, .. } | Entry::Commit { oid } => *oid,
+            }
+        }
+    }
+
     pub fn passphrase_for_keystore(
         keystore: &radicle::crypto::ssh::keystore::Keystore,
     ) -> Result<Option<radicle::crypto::ssh::keystore::Passphrase>, super::error::Share> {
@@ -894,7 +1106,7 @@ mod prompt {
             ));
         }
 
-        let passphrase = inquire::Password::new("Passphrase:")
+        let passphrase = inquire::Password::new("Enter passphrase to unlock your radicle key:")
             .with_display_mode(inquire::PasswordDisplayMode::Masked)
             .without_confirmation()
             .prompt()
@@ -948,7 +1160,6 @@ enum RadArtifactError {
     Resolve(#[from] error::Resolve),
     #[error(transparent)]
     Delegates(#[from] error::Delegates),
-    #[cfg(feature = "share")]
     #[error(transparent)]
     Share(#[from] error::Share),
 }
@@ -969,14 +1180,11 @@ mod command {
         Show(Show),
         List(List),
         /// Compute the BLAKE3 CID of a file or directory
-        #[cfg(feature = "share")]
         #[clap(name = "cid")]
         ComputeCid(ComputeCid),
         /// Fetch an artifact from a release COB
-        #[cfg(feature = "share")]
         Fetch(Fetch),
         /// Serve an artifact via iroh-blobs using your radicle identity
-        #[cfg(feature = "share")]
         Serve(Serve),
     }
 
@@ -999,7 +1207,6 @@ mod command {
     ///
     /// For a single file, outputs a CID with the raw codec (0x55).
     /// For a directory, outputs a CID with the blake3-hashseq codec (0x80).
-    #[cfg(feature = "share")]
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
@@ -1017,7 +1224,6 @@ Examples:
     ///
     /// With positional arguments, fetches a specific artifact directly.
     /// Without arguments, interactively lists releases and artifacts to pick from.
-    #[cfg(feature = "share")]
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
@@ -1053,7 +1259,6 @@ Examples:
     /// in existing releases, registers an `iroh://` location in the release
     /// COB, and serves the content until interrupted. The location is removed
     /// on graceful shutdown (Ctrl+C).
-    #[cfg(feature = "share")]
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
@@ -1064,27 +1269,49 @@ Examples:
         pub path: std::path::PathBuf,
     }
 
-    /// Add an artifact to a release, creating it if needed.
+    /// Add an artifact to a release, creating the release if needed.
     ///
-    /// The artifact is identified by its content identifier (CID).
+    /// The artifact is identified by a content identifier (CID). Pass a
+    /// local <PATH> to compute the CID from the file or directory
+    /// contents, or use --cid to register a precomputed CID for an
+    /// artifact you don't have locally. Exactly one of <PATH> or --cid
+    /// must be provided.
+    ///
+    /// The release commit and artifact name are prompted interactively
+    /// when not given. Pass --commit and -n/--name to skip prompts (or
+    /// use --no-input in scripts to fail instead of hanging on a prompt).
     #[derive(Parser)]
-    #[clap(after_long_help = "\
+    #[clap(
+        group = clap::ArgGroup::new("source").required(true).args(["path", "cid"]),
+        after_long_help = "\
 Examples:
-  Compute the CID and add a release artifact:
-    $ rad-artifact cid ./my-binary
-    $ rad-artifact add abc1234 --cid baf...abc -n \"my-binary v1.0\"
+  Interactive: compute CID from a file, pick commit/tag, prompt for name:
+    $ rad-artifact add ./my-binary
 
-  Add an artifact for another commit:
-    $ rad-artifact add def5678 --cid baf...abc --name \"my-binary v1.0\"")]
+  Fully non-interactive:
+    $ rad-artifact add ./my-binary --commit v1.0 --name \"my-binary v1.0\"
+
+  Register a precomputed CID without local bytes:
+    $ rad-artifact add --cid baf...abc --commit v1.0 --name \"my-binary v1.0\""
+    )]
     pub struct Add {
-        /// Git commit, tag, or abbreviated OID of the release.
-        pub commit: String,
-        /// Content identifier for the artifact.
+        /// Path to the local file or directory to register.
+        ///
+        /// The CID is computed from the contents: files use the raw codec
+        /// (0x55), directories use the blake3-hashseq codec (0x80).
+        pub path: Option<std::path::PathBuf>,
+        /// Precomputed CID. Use when the artifact bytes aren't available
+        /// locally. Conflicts with <PATH>.
         #[clap(long)]
-        pub cid: Cid,
-        /// Human-readable description of the artifact.
+        pub cid: Option<Cid>,
+        /// Git commit, tag, or abbreviated OID of the release. Prompts
+        /// interactively when omitted.
+        #[clap(long)]
+        pub commit: Option<String>,
+        /// Human-readable name for the artifact. Prompts interactively
+        /// when omitted (with the path basename as the default).
         #[clap(short, long)]
-        pub name: String,
+        pub name: Option<String>,
     }
 
     /// Add a discovery location for an artifact.
@@ -1282,6 +1509,8 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum Add {
+        #[error("{0}")]
+        Usage(String),
         #[error(transparent)]
         Resolve(#[from] Resolve),
         #[error(transparent)]
@@ -1298,6 +1527,10 @@ mod error {
             #[source]
             err: cob::store::Error,
         },
+        #[error("failed to compute CID from path")]
+        Io(#[source] std::io::Error),
+        #[error(transparent)]
+        Protocol(radicle_artifact::share::Error),
     }
 
     #[derive(Debug, Error)]
@@ -1442,7 +1675,6 @@ mod error {
         pub err: RepositoryError,
     }
 
-    #[cfg(feature = "share")]
     #[derive(Debug, Error)]
     pub enum Share {
         #[error("{0}")]

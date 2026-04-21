@@ -1,6 +1,14 @@
 [workspace]
 members = ["."]
 
+[[bin]]
+name = "rad-artifact"
+path = "src/bin/rad-artifact.rs"
+# The binary needs CID computation from local paths, which lives in the
+# `share` module. Library consumers can still disable `share` to avoid the
+# iroh/tokio/blake3 dep tree.
+required-features = ["share"]
+
 [package]
 name = "radicle-artifact"
 description = "Radicle Artifact Collaborative Object (COB)"
