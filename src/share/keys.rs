@@ -38,7 +38,7 @@ pub fn radicle_secret_to_iroh(
         .ok_or_else(|| Error::Iroh("radicle secret key not found".into()))?;
 
     let seed = sk.seed();
-    let seed_bytes: &[u8; 32] = &*seed;
+    let seed_bytes: &[u8; 32] = &seed;
 
     Ok(iroh::SecretKey::from_bytes(seed_bytes))
 }

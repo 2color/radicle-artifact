@@ -63,8 +63,7 @@ impl Preset for EndpointPreset {
                 .address_lookup(DnsAddressLookup::builder(RADWORKS_DNS_DOMAIN.to_owned()))
                 .relay_mode(iroh::RelayMode::custom([RADWORKS_RELAY_URL
                     .parse::<iroh::RelayUrl>()
-                    .expect("valid RADWORKS_RELAY_URL")
-                    .into()])),
+                    .expect("valid RADWORKS_RELAY_URL")])),
             Self::N0 => presets::N0.apply(builder),
         }
     }

@@ -334,7 +334,7 @@ where
         .map_err(|err| error::Redact::Store { id, err })?;
     release
         .redact(cid, reason, signer)
-        .map_err(|err| error::Redact::Redact { id, err })?;
+        .map_err(|err| error::Redact::Artifact { id, err })?;
     eprintln!("Redacted artifact {cid}");
     Ok(())
 }
@@ -584,17 +584,17 @@ fn run_fetch(
         std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_")))
     });
 
-    let preset = share::EndpointPreset::from_env().map_err(error::Share::Share)?;
-    let kind = share::artifact_kind(&cid).map_err(error::Share::Share)?;
+    let preset = share::EndpointPreset::from_env().map_err(error::Share::Protocol)?;
+    let kind = share::artifact_kind(&cid).map_err(error::Share::Protocol)?;
 
     match kind {
         share::ArtifactKind::Blob => {
             share::download(&locations, &cid, &output_path, &preset)
-                .map_err(error::Share::Share)?;
+                .map_err(error::Share::Protocol)?;
         }
         share::ArtifactKind::Collection => {
             share::download_collection(&locations, &cid, &output_path, &preset)
-                .map_err(error::Share::Share)?;
+                .map_err(error::Share::Protocol)?;
         }
     }
 
@@ -613,7 +613,7 @@ fn run_serve(
     let cid = if args.path.is_dir() {
         share::compute_content_id(&args.path).map_err(error::Share::Io)?
     } else {
-        share::compute_blob_cid(&args.path).map_err(error::Share::Share)?
+        share::compute_blob_cid(&args.path).map_err(error::Share::Protocol)?
     };
 
     // Register the serving location on a single release. Fetchers look up
@@ -629,7 +629,7 @@ fn run_serve(
         .max_by_key(|(_, r)| r.timestamp())
         .ok_or(error::Share::ArtifactNotFound(cid))?;
     let artifact = release.artifact(&cid).expect("find_by_cid guarantees this");
-    let kind = share::artifact_kind(&cid).map_err(error::Share::Share)?;
+    let kind = share::artifact_kind(&cid).map_err(error::Share::Protocol)?;
 
     eprintln!("Artifact: {} (CID: {cid})", artifact.name());
 
@@ -646,25 +646,25 @@ fn run_serve(
 
     let passphrase = prompt::passphrase_for_keystore(&profile.keystore)?;
     let iroh_sk = share::radicle_secret_to_iroh(&profile.keystore, passphrase)
-        .map_err(error::Share::Share)?;
-    let preset = share::EndpointPreset::from_env().map_err(error::Share::Share)?;
+        .map_err(error::Share::Protocol)?;
+    let preset = share::EndpointPreset::from_env().map_err(error::Share::Protocol)?;
 
     let rt = tokio::runtime::Runtime::new().map_err(error::Share::Io)?;
     rt.block_on(async {
         let server = share::Server::start(iroh_sk, preset)
             .await
-            .map_err(error::Share::Share)?;
+            .map_err(error::Share::Protocol)?;
 
         match kind {
             share::ArtifactKind::Blob => {
                 share::add_blob(server.store(), &args.path, &cid)
                     .await
-                    .map_err(error::Share::Share)?;
+                    .map_err(error::Share::Protocol)?;
             }
             share::ArtifactKind::Collection => {
                 share::add_collection(server.store(), &args.path, &cid)
                     .await
-                    .map_err(error::Share::Share)?;
+                    .map_err(error::Share::Protocol)?;
             }
         }
 
@@ -704,7 +704,7 @@ fn run_serve(
             }
         }
 
-        server.shutdown().await.map_err(error::Share::Share)?;
+        server.shutdown().await.map_err(error::Share::Protocol)?;
 
         Ok::<_, RadArtifactError>(())
     })
@@ -730,7 +730,7 @@ fn artifact_locations<'a>(
                 if url.scheme() == "iroh" {
                     if seen_iroh.insert(*did) {
                         let pk = share::did_to_iroh_public_key(did)
-                            .map_err(error::Share::Share)?;
+                            .map_err(error::Share::Protocol)?;
                         locations.push(share::Location::Iroh(pk));
                     }
                 } else if seen_urls.insert(url) {
@@ -1339,7 +1339,7 @@ mod error {
         #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to redact artifact in release {id}")]
-        Redact {
+        Artifact {
             id: ReleaseId,
             #[source]
             err: radicle_artifact::error::Redact,
@@ -1455,7 +1455,7 @@ mod error {
         #[error("no download locations known for artifact {cid}\n  hint: pass --url <URL> to fetch directly, or ask a seed to run `rad-artifact serve`")]
         NoLocationsForCid { cid: radicle_artifact::Cid },
         #[error(transparent)]
-        Share(radicle_artifact::share::Error),
+        Protocol(radicle_artifact::share::Error),
         #[error("I/O error")]
         Io(#[source] std::io::Error),
     }
