@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-04-21
+
+### Other
+
+* `7feb018` Improve README introduction *<daniel@norman.life>*
+* `df344a4` Make release identity OID-only, not author-scoped *<daniel@norman.life>*
+* `2bfdb35` Converge writes on duplicate releases per OID *<daniel@norman.life>*
+* `26c4dfd` cli: add location to one release in serve cmd *<daniel@norman.life>*
+* `69e1b20` Refine release pretty print output *<daniel@norman.life>*
+* `f355e30` fetch: fail fast on missing or unreachable sources *<daniel@norman.life>*
+
 ## [0.8.0] - 2026-04-16
 
 ### Added
@@ -66,6 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `ed3e84c` Refine README *<daniel@norman.life>*
 * `250d934` Use FsStore and rename cid module *<daniel@norman.life>*
 * `704a56e` Stream hashing in compute_content_id *<daniel@norman.life>*
+* `d8562e5` Release radicle-artifact version 0.8.0 *<daniel@norman.life>*
 
 ### Removed
 
