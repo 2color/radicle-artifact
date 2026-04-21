@@ -99,6 +99,21 @@ impl CommitTitle for Repository {
     }
 }
 
+/// Visibility rules for artifacts rendered in `list` / `show` output.
+///
+/// Both filters below consult the repository's delegate set. The flags
+/// opt into broader visibility; each defaults (at the caller) to a
+/// delegate-scoped view.
+#[derive(Clone, Copy)]
+pub struct Filters<'a> {
+    /// Delegates of the repository.
+    pub delegates: &'a BTreeSet<Did>,
+    /// When true, include artifacts redacted by their author or by a delegate.
+    pub redacted: bool,
+    /// When true, include artifacts whose author is not a repository delegate.
+    pub all_authors: bool,
+}
+
 /// A set of [`Release`]s sorted by creation time.
 #[derive(Serialize)]
 pub struct Releases {
@@ -111,12 +126,9 @@ impl Releases {
     ///
     /// The `aliases` store is used to resolve human-readable aliases for DIDs.
     ///
-    /// When `delegates` is provided, artifacts that have been redacted by the
-    /// artifact author or any repository delegate are hidden. Pass `None` to
-    /// show all artifacts including redacted ones.
-    ///
-    /// When `show_empty` is false, releases with no visible artifacts are
-    /// excluded from the output.
+    /// `filters` controls artifact visibility — see [`Filters`] for the
+    /// redaction and author-trust knobs. When `show_empty` is false,
+    /// releases with no visible artifacts are excluded from the output.
     ///
     /// The `titles` resolver looks up commit summaries for pretty output.
     ///
@@ -124,14 +136,14 @@ impl Releases {
     pub fn new(
         releases: impl Iterator<Item = (ReleaseId, crate::Release)>,
         aliases: &impl AliasStore,
-        delegates: Option<&BTreeSet<Did>>,
+        filters: Filters<'_>,
         show_empty: bool,
         titles: &impl CommitTitle,
     ) -> Self {
         let mut releases: Vec<_> = releases
             .map(|(id, release)| {
                 let title = titles.title(release.oid());
-                Release::new(id, &release, aliases, delegates, title)
+                Release::new(id, &release, aliases, filters, title)
             })
             .filter(|r| show_empty || !r.artifacts.is_empty())
             .collect();
@@ -175,32 +187,40 @@ impl Release {
     /// Construct a new [`Release`] display form.
     ///
     /// The `aliases` store is used to resolve human-readable aliases for DIDs.
-    ///
-    /// When `delegates` is provided, artifacts that have been redacted by the
-    /// artifact author or any repository delegate are hidden. Pass `None` to
-    /// show all artifacts including redacted ones.
+    /// `filters` controls which artifacts are included: by default artifacts
+    /// redacted by the author or a delegate are hidden, and artifacts whose
+    /// author is not a delegate are hidden. Set the corresponding
+    /// [`Filters`] flags to `true` to include them.
     ///
     /// `title` is the first line of the commit message, if available.
     pub fn new(
         release_id: ReleaseId,
         release: &crate::Release,
         aliases: &impl AliasStore,
-        delegates: Option<&BTreeSet<Did>>,
+        filters: Filters<'_>,
         title: Option<String>,
     ) -> Self {
         let mut artifacts: Vec<_> = release
             .artifacts()
             .iter()
             .filter(|(_cid, artifact)| {
-                // Hide artifacts redacted by a trusted party: the artifact
-                // author or any repository delegate.
-                if let Some(delegates) = delegates {
-                    !artifact.redactions().keys().any(|did| {
-                        *did == *artifact.author() || delegates.contains(did)
-                    })
-                } else {
-                    true
+                // Redaction filter: hide artifacts redacted by a trusted
+                // party (the author itself or any repository delegate).
+                if !filters.redacted {
+                    let hidden = artifact.redactions().keys().any(|did| {
+                        *did == *artifact.author() || filters.delegates.contains(did)
+                    });
+                    if hidden {
+                        return false;
+                    }
                 }
+                // Author filter: hide artifacts added by users who are not
+                // repository delegates. Delegates are the curated source of
+                // truth for a repo; non-delegate contributions are opt-in.
+                if !filters.all_authors && !filters.delegates.contains(artifact.author()) {
+                    return false;
+                }
+                true
             })
             .map(|(cid, artifact)| {
                 let mut locations: Vec<_> = artifact

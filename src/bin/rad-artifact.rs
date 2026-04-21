@@ -452,6 +452,7 @@ fn show_release(
         json,
         verbose,
         redacted,
+        all_authors,
         commit,
     }: command::Show,
     releases: &Releases<Repository>,
@@ -468,10 +469,13 @@ fn show_release(
         .map_err(|err| error::Find::Lookup { oid, err })?
         .ok_or(error::Find::NoRelease(oid))?;
     let title = display::CommitTitle::title(repo, release.oid());
-    // Pass delegates for redaction filtering unless --redacted is set.
-    let redaction_delegates = if redacted { None } else { Some(delegates) };
+    let filters = display::Filters {
+        delegates,
+        redacted,
+        all_authors,
+    };
     let show =
-        radicle_artifact::display::Release::new(id, &release, aliases, redaction_delegates, title);
+        radicle_artifact::display::Release::new(id, &release, aliases, filters, title);
     if use_pretty(pretty, json) {
         println!("{}", show.pretty(verbose));
     } else {
@@ -488,7 +492,7 @@ fn list_releases(
         pretty,
         json,
         verbose,
-        delegates_only,
+        all_authors,
         redacted,
         empty,
     }: command::List,
@@ -496,17 +500,13 @@ fn list_releases(
     repo: &Repository,
     aliases: &impl AliasStore,
 ) -> Result<(), error::List> {
-    // Fetch delegates when needed for --delegates-only or redaction filtering.
-    let delegates = if delegates_only || !redacted {
-        let ds: BTreeSet<_> = repo
-            .delegates()
-            .map_err(error::List::Delegates)?
-            .into_iter()
-            .collect();
-        Some(ds)
-    } else {
-        None
-    };
+    // Delegates drive both the redaction and author filters, so always
+    // fetch them; the flags below bypass each filter independently.
+    let delegates: BTreeSet<_> = repo
+        .delegates()
+        .map_err(error::List::Delegates)?
+        .into_iter()
+        .collect();
     let iter = releases
         .all()
         .map_err(error::List::All)?
@@ -518,27 +518,13 @@ fn list_releases(
                 }
                 None
             }
-        })
-        .filter({
-            let delegates = delegates.clone();
-            move |(_id, release)| {
-                if delegates_only {
-                    // A release is "delegate-curated" when at least one of its
-                    // artifacts was added by a delegate.
-                    delegates.as_ref().is_none_or(|ds| {
-                        release
-                            .artifacts()
-                            .values()
-                            .any(|a| ds.contains(a.author()))
-                    })
-                } else {
-                    true
-                }
-            }
         });
-    // Pass delegates for redaction filtering only when --redacted is not set.
-    let redaction_filter = if redacted { None } else { delegates.as_ref() };
-    let releases = display::Releases::new(iter, aliases, redaction_filter, empty, repo);
+    let filters = display::Filters {
+        delegates: &delegates,
+        redacted,
+        all_authors,
+    };
+    let releases = display::Releases::new(iter, aliases, filters, empty, repo);
     if use_pretty(pretty, json) {
         println!("{}", releases.pretty(verbose));
     } else {
@@ -1406,6 +1392,9 @@ Examples:
     }
 
     /// Show the release COB for a Git commit or annotated tag.
+    ///
+    /// By default only artifacts authored by a repository delegate are
+    /// shown. Pass `--all-authors` to include artifacts added by other users.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
@@ -1415,8 +1404,8 @@ Examples:
   Show a release in human-readable format:
     $ rad-artifact show --pretty abc1234
 
-  Include redacted artifacts:
-    $ rad-artifact show --pretty --redacted abc1234")]
+  Include redacted artifacts and artifacts from non-delegates:
+    $ rad-artifact show --pretty --redacted --all-authors abc1234")]
     pub struct Show {
         /// Format output in a human-readable way.
         ///
@@ -1434,19 +1423,26 @@ Examples:
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
+        /// Also include artifacts authored by users who are not
+        /// repository delegates.
+        #[clap(long)]
+        pub all_authors: bool,
         /// Git commit, tag, or abbreviated OID of the release.
         pub commit: String,
     }
 
     /// List all release COBs for a repository.
+    ///
+    /// By default only artifacts authored by a repository delegate are
+    /// shown. Pass `--all-authors` to include artifacts added by other users.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
-  List all releases as JSON:
+  List releases with delegate-authored artifacts as JSON:
     $ rad-artifact list
 
-  Human-readable listing of delegate releases:
-    $ rad-artifact list --pretty --delegates-only
+  Include artifacts from non-delegate authors:
+    $ rad-artifact list --pretty --all-authors
 
   Include empty and redacted releases:
     $ rad-artifact list --pretty --empty --redacted")]
@@ -1464,10 +1460,10 @@ Examples:
         /// Output all information, including intermediate errors.
         #[clap(long, short)]
         pub verbose: bool,
-        /// Only show releases that contain at least one artifact
-        /// authored by a repository delegate.
+        /// Also include artifacts authored by users who are not
+        /// repository delegates.
         #[clap(long)]
-        pub delegates_only: bool,
+        pub all_authors: bool,
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
