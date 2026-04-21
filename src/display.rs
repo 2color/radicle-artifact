@@ -281,8 +281,10 @@ impl Release {
             &mut s,
             format!("ID {short_id} | commit {short_oid} | {date} {title_suffix}"),
         );
-        // Build a per-release artifact table: CID | name | DID | URL.
-        // Multiple locations use blank cells in the CID/name columns.
+        // Build a per-release artifact table: CID | name | author | locations.
+        // The locations cell summarises counts by URL scheme (e.g.
+        // "https: 2, iroh: 1") to keep the table compact even when an
+        // artifact is seeded from many endpoints.
         // Attestations and redactions follow as additional rows.
         let mut rows: Vec<Vec<String>> = Vec::new();
         for artifact in self.artifacts.iter() {
@@ -292,31 +294,20 @@ impl Release {
                 // Truncate CID to first 6 and last 6 visible chars for column width.
                 format!("{}…{}", &artifact.cid[..6], &artifact.cid[artifact.cid.len() - 6..])
             };
-
-            let mut first = true;
+            let author = format_did(&artifact.author, &artifact.author_alias, verbose);
+            // BTreeMap keeps the summary in a stable, scheme-sorted order.
+            let mut scheme_counts: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
             for loc in artifact.locations.iter() {
-                let did = format_did(&loc.did, &loc.alias, verbose);
-                if first {
-                    rows.push(vec![
-                        cid_cell.clone(),
-                        artifact.name.clone(),
-                        did,
-                        loc.url.to_string(),
-                    ]);
-                    first = false;
-                } else {
-                    rows.push(vec![
-                        String::new(),
-                        String::new(),
-                        did,
-                        loc.url.to_string(),
-                    ]);
-                }
+                *scheme_counts.entry(loc.url.scheme()).or_insert(0) += 1;
             }
-            if first {
-                // No locations — still show CID and name.
-                rows.push(vec![cid_cell, artifact.name.clone()]);
-            }
+            let locations_cell = scheme_counts
+                .iter()
+                .map(|(scheme, count)| format!("{scheme}: {count}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            rows.push(vec![cid_cell, author, artifact.name.clone(), locations_cell]);
+
             if !artifact.attestations.is_empty() {
                 let nodes: Vec<_> = artifact
                     .attestations

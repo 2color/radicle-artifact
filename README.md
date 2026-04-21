@@ -55,7 +55,7 @@ Release
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
-- **Locations** — plain URLs (`https://`, `ipfs://`, [`rasl://`](https://dasl.ing/rasl.html), `iroh://`, etc.)
+- **Locations** — plain URLs (`https://`, `ipfs://`, `magnet://`, [`rasl://`](https://dasl.ing/rasl.html), `iroh://`, etc.)
 - Each user can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
 
 ## Collaboration model
