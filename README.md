@@ -1,23 +1,24 @@
 # radicle-artifact
 
-The missing link between code provenance and secure artifact distribution.
+Secure artifact distribution for [radicle](https://radicle.xyz/).
 
-Git has no native way to distribute artifacts — static site builds, binaries,
-datasets. The moment you build and ship, the provenance link from code to
-artifact is broken. `radicle-artifact` closes that gap: a Radicle
-[Collaborative Object][cob] (COB) that ties content-addressed release artifacts
-back to the exact commit they were built from, and distributes them in a
-participatory, transport-agnostic way.
+Git was never built to distribute large file and binaries. Existing solutions like Git LFS encode a URL in the repository tree, which breaks Git's content-addressed nature and leaves every artifact prone to link rot.
 
-It inherits Radicle's social layer of trust. Anyone can contribute artifacts
-and serve as a mirror, but releases authored by repository **delegates** are
-shown by default — the same trusted identities that establish canonical branches
-and tags. Delegates can independently verify a build and **attest** that their
-CID matches, turning artifact verification into a multi-party act. **Redactions**
-from delegates carry the most weight: a delegate flagging an artifact as
-compromised is a strong signal from the project's own trusted members.
+`radicle-artifact` makes artifact distribution:
 
-A **Release** is associated with a Git OID (annotated tag or commit). There is one release per commit: any contributor's `add` either reuses the existing release for that commit or creates it if none exists. A release contains one or more **Artifacts**, each identified by a content identifier (CID). Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Each user can announce multiple discovery URLs for any artifact, enabling decentralized mirroring. Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
+- **Verifiable and signed** — every artifact is content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`Add`, `Attest`, `AddLocation`) is signed by its author's Ed25519 key.
+- **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
+- **Transport-agnostic** — artifacts can have multiple *locations* and shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The cli comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
+
+Trust is multi-party and follows from the repository **delegates**, the trusted maintianers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their  matches, and can also **redact** artifacts if compromised or broken.
+
+radicle-artifact is useful for distributing any data related to code: binaries, static sites, model weights, and scientific datasets.
+
+## How it works
+
+A **Release** is associated with a Git OID (annotated tag or commit). A release contains one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help serve content by announcing location URLs for any artifact, enabling decentralized mirroring. 
+
+Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
 Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
 
