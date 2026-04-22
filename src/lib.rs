@@ -39,12 +39,12 @@
 //! let mut releases = Releases::open(repo).unwrap();
 //!
 //! // find_or_create_by_oid creates the release COB automatically if needed.
-//! let mut release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+//! let mut release = releases.find_or_create_by_oid(oid).unwrap();
 //!
 //! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse().unwrap();
 //! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
-//! release.add_artifact(cid, "linux-amd64 binary".into(), &alice.signer).unwrap();
-//! release.add_location(cid, url, &alice.signer).unwrap();
+//! release.add_artifact(cid, "linux-amd64 binary".into()).unwrap();
+//! release.add_location(cid, url).unwrap();
 //! ```
 
 #![deny(missing_docs)]
@@ -479,26 +479,27 @@ impl<R: ReadRepository> Evaluate<R> for Release {
 ///   - [`Releases::create`]
 ///   - [`Releases::get_mut`]
 ///   - [`Releases::find_or_create_by_oid`]
-pub struct Releases<'a, R> {
-    raw: store::Store<'a, Release, R>,
+pub struct Releases<'a, R, Access> {
+    raw: store::Store<'a, Release, R, Access>,
 }
 
-impl<'a, R> Deref for Releases<'a, R> {
-    type Target = store::Store<'a, Release, R>;
+impl<'a, R, Access> Deref for Releases<'a, R, Access> {
+    type Target = store::Store<'a, Release, R, Access>;
 
     fn deref(&self) -> &Self::Target {
         &self.raw
     }
 }
 
-impl<'a, R> Releases<'a, R>
+impl<'a, R, Access> Releases<'a, R, Access>
 where
     R: ReadRepository + cob::Store<Namespace = NodeId>,
+    Access: store::access::Access,
 {
     /// Open a releases store.
-    pub fn open(repository: &'a R) -> Result<Self, RepositoryError> {
+    pub fn open(repository: &'a R, access: Access) -> Result<Self, RepositoryError> {
         let identity = repository.identity_head()?;
-        let raw = store::Store::open(repository)?.identity(identity);
+        let raw = store::Store::open(repository, access)?.identity(identity);
 
         Ok(Self { raw })
     }
@@ -516,7 +517,10 @@ where
     }
 
     /// Find the [`Release`]s that are associated with the `wanted` commit.
-    pub fn find_by_oid(&self, wanted: Oid) -> Result<FindByOid<'a>, store::Error> {
+    pub fn find_by_oid(&self, wanted: Oid) -> Result<FindByOid<'a>, store::Error>
+    where
+        Access: 'a,
+    {
         FindByOid::new(self, wanted)
     }
 
@@ -545,10 +549,7 @@ where
     /// users concurrently created the release before syncing. Retrieval should
     /// union locations across all of them, so callers building a fetch plan
     /// should aggregate across the returned releases.
-    pub fn find_by_cid(
-        &self,
-        cid: &Cid,
-    ) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
+    pub fn find_by_cid(&self, cid: &Cid) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
         let mut out = Vec::new();
         for result in self.all()? {
             let (id, release) = result?;
@@ -568,9 +569,13 @@ pub struct FindByOid<'a> {
 }
 
 impl<'a> FindByOid<'a> {
-    fn new<R>(releases: &Releases<'a, R>, needle: Oid) -> Result<Self, cob::store::Error>
+    fn new<R, Access>(
+        releases: &Releases<'a, R, Access>,
+        needle: Oid,
+    ) -> Result<Self, cob::store::Error>
     where
         R: ReadRepository + cob::Store<Namespace = NodeId>,
+        Access: store::access::Access + 'a,
     {
         Ok(Self {
             releases: Box::new(releases.all()?),
@@ -601,15 +606,19 @@ impl Iterator for FindByOid<'_> {
     }
 }
 
-impl<'a, R> Releases<'a, R>
+impl<'a, 'b, R, Signer> Releases<'a, R, cob::store::access::WriteAs<'b, Signer>>
 where
     R: ReadRepository + SignRepository + cob::Store<Namespace = NodeId>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::ssh::ExtendedSignature>,
+    Signer: radicle::crypto::signature::Verifier<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Keypair<VerifyingKey = radicle::crypto::PublicKey>,
 {
     /// Get a [`ReleaseMut`], given its [`ReleaseId`] identifier.
     pub fn get_mut<'g>(
         &'g mut self,
         id: &ReleaseId,
-    ) -> Result<ReleaseMut<'a, 'g, R>, store::Error> {
+    ) -> Result<ReleaseMut<'a, 'b, 'g, R, Signer>, store::Error> {
         let release = self
             .raw
             .get(id.as_object_id())?
@@ -628,18 +637,13 @@ where
     /// committer of the wrapping COB op, not the "owner" of the release.
     /// Prefer [`Releases::find_or_create_by_oid`] to avoid creating duplicate
     /// releases for the same commit.
-    pub fn create<'g, G>(
+    pub fn create<'g>(
         &'g mut self,
         oid: Oid,
-        signer: &Device<G>,
-    ) -> Result<ReleaseMut<'a, 'g, R>, store::Error>
-    where
-        G: Signer<crypto::Signature>,
-    {
-        let (id, release) = store::Transaction::initial::<_, _, Transaction<R>>(
+    ) -> Result<ReleaseMut<'a, 'b, 'g, R, Signer>, store::Error> {
+        let (id, release) = store::Transaction::initial::<Signer, Transaction<R>, _>(
             "Create release",
             &mut self.raw,
-            signer,
             |tx, _| {
                 tx.create(oid)?;
                 Ok(())
@@ -660,14 +664,10 @@ where
     /// The tie-break is deterministic across replicas, so subsequent writes
     /// converge on a single release rather than spawning more duplicates; the
     /// read path already unions across duplicates via [`Releases::find_by_cid`].
-    pub fn find_or_create_by_oid<'g, G>(
+    pub fn find_or_create_by_oid<'g>(
         &'g mut self,
         oid: Oid,
-        signer: &Device<G>,
-    ) -> Result<ReleaseMut<'a, 'g, R>, store::Error>
-    where
-        G: Signer<crypto::Signature>,
-    {
+    ) -> Result<ReleaseMut<'a, 'b, 'g, R, Signer>, store::Error> {
         let mut canonical: Option<ReleaseId> = None;
         for result in self.find_by_oid(oid)? {
             let (id, _) = result?;
@@ -678,7 +678,7 @@ where
         }
 
         match canonical {
-            None => self.create(oid, signer),
+            None => self.create(oid),
             Some(id) => self.get_mut(&id),
         }
     }
@@ -686,15 +686,15 @@ where
 
 /// A `ReleaseMut` is a [`Release`] where the underlying `Release` can be
 /// mutated by applying actions to it.
-pub struct ReleaseMut<'a, 'g, R> {
+pub struct ReleaseMut<'a, 'b, 'g, R, Signer> {
     /// The COB identifier for this release.
     pub id: ReleaseId,
 
     release: Release,
-    store: &'g mut Releases<'a, R>,
+    store: &'g mut Releases<'a, R, store::access::WriteAs<'b, Signer>>,
 }
 
-impl<R> Deref for ReleaseMut<'_, '_, R> {
+impl<R, Signer> Deref for ReleaseMut<'_, '_, '_, R, Signer> {
     type Target = Release;
 
     fn deref(&self) -> &Self::Target {
@@ -702,9 +702,13 @@ impl<R> Deref for ReleaseMut<'_, '_, R> {
     }
 }
 
-impl<'a, 'g, R> ReleaseMut<'a, 'g, R>
+impl<'a, 'b, 'g, R, Signer> ReleaseMut<'a, 'b, 'g, R, Signer>
 where
     R: WriteRepository + cob::Store<Namespace = NodeId>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::ssh::ExtendedSignature>,
+    Signer: radicle::crypto::signature::Verifier<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Keypair<VerifyingKey = radicle::crypto::PublicKey>,
 {
     /// The COB identifier for the underlying [`Release`].
     pub fn id(&self) -> &ReleaseId {
@@ -722,67 +726,30 @@ where
     }
 
     /// Add an artifact to the release.
-    pub fn add_artifact<G>(
-        &mut self,
-        cid: Cid,
-        name: String,
-        signer: &Device<G>,
-    ) -> Result<EntryId, store::Error>
-    where
-        G: Signer<crypto::Signature>,
-    {
-        self.transaction("Add artifact", signer, |tx| tx.add_artifact(cid, name))
+    pub fn add_artifact(&mut self, cid: Cid, name: String) -> Result<EntryId, store::Error> {
+        self.transaction("Add artifact", |tx| tx.add_artifact(cid, name))
     }
 
     /// Add a discovery location for an artifact.
-    pub fn add_location<G>(
-        &mut self,
-        cid: Cid,
-        location: Url,
-        signer: &Device<G>,
-    ) -> Result<EntryId, store::Error>
-    where
-        G: Signer<crypto::Signature>,
-    {
-        self.transaction("Add location", signer, |tx| tx.add_location(cid, location))
+    pub fn add_location(&mut self, cid: Cid, location: Url) -> Result<EntryId, store::Error> {
+        self.transaction("Add location", |tx| tx.add_location(cid, location))
     }
 
     /// Remove a discovery location for an artifact.
-    pub fn remove_location<G>(
-        &mut self,
-        cid: Cid,
-        location: Url,
-        signer: &Device<G>,
-    ) -> Result<EntryId, store::Error>
-    where
-        G: Signer<crypto::Signature>,
-    {
-        self.transaction("Remove location", signer, |tx| {
-            tx.remove_location(cid, location)
-        })
+    pub fn remove_location(&mut self, cid: Cid, location: Url) -> Result<EntryId, store::Error> {
+        self.transaction("Remove location", |tx| tx.remove_location(cid, location))
     }
 
     /// Attest that this user has independently verified an artifact.
-    pub fn attest<G>(&mut self, cid: Cid, signer: &Device<G>) -> Result<EntryId, store::Error>
-    where
-        G: Signer<crypto::Signature>,
-    {
-        self.transaction("Attest artifact", signer, |tx| tx.attest(cid))
+    pub fn attest(&mut self, cid: Cid) -> Result<EntryId, store::Error> {
+        self.transaction("Attest artifact", |tx| tx.attest(cid))
     }
 
     /// Redact an artifact, indicating it should not be used.
     ///
     /// Returns an error if the CID does not exist in the release or if the
     /// reason exceeds [`MAX_REDACT_REASON_LEN`] bytes.
-    pub fn redact<G>(
-        &mut self,
-        cid: Cid,
-        reason: String,
-        signer: &Device<G>,
-    ) -> Result<EntryId, error::Redact>
-    where
-        G: Signer<crypto::Signature>,
-    {
+    pub fn redact(&mut self, cid: Cid, reason: String) -> Result<EntryId, error::Redact> {
         if self.artifact(&cid).is_none() {
             return Err(error::Redact::NotFound { cid });
         }
@@ -792,26 +759,19 @@ where
                 max: MAX_REDACT_REASON_LEN,
             });
         }
-        self.transaction("Redact artifact", signer, |tx| tx.redact(cid, reason))
+        self.transaction("Redact artifact", |tx| tx.redact(cid, reason))
             .map_err(error::Redact::from)
     }
 
     /// Apply COB operations to a `ReleaseMut`.
-    fn transaction<G, F>(
-        &mut self,
-        message: &str,
-        signer: &Device<G>,
-        operations: F,
-    ) -> Result<EntryId, store::Error>
+    fn transaction<F>(&mut self, message: &str, operations: F) -> Result<EntryId, store::Error>
     where
-        G: Signer<crypto::Signature>,
         F: FnOnce(&mut Transaction<R>) -> Result<(), store::Error>,
     {
         let mut tx = Transaction::default();
         operations(&mut tx)?;
 
-        let (release, commit) =
-            tx.0.commit(message, self.id.into(), &mut self.store.raw, signer)?;
+        let (release, commit) = tx.0.commit(message, self.id.into(), &mut self.store.raw)?;
         self.release = release;
 
         Ok(commit)
@@ -908,6 +868,7 @@ where
 mod test {
     use std::collections::BTreeSet;
 
+    use radicle::cob::store::access::WriteAs;
     use radicle::git::{raw::Repository, Oid};
     use radicle::identity::Did;
     use radicle::prelude::ReadStorage;
@@ -945,32 +906,33 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut alice_releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut alice_release = alice_releases.create(oid).unwrap();
 
         // Alice adds an artifact.
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+        alice_release
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
         // Alice adds a location for the artifact.
         let alice_url =
             Url::parse("https://alice.example.com/artifacts/linux-amd64.tar.gz").unwrap();
-        release
-            .add_location(cid, alice_url.clone(), &alice.signer)
-            .unwrap();
+        alice_release.add_location(cid, alice_url.clone()).unwrap();
 
         // Bob adds a mirror location for the same artifact.
         let bob_url = Url::parse("https://bob.example.com/mirror/linux-amd64.tar.gz").unwrap();
-        release
-            .add_location(cid, bob_url.clone(), &bob.signer)
+
+        let mut bob_releases = Releases::open(&*repo, WriteAs::new(&bob.signer)).unwrap();
+        let mut bob_release = bob_releases.get_mut(&bob_releases.find_unique_by_oid(oid).unwrap()).unwrap();
+        bob_release
+            .add_location(cid, bob_url.clone())
             .unwrap();
 
         // Verify the artifact exists with both locations.
-        let artifact = release.artifact(&cid).unwrap();
+        let artifact = alice_release.artifact(&cid).unwrap();
         assert_eq!(artifact.name(), "linux-amd64 binary");
         assert!(artifact
             .locations_of(&Did::from(alice.signer.public_key()))
@@ -980,11 +942,9 @@ mod test {
             .is_some_and(|urls| urls.contains(&bob_url)));
 
         // Alice removes her location.
-        release
-            .remove_location(cid, alice_url, &alice.signer)
-            .unwrap();
+        alice_release.remove_location(cid, alice_url).unwrap();
 
-        let artifact = release.artifact(&cid).unwrap();
+        let artifact = alice_release.artifact(&cid).unwrap();
         assert!(artifact
             .locations_of(&Did::from(alice.signer.public_key()))
             .is_none());
@@ -998,9 +958,9 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
         let oid = test::arbitrary::oid();
-        let release = releases.create(oid, &alice.signer);
+        let release = releases.create(oid);
         assert!(release.is_err());
     }
 
@@ -1010,13 +970,13 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
         let r1 = {
-            let r1 = releases.create(oid, &alice.signer).unwrap();
+            let r1 = releases.create(oid).unwrap();
             r1.id
         };
         let r2 = {
-            let r2 = releases.create(oid, &alice.signer).unwrap();
+            let r2 = releases.create(oid).unwrap();
             r2.id
         };
 
@@ -1031,17 +991,13 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "first name".into(), &alice.signer)
-            .unwrap();
+        release.add_artifact(cid, "first name".into()).unwrap();
         // Second add with different name updates it.
-        release
-            .add_artifact(cid, "second name".into(), &alice.signer)
-            .unwrap();
+        release.add_artifact(cid, "second name".into()).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.name(), "second name");
@@ -1054,12 +1010,12 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1073,20 +1029,20 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut alice_releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut alice_release = alice_releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "original name".into(), &alice.signer)
-            .unwrap();
+        alice_release.add_artifact(cid, "original name".into()).unwrap();
 
         // Bob tries to rename — should be ignored.
-        release
-            .add_artifact(cid, "bobs name".into(), &bob.signer)
+        let mut bob_releases = Releases::open(&*repo, WriteAs::new(&bob.signer)).unwrap();
+        let mut bob_release = bob_releases.get_mut(&bob_releases.find_unique_by_oid(oid).unwrap()).unwrap();
+        bob_release
+            .add_artifact(cid, "bobs name".into())
             .unwrap();
 
-        let artifact = release.artifact(&cid).unwrap();
+        let artifact = alice_release.artifact(&cid).unwrap();
         assert_eq!(artifact.name(), "original name");
         assert_eq!(artifact.author(), &Did::from(alice.signer.public_key()));
     }
@@ -1097,13 +1053,13 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(99);
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
         // Should succeed but have no effect since the CID doesn't exist.
-        release.add_location(cid, url, &alice.signer).unwrap();
+        release.add_location(cid, url).unwrap();
 
         assert!(release.artifact(&cid).is_none());
     }
@@ -1115,10 +1071,10 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid1 = commit(&repo.backend, "Commit A");
         let oid2 = commit(&repo.backend, "Commit B");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
-        let id1 = releases.create(oid1, &alice.signer).unwrap().id;
-        let _id2 = releases.create(oid2, &alice.signer).unwrap().id;
+        let id1 = releases.create(oid1).unwrap().id;
+        let _id2 = releases.create(oid2).unwrap().id;
 
         // find_by_oid should return only the release matching oid1.
         let results: Vec<_> = releases
@@ -1138,9 +1094,9 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Commit A");
         let other_oid = commit(&repo.backend, "Commit B");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
-        releases.create(oid, &alice.signer).unwrap();
+        releases.create(oid).unwrap();
 
         let results: Vec<_> = releases
             .find_by_oid(other_oid)
@@ -1156,23 +1112,19 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
         // Alice adds two different URLs for the same artifact.
         let url1 = Url::parse("https://alice.example.com/primary/linux-amd64.tar.gz").unwrap();
         let url2 = Url::parse("https://alice.example.com/mirror/linux-amd64.tar.gz").unwrap();
-        release
-            .add_location(cid, url1.clone(), &alice.signer)
-            .unwrap();
-        release
-            .add_location(cid, url2.clone(), &alice.signer)
-            .unwrap();
+        release.add_location(cid, url1.clone()).unwrap();
+        release.add_location(cid, url2.clone()).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         let urls = artifact
@@ -1183,9 +1135,7 @@ mod test {
         assert!(urls.contains(&url2));
 
         // Adding the same URL again is a no-op.
-        release
-            .add_location(cid, url1.clone(), &alice.signer)
-            .unwrap();
+        release.add_location(cid, url1.clone()).unwrap();
         let artifact = release.artifact(&cid).unwrap();
         let urls = artifact
             .locations_of(&Did::from(alice.signer.public_key()))
@@ -1193,7 +1143,7 @@ mod test {
         assert_eq!(urls.len(), 2);
 
         // Removing one URL leaves the other intact.
-        release.remove_location(cid, url1, &alice.signer).unwrap();
+        release.remove_location(cid, url1).unwrap();
         let artifact = release.artifact(&cid).unwrap();
         let urls = artifact
             .locations_of(&Did::from(alice.signer.public_key()))
@@ -1202,7 +1152,7 @@ mod test {
         assert!(urls.contains(&url2));
 
         // Removing the last URL cleans up the DID entry entirely.
-        release.remove_location(cid, url2, &alice.signer).unwrap();
+        release.remove_location(cid, url2).unwrap();
         let artifact = release.artifact(&cid).unwrap();
         assert!(artifact
             .locations_of(&Did::from(alice.signer.public_key()))
@@ -1216,19 +1166,19 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut alice_releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut alice_release = alice_releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
-            .unwrap();
+        alice_release.add_artifact(cid, "test artifact".into()).unwrap();
 
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
         // Bob never added a location, so removing should be a no-op.
-        release.remove_location(cid, url, &bob.signer).unwrap();
+        let mut bob_releases = Releases::open(&*repo, WriteAs::new(&bob.signer)).unwrap();
+        let mut bob_release = bob_releases.get_mut(&bob_releases.find_unique_by_oid(oid).unwrap()).unwrap();
+        bob_release.remove_location(cid, url).unwrap();
 
-        let artifact = release.artifact(&cid).unwrap();
+        let artifact = alice_release.artifact(&cid).unwrap();
         assert!(artifact.locations().is_empty());
     }
 
@@ -1238,13 +1188,11 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
-            .unwrap();
+        release.add_artifact(cid, "test artifact".into()).unwrap();
 
         // Reload from store and verify the artifact is still present.
         release.reload().unwrap();
@@ -1260,20 +1208,26 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: carol, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut alice_releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut alice_release = alice_releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+        alice_release
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
-        // Bob and Carol attest; Alice's self-attestation is a no-op (she's the author).
-        release.attest(cid, &alice.signer).unwrap();
-        release.attest(cid, &bob.signer).unwrap();
-        release.attest(cid, &carol.signer).unwrap();
+        // Alice's self-attestation is a no-op (she's the author).
+        alice_release.attest(cid).unwrap();
 
-        let artifact = release.artifact(&cid).unwrap();
+        // Bob and Carol attest
+        let mut bob_releases = Releases::open(&*repo, WriteAs::new(&bob.signer)).unwrap();
+        let mut bob_release = bob_releases.get_mut(&bob_releases.find_unique_by_oid(oid).unwrap()).unwrap();
+        bob_release.attest(cid).unwrap();
+        let mut carol_releases = Releases::open(&*repo, WriteAs::new(&carol.signer)).unwrap();
+        let mut carol_release = carol_releases.get_mut(&carol_releases.find_unique_by_oid(oid).unwrap()).unwrap();
+        carol_release.attest(cid).unwrap();
+
+        let artifact = alice_release.artifact(&cid).unwrap();
         assert_eq!(artifact.attestations().len(), 2);
         assert!(!artifact.is_attested_by(&Did::from(alice.signer.public_key())));
         assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
@@ -1286,16 +1240,14 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
-            .unwrap();
+        release.add_artifact(cid, "test artifact".into()).unwrap();
 
         // The author already vouches by creating the artifact.
-        release.attest(cid, &alice.signer).unwrap();
+        release.attest(cid).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert!(!artifact.is_attested_by(&Did::from(alice.signer.public_key())));
@@ -1309,19 +1261,19 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut alice_releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut alice_release = alice_releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
-            .unwrap();
+        alice_release.add_artifact(cid, "test artifact".into()).unwrap();
 
         // Attesting twice from the same non-author node should be a no-op.
-        release.attest(cid, &bob.signer).unwrap();
-        release.attest(cid, &bob.signer).unwrap();
+        let mut bob_releases = Releases::open(&*repo, WriteAs::new(&bob.signer)).unwrap();
+        let mut bob_release = bob_releases.get_mut(&bob_releases.find_unique_by_oid(oid).unwrap()).unwrap();
+        bob_release.attest(cid).unwrap();
+        bob_release.attest(cid).unwrap();
 
-        let artifact = release.artifact(&cid).unwrap();
+        let artifact = bob_release.artifact(&cid).unwrap();
         assert_eq!(artifact.attestations().len(), 1);
     }
 
@@ -1331,12 +1283,12 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         // Attest a CID that doesn't exist in the release.
         let cid = test_cid(99);
-        release.attest(cid, &alice.signer).unwrap();
+        release.attest(cid).unwrap();
 
         assert!(release.artifact(&cid).is_none());
     }
@@ -1348,18 +1300,19 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut alice_releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut alice_release = alice_releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
-            .unwrap();
-        release.attest(cid, &bob.signer).unwrap();
+        alice_release.add_artifact(cid, "test artifact".into()).unwrap();
+
+        let mut bob_releases = Releases::open(&*repo, WriteAs::new(&bob.signer)).unwrap();
+        let mut bob_release = bob_releases.get_mut(&bob_releases.find_unique_by_oid(oid).unwrap()).unwrap();
+        bob_release.attest(cid).unwrap();
 
         // Reload and verify attestation is still present.
-        release.reload().unwrap();
-        let artifact = release.artifact(&cid).unwrap();
+        alice_release.reload().unwrap();
+        let artifact = alice_release.artifact(&cid).unwrap();
         assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
         assert_eq!(artifact.attestations().len(), 1);
     }
@@ -1370,16 +1323,14 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
-        release
-            .redact(cid, "compromised build".into(), &alice.signer)
-            .unwrap();
+        release.redact(cid, "compromised build".into()).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         let alice_did = Did::from(alice.signer.public_key());
@@ -1396,17 +1347,15 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
-        release
-            .redact(cid, "supply chain attack".into(), &alice.signer)
-            .unwrap();
+        release.redact(cid, "supply chain attack".into()).unwrap();
         release
             .redact(cid, "failed reproducibility check".into(), &bob.signer)
             .unwrap();
@@ -1430,18 +1379,16 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
         // Both users redact with the same reason — both are recorded independently.
-        release
-            .redact(cid, "malware detected".into(), &alice.signer)
-            .unwrap();
+        release.redact(cid, "malware detected".into()).unwrap();
         release
             .redact(cid, "malware detected".into(), &bob.signer)
             .unwrap();
@@ -1458,19 +1405,15 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
-        release
-            .redact(cid, "initial reason".into(), &alice.signer)
-            .unwrap();
-        release
-            .redact(cid, "updated reason".into(), &alice.signer)
-            .unwrap();
+        release.redact(cid, "initial reason".into()).unwrap();
+        release.redact(cid, "updated reason".into()).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         let alice_did = Did::from(alice.signer.public_key());
@@ -1484,16 +1427,12 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
-            .unwrap();
-        release
-            .redact(cid, "compromised".into(), &alice.signer)
-            .unwrap();
+        release.add_artifact(cid, "test artifact".into()).unwrap();
+        release.redact(cid, "compromised".into()).unwrap();
 
         // Reload and verify redaction is still present.
         release.reload().unwrap();
@@ -1510,12 +1449,12 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
         // Attest then redact — redaction should supersede the attestation.
@@ -1537,12 +1476,12 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
         // Redact first, then attempt to attest — the attestation should be
@@ -1565,20 +1504,18 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
         // Bob attests; Alice's self-attestation is a no-op (she's the author).
         // Then Alice redacts — Bob's attestation should remain.
         release.attest(cid, &bob.signer).unwrap();
-        release
-            .redact(cid, "compromised".into(), &alice.signer)
-            .unwrap();
+        release.redact(cid, "compromised".into()).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert!(artifact.is_redacted_by(&Did::from(alice.signer.public_key())));
@@ -1591,14 +1528,14 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
-        release.redact(cid, "".into(), &alice.signer).unwrap();
+        release.redact(cid, "".into()).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         let alice_did = Did::from(alice.signer.public_key());
@@ -1612,16 +1549,16 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .add_artifact(cid, "linux-amd64 binary".into())
             .unwrap();
 
         let long_reason = "x".repeat(crate::MAX_REDACT_REASON_LEN + 1);
-        let result = release.redact(cid, long_reason, &alice.signer);
+        let result = release.redact(cid, long_reason);
         assert!(result.is_err());
         // Artifact should not be redacted.
         assert!(!release.artifact(&cid).unwrap().is_redacted());
@@ -1633,12 +1570,12 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         // Try to redact a CID that was never added — should error.
         let cid = test_cid(99);
-        let result = release.redact(cid, "does not matter".into(), &alice.signer);
+        let result = release.redact(cid, "does not matter".into());
         assert!(result.is_err());
     }
 
@@ -1647,7 +1584,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: _alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
         let oid: radicle::cob::ObjectId = test::arbitrary::oid().into();
         let fake_id = crate::ReleaseId::from(oid);
@@ -1662,23 +1599,17 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
-            .unwrap();
+        release.add_artifact(cid, "test artifact".into()).unwrap();
 
         let https_url = Url::parse("https://example.com/file.tar.gz").unwrap();
         let iroh_url = Url::parse("iroh://abc123").unwrap();
         let http_url = Url::parse("http://mirror.example.com/file.tar.gz").unwrap();
-        release
-            .add_location(cid, https_url.clone(), &alice.signer)
-            .unwrap();
-        release
-            .add_location(cid, iroh_url.clone(), &alice.signer)
-            .unwrap();
+        release.add_location(cid, https_url.clone()).unwrap();
+        release.add_location(cid, iroh_url.clone()).unwrap();
         release
             .add_location(cid, http_url.clone(), &bob.signer)
             .unwrap();
@@ -1713,19 +1644,15 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
+        let mut release = releases.create(oid).unwrap();
 
         let cid = test_cid(1);
-        release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
-            .unwrap();
+        release.add_artifact(cid, "test artifact".into()).unwrap();
 
         // Both Alice and Bob add the same bare iroh:// URL.
         let iroh_url = Url::parse("iroh://").unwrap();
-        release
-            .add_location(cid, iroh_url.clone(), &alice.signer)
-            .unwrap();
+        release.add_location(cid, iroh_url.clone()).unwrap();
         release
             .add_location(cid, iroh_url.clone(), &bob.signer)
             .unwrap();
@@ -1751,7 +1678,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid1 = commit(&repo.backend, "Release 1");
         let oid2 = commit(&repo.backend, "Release 2");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
         let cid1 = test_cid(1);
         let cid2 = test_cid(2);
@@ -1759,14 +1686,12 @@ mod test {
 
         // Create two releases with different artifacts.
         {
-            let mut r1 = releases.create(oid1, &alice.signer).unwrap();
-            r1.add_artifact(cid1, "artifact-one".into(), &alice.signer)
-                .unwrap();
+            let mut r1 = releases.create(oid1).unwrap();
+            r1.add_artifact(cid1, "artifact-one".into()).unwrap();
         }
         {
-            let mut r2 = releases.create(oid2, &alice.signer).unwrap();
-            r2.add_artifact(cid2, "artifact-two".into(), &alice.signer)
-                .unwrap();
+            let mut r2 = releases.create(oid2).unwrap();
+            r2.add_artifact(cid2, "artifact-two".into()).unwrap();
         }
 
         // find_by_cid locates cid1 in the first release.
@@ -1791,10 +1716,10 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
         // No release exists yet — find_or_create_by_oid should create one.
-        let release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+        let release = releases.find_or_create_by_oid(oid).unwrap();
         assert_eq!(release.oid(), &oid);
     }
 
@@ -1804,15 +1729,15 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
         let id = {
-            let r = releases.create(oid, &alice.signer).unwrap();
+            let r = releases.create(oid).unwrap();
             *r.id()
         };
 
         // Release already exists — find_or_create_by_oid should return it.
-        let release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+        let release = releases.find_or_create_by_oid(oid).unwrap();
         assert_eq!(*release.id(), id);
     }
 
@@ -1827,16 +1752,13 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
-        let a = *releases.create(oid, &alice.signer).unwrap().id();
+        let a = *releases.create(oid).unwrap().id();
         let b = *releases.create(oid, &bob.signer).unwrap().id();
         let expected = std::cmp::min(a, b);
 
-        let picked = *releases
-            .find_or_create_by_oid(oid, &alice.signer)
-            .unwrap()
-            .id();
+        let picked = *releases.find_or_create_by_oid(oid).unwrap().id();
         assert_eq!(picked, expected);
 
         // A different signer must pick the same release — the tie-break is
@@ -1859,10 +1781,10 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "v1.0");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
         let alice_id = {
-            let r = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+            let r = releases.find_or_create_by_oid(oid).unwrap();
             *r.id()
         };
         let bob_id = {
@@ -1893,12 +1815,13 @@ mod test {
 
         let cid = test_cid(1);
         {
-            let mut r = releases.create(oid, &alice.signer).unwrap();
-            r.add_artifact(cid, "alice-built".into(), &alice.signer).unwrap();
+            let mut r = releases.create(oid).unwrap();
+            r.add_artifact(cid, "alice-built".into()).unwrap();
         }
         {
             let mut r = releases.create(oid, &bob.signer).unwrap();
-            r.add_artifact(cid, "bob-built".into(), &bob.signer).unwrap();
+            r.add_artifact(cid, "bob-built".into(), &bob.signer)
+                .unwrap();
         }
 
         let found = releases.find_by_cid(&cid).unwrap();
@@ -1916,16 +1839,16 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid1 = commit(&repo.backend, "v1.0");
         let oid2 = commit(&repo.backend, "v1.1");
-        let mut releases = Releases::open(&*repo).unwrap();
+        let mut releases = Releases::open(&*repo, WriteAs::new(&alice.signer)).unwrap();
 
         let cid = test_cid(1);
         {
-            let mut r = releases.create(oid1, &alice.signer).unwrap();
-            r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
+            let mut r = releases.create(oid1).unwrap();
+            r.add_artifact(cid, "shared".into()).unwrap();
         }
         {
-            let mut r = releases.create(oid2, &alice.signer).unwrap();
-            r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
+            let mut r = releases.create(oid2).unwrap();
+            r.add_artifact(cid, "shared".into()).unwrap();
         }
 
         let found = releases.find_by_cid(&cid).unwrap();
