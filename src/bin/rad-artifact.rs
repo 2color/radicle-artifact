@@ -7,14 +7,11 @@ use std::{collections::BTreeSet, error::Error as _, io::IsTerminal, time::Durati
 use clap::Parser;
 
 use radicle::{
-    cob, crypto,
-    crypto::signature::Signer,
+    cob::{self, store::access::{ReadOnly, WriteAs}}, crypto::{self, signature::Signer},
     git::Oid,
     identity::Did,
     node::{
-        device::Device,
-        sync::{Announcer, AnnouncerConfig, ReplicationFactor},
-        AliasStore, Handle, Node,
+        AliasStore, Handle, Node, device::Device, sync::{Announcer, AnnouncerConfig, ReplicationFactor}
     },
     prelude::{Profile, ReadRepository, ReadStorage, RepoId, WriteRepository},
     profile,
@@ -102,8 +99,8 @@ fn load_profile() -> Result<Profile, error::Profile> {
     Profile::load().map_err(error::Profile)
 }
 
-fn open_releases(repo: &Repository) -> Result<Releases<'_, Repository>, error::Releases> {
-    Releases::open(repo).map_err(|err| error::Releases { rid: repo.id, err })
+fn open_releases<Access: cob::store::access::Access>(repo: &Repository, access: Access) -> Result<Releases<'_, Repository, Access>, error::Releases> {
+    Releases::open(repo, access).map_err(|err| error::Releases { rid: repo.id, err })
 }
 
 fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> {
@@ -115,7 +112,7 @@ fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> 
 }
 
 fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
-    let mut node = Node::new(profile.home.socket());
+    let mut node = Node::new(profile.home.socket_from_env());
 
     // Check seed sync status for the local node's namespace, matching the
     // behavior of the deprecated `seeds()` method which passed `[self.nid()]`.
@@ -163,25 +160,24 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
 
     let profile = load_profile()?;
     let repo = args.repository(&profile)?;
-    let mut releases = open_releases(&repo)?;
+    let signer = profile.signer().map_err(error::Signer)?;
+    let mut releases = open_releases(&repo, WriteAs::new(&signer))?;
     match args.command {
         #[cfg(feature = "share")]
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Add(cmd) => {
-            let signer = profile.signer().map_err(error::Signer)?;
-            add_artifact(cmd, &mut releases, &repo, &signer)?;
+            add_artifact(cmd, &mut releases, &repo)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Location(loc) => {
-            let signer = profile.signer().map_err(error::Signer)?;
             match loc.command {
                 LocationCommand::Add(cmd) => {
-                    location_add(cmd, &mut releases, &repo, &signer)?;
+                    location_add(cmd, &mut releases, &repo)?;
                 }
                 LocationCommand::Remove(cmd) => {
-                    location_remove(cmd, &mut releases, &repo, &signer)?;
+                    location_remove(cmd, &mut releases, &repo)?;
                 }
             }
             if !args.no_sync {
@@ -189,15 +185,13 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             }
         }
         Command::Attest(cmd) => {
-            let signer = profile.signer().map_err(error::Signer)?;
-            attest_artifact(cmd, args.no_input, &mut releases, &repo, &signer)?;
+            attest_artifact(cmd, args.no_input, &mut releases, &repo)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Redact(cmd) => {
-            let signer = profile.signer().map_err(error::Signer)?;
-            redact_artifact(cmd, args.no_input, &mut releases, &repo, &signer)?;
+            redact_artifact(cmd, args.no_input, &mut releases, &repo)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -216,14 +210,16 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     Ok(())
 }
 
-fn add_artifact<G>(
+fn add_artifact<Signer>(
     command::Add { commit, cid, name }: command::Add,
-    releases: &mut Releases<Repository>,
+    releases: &mut Releases<Repository, WriteAs<Signer>>,
     repo: &Repository,
-    signer: &Device<G>,
 ) -> Result<(), error::Add>
 where
-    G: Signer<crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::ssh::ExtendedSignature>,
+    Signer: radicle::crypto::signature::Verifier<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Keypair<VerifyingKey = radicle::crypto::PublicKey>,
 {
     let oid = resolve_commit(&commit, repo)?;
     // One release per OID: reuse the existing release regardless of who
@@ -231,11 +227,11 @@ where
     // exist for this OID (concurrent creation across unsynced nodes), the
     // store deterministically picks one so all replicas converge on it.
     let mut release = releases
-        .find_or_create_by_oid(oid, signer)
+        .find_or_create_by_oid(oid)
         .map_err(|err| error::Add::Create { oid, err })?;
     let id = *release.id();
     release
-        .add_artifact(cid, name.clone(), signer)
+        .add_artifact(cid, name.clone())
         .map_err(|err| error::Add::Store { id, err })?;
     eprintln!("Added artifact '{name}' to release {}", &oid.to_string()[..7]);
     if std::io::stderr().is_terminal() {
@@ -245,14 +241,16 @@ where
     Ok(())
 }
 
-fn location_add<G>(
+fn location_add<Signer>(
     command::LocationAdd { commit, cid, url }: command::LocationAdd,
-    releases: &mut Releases<Repository>,
+    releases: &mut Releases<Repository, WriteAs<Signer>>,
     repo: &Repository,
-    signer: &Device<G>,
 ) -> Result<(), error::Locate>
 where
-    G: Signer<crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::ssh::ExtendedSignature>,
+    Signer: radicle::crypto::signature::Verifier<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Keypair<VerifyingKey = radicle::crypto::PublicKey>,
 {
     let oid = resolve_commit(&commit, repo)?;
     let id = releases.find_unique_by_oid(oid).map_err(error::Find::from)?;
@@ -260,7 +258,7 @@ where
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
     release
-        .add_location(cid, url.clone(), signer)
+        .add_location(cid, url.clone())
         .map_err(|err| error::Locate::Store { id, err })?;
     eprintln!("Added location {url} for artifact {cid}");
     if std::io::stderr().is_terminal() {
@@ -269,15 +267,17 @@ where
     Ok(())
 }
 
-fn attest_artifact<G>(
+fn attest_artifact<Signer>(
     command::Attest { commit, cid }: command::Attest,
     no_input: bool,
-    releases: &mut Releases<Repository>,
+    releases: &mut Releases<Repository, WriteAs<Signer>>,
     repo: &Repository,
-    signer: &Device<G>,
 ) -> Result<(), error::Attest>
 where
-    G: Signer<crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::ssh::ExtendedSignature>,
+    Signer: radicle::crypto::signature::Verifier<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Keypair<VerifyingKey = radicle::crypto::PublicKey>,
 {
     let (oid, cid) = match (commit, cid) {
         (Some(commit), Some(cid)) => (resolve_commit(&commit, repo)?, cid),
@@ -291,21 +291,23 @@ where
         .get_mut(&id)
         .map_err(|err| error::Attest::Store { id, err })?;
     release
-        .attest(cid, signer)
+        .attest(cid)
         .map_err(|err| error::Attest::Store { id, err })?;
     eprintln!("Attested artifact {cid}");
     Ok(())
 }
 
-fn redact_artifact<G>(
+fn redact_artifact<Signer>(
     command::Redact { commit, cid, reason }: command::Redact,
     no_input: bool,
-    releases: &mut Releases<Repository>,
+    releases: &mut Releases<Repository, WriteAs<Signer>>,
     repo: &Repository,
-    signer: &Device<G>,
 ) -> Result<(), error::Redact>
 where
-    G: Signer<crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::ssh::ExtendedSignature>,
+    Signer: radicle::crypto::signature::Verifier<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Keypair<VerifyingKey = radicle::crypto::PublicKey>,
 {
     let (oid, cid, reason) = match (commit, cid) {
         (Some(commit), Some(cid)) => {
@@ -333,20 +335,22 @@ where
         .get_mut(&id)
         .map_err(|err| error::Redact::Store { id, err })?;
     release
-        .redact(cid, reason, signer)
+        .redact(cid, reason)
         .map_err(|err| error::Redact::Artifact { id, err })?;
     eprintln!("Redacted artifact {cid}");
     Ok(())
 }
 
-fn location_remove<G>(
+fn location_remove<Signer>(
     command::LocationRemove { commit, cid, url }: command::LocationRemove,
-    releases: &mut Releases<Repository>,
+    releases: &mut Releases<Repository, WriteAs<Signer>>,
     repo: &Repository,
-    signer: &Device<G>,
 ) -> Result<(), error::RemoveLocation>
 where
-    G: Signer<crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::ssh::ExtendedSignature>,
+    Signer: radicle::crypto::signature::Verifier<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Keypair<VerifyingKey = radicle::crypto::PublicKey>,
 {
     let oid = resolve_commit(&commit, repo)?;
     // Unlike location_add, we don't restrict to delegate-authored releases: any
@@ -358,7 +362,7 @@ where
         .get_mut(&id)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
     release
-        .remove_location(cid, url.clone(), signer)
+        .remove_location(cid, url.clone())
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
     eprintln!("Removed location {url} for artifact {cid}");
     Ok(())
@@ -376,7 +380,7 @@ fn use_pretty(pretty: bool, json: bool) -> bool {
     std::io::stdout().is_terminal()
 }
 
-fn show_release(
+fn show_release<Access: radicle::cob::store::access::Access>(
     command::Show {
         pretty,
         json,
@@ -384,7 +388,7 @@ fn show_release(
         redacted,
         commit,
     }: command::Show,
-    releases: &Releases<Repository>,
+    releases: &Releases<Repository, Access>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
     aliases: &impl AliasStore,
@@ -411,7 +415,7 @@ fn show_release(
     Ok(())
 }
 
-fn list_releases(
+fn list_releases<Access: radicle::cob::store::access::Access>(
     command::List {
         pretty,
         json,
@@ -420,7 +424,7 @@ fn list_releases(
         redacted,
         empty,
     }: command::List,
-    releases: &Releases<Repository>,
+    releases: &Releases<Repository, Access>,
     repo: &Repository,
     aliases: &impl AliasStore,
 ) -> Result<(), error::List> {
@@ -495,11 +499,11 @@ fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
 }
 
 #[cfg(feature = "share")]
-fn run_fetch(
+fn run_fetch<Access: radicle::cob::store::access::Access>(
     args: command::Fetch,
     no_input: bool,
     _profile: &Profile,
-    releases: &Releases<Repository>,
+    releases: &Releases<Repository, Access>,
     repo: &Repository,
 ) -> Result<(), RadArtifactError> {
     // clap's `requires` ensures both or neither are provided.
@@ -603,12 +607,18 @@ fn run_fetch(
 }
 
 #[cfg(feature = "share")]
-fn run_serve(
+fn run_serve<Signer>(
     args: command::Serve,
     no_input: bool,
     profile: &Profile,
-    releases: &mut Releases<Repository>,
-) -> Result<(), RadArtifactError> {
+    releases: &mut Releases<Repository, WriteAs<Signer>>,
+) -> Result<(), RadArtifactError>
+where 
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Signer<radicle::crypto::ssh::ExtendedSignature>,
+    Signer: radicle::crypto::signature::Verifier<radicle::crypto::Signature>,
+    Signer: radicle::crypto::signature::Keypair<VerifyingKey = radicle::crypto::PublicKey>,
+{
     // Compute CID from the provided path.
     let cid = if args.path.is_dir() {
         share::compute_content_id(&args.path).map_err(error::Share::Io)?
@@ -672,13 +682,12 @@ fn run_serve(
         // from the DID that authored the location, not from the URL.
         let iroh_url = url::Url::parse("iroh://").expect("static URL is valid");
 
-        let signer = profile.signer().map_err(error::Signer)?;
         {
             let mut release_mut = releases
                 .get_mut(&release_id)
                 .map_err(|e| error::Share::Usage(e.to_string()))?;
             release_mut
-                .add_location(cid, iroh_url.clone(), &signer)
+                .add_location(cid, iroh_url.clone())
                 .map_err(|e| error::Share::Usage(e.to_string()))?;
         }
 
@@ -693,7 +702,7 @@ fn run_serve(
         // shutdown still proceeds to the server teardown below.
         match releases.get_mut(&release_id) {
             Ok(mut release_mut) => {
-                if let Err(e) = release_mut.remove_location(cid, iroh_url.clone(), &signer) {
+                if let Err(e) = release_mut.remove_location(cid, iroh_url.clone()) {
                     eprintln!("Warning: failed to remove location from {release_id}: {e}");
                 } else {
                     eprintln!("Removed location from release {release_id}");
@@ -763,9 +772,9 @@ mod prompt {
     ///
     /// Requires stdin to be a TTY. Errors if `no_input` is set or stdin is
     /// not interactive, so scripts don't hang waiting for input.
-    pub fn pick_interactive(
+    pub fn pick_interactive<Access: radicle::cob::store::access::Access>(
         no_input: bool,
-        releases: &Releases<Repository>,
+        releases: &Releases<Repository, Access>,
         repo: &Repository,
     ) -> Result<(Oid, radicle_artifact::Cid), String> {
         if no_input || !std::io::stdin().is_terminal() {

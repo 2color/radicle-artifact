@@ -14,7 +14,7 @@ use super::Error;
 /// looking up iroh endpoints by the DID of the peer that registered
 /// an `iroh://` location in an artifact COB.
 pub fn did_to_iroh_public_key(did: &radicle::crypto::PublicKey) -> Result<iroh::PublicKey, Error> {
-    let pk_bytes: &[u8] = did.as_ref();
+    let pk_bytes: &[u8] = &did.to_byte_array();
     let bytes: [u8; 32] = pk_bytes
         .try_into()
         .map_err(|_| Error::Iroh("DID public key is not 32 bytes".into()))?;
@@ -62,7 +62,7 @@ mod tests {
         let radicle_pk = keystore.public_key().unwrap().unwrap();
         let iroh_pk = iroh_sk.public();
 
-        assert_eq!(radicle_pk.as_ref(), iroh_pk.as_bytes());
+        assert_eq!(&radicle_pk.to_byte_array(), iroh_pk.as_bytes());
     }
 
     #[test]
@@ -84,6 +84,6 @@ mod tests {
         let iroh_sk =
             radicle_secret_to_iroh(&keystore, Some(Passphrase::new("hunter2".into()))).unwrap();
         let radicle_pk = keystore.public_key().unwrap().unwrap();
-        assert_eq!(radicle_pk.as_ref(), iroh_sk.public().as_bytes());
+        assert_eq!(&radicle_pk.to_byte_array(), iroh_sk.public().as_bytes());
     }
 }
