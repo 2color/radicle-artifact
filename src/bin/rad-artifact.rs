@@ -1275,10 +1275,10 @@ Examples:
     $ rad-artifact add ./my-binary
 
   Fully non-interactive:
-    $ rad-artifact add ./my-binary --commit v1.0 --name \"my-binary v1.0\"
+    $ rad-artifact add ./my-binary --commit abc1234 --name \"my-binary v1.0\"
 
   Register a precomputed CID without local bytes:
-    $ rad-artifact add --cid baf...abc --commit v1.0 --name \"my-binary v1.0\""
+    $ rad-artifact add --cid baf...abc --commit abc1234 --name \"my-binary v1.0\""
     )]
     pub struct Add {
         /// Path to the local file or directory to register.
