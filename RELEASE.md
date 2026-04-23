@@ -92,3 +92,81 @@ automatically via `cargo metadata`. Also bump `RAD_ARTIFACT_VERSION` in
 make clean                # remove release binaries
 make clean-all            # also run cargo clean
 ```
+
+## Testing the release pipeline
+
+Start cheap and local; escalate only if earlier steps pass.
+
+### 1. Static checks (seconds)
+
+```sh
+sh -n install.sh              # POSIX parse
+./install.sh --help           # usage prints, no side effects
+make help                     # targets parse
+make -n release-macos         # dry-run: verify expanded commands
+```
+
+Optional: `brew install shellcheck && shellcheck install.sh` catches quoting
+bugs the shell won't.
+
+### 2. Build one binary (~1–3 min)
+
+```sh
+rustup target add aarch64-apple-darwin    # if not already installed
+make release-macos
+./target/release/rad-artifact_<version>_aarch64-apple-darwin --help
+```
+
+If `--help` prints, cross-compile and binary-naming are correct. Skip
+`release-linux` unless `cargo-zigbuild` + `zig` are installed — the target
+fails fast with a clear message otherwise.
+
+### 3. End-to-end install test against a local S3 stand-in
+
+Exercises download → smoke-test → PATH wiring without touching Scaleway.
+
+```sh
+# Serve the built binaries so the script can download them
+(cd target/release && python3 -m http.server 8000) &
+SERVER_PID=$!
+
+# Point a copy of the installer at the local server
+sed 's|^RAD_ARTIFACT_BASE=.*|RAD_ARTIFACT_BASE="http://localhost:8000"|' \
+    install.sh > /tmp/install-local.sh
+chmod +x /tmp/install-local.sh
+
+# Install into a throwaway prefix
+TMPPREFIX=$(mktemp -d)
+/tmp/install-local.sh --prefix="$TMPPREFIX" -y
+
+# Verify
+"$TMPPREFIX/bin/rad-artifact" --version
+
+kill $SERVER_PID
+rm -rf "$TMPPREFIX" /tmp/install-local.sh
+```
+
+`-y` skips the "Install Radicle?" prompt. To also test the Radicle-missing
+path, drop `-y` and answer `n` — the script should warn and continue.
+
+### 4. Publish and test the real URL
+
+Only after steps 1–3 pass:
+
+```sh
+make release                  # full build (macOS host; needs zigbuild for Linux)
+make upload-s3                # publishes binaries + installer to Scaleway
+
+# Then on a clean shell:
+curl -sSf https://radworks-releases.s3.fr-par.scw.cloud/rad-artifact/install \
+  | sh -s -- --prefix=$(mktemp -d) -y
+```
+
+### What each step catches
+
+| Step | Catches                                                               |
+| ---- | --------------------------------------------------------------------- |
+| 1    | shell syntax errors, Makefile typos                                   |
+| 2    | wrong package/binary name in cargo flags, missing rustup target       |
+| 3    | bad URL construction, arch detection, PATH/shadowing, trap cleanup    |
+| 4    | S3 ACL / MIME / URL reality, real `curl \| sh` under a fresh env      |
