@@ -7,11 +7,11 @@ use std::{collections::BTreeSet, error::Error as _, io::IsTerminal, time::Durati
 use clap::Parser;
 
 use radicle::{
-    cob::{self, store::access::{ReadOnly, WriteAs}}, crypto::{self, signature::Signer},
+    cob::{self, store::access::WriteAs},
     git::Oid,
     identity::Did,
     node::{
-        AliasStore, Handle, Node, device::Device, sync::{Announcer, AnnouncerConfig, ReplicationFactor}
+        AliasStore, Handle, Node, sync::{Announcer, AnnouncerConfig, ReplicationFactor}
     },
     prelude::{Profile, ReadRepository, ReadStorage, RepoId, WriteRepository},
     profile,
@@ -163,7 +163,6 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     match args.command {
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Add(cmd) => {
-            let signer = profile.signer().map_err(error::Signer)?;
             add_artifact(cmd, args.no_input, &mut releases, &repo)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
