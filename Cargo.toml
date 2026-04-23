@@ -42,7 +42,7 @@ cid = { version = "0.11", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "wrap_help"] }
 indexmap = { version = "2.7", features = ["serde"] }
 nonempty = "0.11.0"
-radicle = { version = "0.23.0" }
+radicle = { git = "https://rosa.radicle.xyz/z3gqcJUoA1n9HaHKufZs5FCSGazv5.git", rev = "b687817696bb6de77dd906a89750c2051b36d325" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
@@ -66,5 +66,6 @@ n0-future = { version = "0.3", optional = true }
 tempfile = "3"
 
 [dev-dependencies.radicle]
-version = "0.23.0"
+git = "https://rosa.radicle.xyz/z3gqcJUoA1n9HaHKufZs5FCSGazv5.git"
+rev = "b687817696bb6de77dd906a89750c2051b36d325"
 features = ["test"]
