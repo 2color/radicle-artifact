@@ -2,40 +2,76 @@
 
 Secure artifact distribution for [radicle](https://radicle.xyz/).
 
-Git was never built to distribute large file and binaries. Existing solutions like Git LFS encode a URL in the repository tree, which breaks Git's content-addressed nature and leaves every artifact prone to link rot.
+Git was never built to distribute large files and binaries. Existing solutions like Git LFS encode a URL in the repository tree, which breaks Git's content-addressed nature and leaves every artifact prone to link rot.
 
-`radicle-artifact` makes artifact distribution:
+## In plain English
+
+You tag a release, add your build artifacts, and anyone can verify they're exactly what you built — no matter where they're downloaded from. Other team members can independently rebuild the release and cryptographically sign that they got the same result. If an artifact turns out to be compromised or broken, any maintainer can flag it so others know not to trust it.
+
+Artifacts can live on any HTTP server, on IPFS, or be served directly peer-to-peer. They persist as long as at least one location URL is reachable, and you can host them on any combination of servers you like.
+
+## Why radicle-artifact
+
+| Feature              | Git LFS          | GitHub Releases  | radicle-artifact              |
+| -------------------- | ---------------- | ---------------- | ----------------------------- |
+| Content verification | URL-based        | URL-based        | Cryptographic CID             |
+| Hosting              | Central server   | Central server   | Any HTTP, IPFS, P2P           |
+| Trust model          | Single publisher | Single publisher | Multi-party attestation       |
+| Bound to commit      | No               | Loose (tag)      | Yes (signed, per-OID release) |
+
+More specifically, `radicle-artifact` makes artifact distribution:
 
 - **Verifiable and signed** — every artifact is content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`Add`, `Attest`, `AddLocation`) is signed by its author's Ed25519 key.
 - **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
-- **Transport-agnostic** — artifacts can have multiple *locations* and shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The cli comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
+- **Transport-agnostic** — artifacts can have multiple *locations* and be shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
 
-Trust is multi-party and follows from the repository **delegates**, the trusted maintianers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their  matches, and can also **redact** artifacts if compromised or broken.
+Trust is multi-party and follows from the repository **delegates**, the trusted maintainers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their build matches, and they can also **redact** artifacts if compromised or broken.
 
 radicle-artifact is useful for distributing any data related to code: binaries, static sites, model weights, and scientific datasets.
 
+> **Note:** this collaborative object (COB) is still in early development and the API is subject to change. Feedback and contributions are very welcome!
+
 ## How it works
 
-A **Release** is associated with a Git OID (annotated tag or commit). A release contains one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help serve content by announcing location URLs for any artifact, enabling decentralized mirroring. 
+A **Release** is associated with a Git OID (annotated tag or commit). A release contains one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID (decentralized identifier) that originally added it, and only that DID can update the artifact's name.
 
-Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
+Users can **announce locations** for any artifact — URLs where the bytes can be fetched — enabling decentralized mirroring. They can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Finally, they can **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
-Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
+### Trust model
 
-> **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
+The trust model is graph-like: multiple delegates independently build the same commit and attest that the CIDs match.
+
+```
+[Delegate A builds] ──┐
+[Delegate B builds] ──┼──> matching CID ──> attested ✓
+[Delegate C builds] ──┘
+                      └──> mismatch      ──> redacted ✗
+```
 
 This COB is **build-system agnostic**. It works with any toolchain or build process that produces addressable artifacts. Ideally your builds are deterministic (reproducible), which lets other delegates independently verify artifacts and record attestations. However, deterministic builds are not a requirement; you can use radicle-artifact purely for publishing and discovering release artifacts without attestation.
+
+### Implementation notes
+
+Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
 
 ## Workflow
 
 1. **Tag** — Create a [canonical reference](https://radicle.xyz/2025/08/12/canonical-references) from an annotated tag or commit.
-2. **Build** — Build the release artifacts and derive their content identifiers (CIDs).
+2. **Build** — Build the release artifacts.
 3. **Compute CID** — Compute the CID of each artifact by hashing the contents. Folders are hashed as [iroh-blob collections](https://docs.iroh.computer/protocols/blobs#collections).
 4. **Add** — Add artifacts to a release using the `rad-artifact add` command, which creates the release if it doesn't exist and records the artifact CID.
 5. **Serve** — Upload artifacts to an HTTP server, or serve directly from the CLI using `rad-artifact serve` and register discovery locations per DID.
 6. **Fetch** — Fetch artifacts using the `rad-artifact fetch` command.
 7. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
 8. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
+
+## Requirements
+
+- A working [Radicle](https://radicle.xyz/) installation (the `rad` CLI and a node identity)
+- The `rad-artifact` CLI (this crate)
+- Optional: a deterministic build toolchain if you want other delegates to attest
+
+No central server or hosted service is required.
 
 ## COB type
 
@@ -92,12 +128,78 @@ rad-artifact show <COMMIT> [--pretty]                        # show release
 rad-artifact list [--pretty] [--delegates-only]              # list releases (--delegates-only: with ≥1 delegate-authored artifact)
 rad-artifact cid <PATH>                                      # compute BLAKE3 CID
 rad-artifact fetch [<COMMIT> --cid <CID>]                    # fetch artifact (interactive without args)
-rad-artifact serve <PATH>                                    # serve artifact via iroh-blobs
+rad-artifact serve <PATH>                                    # serve artifact via iroh-blobs (runs in foreground)
 ```
 
 Use `--repository <RID>` to target a specific repo (defaults to cwd).
 Use `--no-sync` to skip network announcement after writes.
 Use `--no-input` to disable interactive prompts (for scripts and CI).
+
+### Typical session
+
+Publishing a release after a build:
+
+```bash
+# Compute the CID of the built artifact
+$ rad-artifact cid ./target/release/myapp
+bafkr4ih...
+
+# Add it to the release for tag v1.0.0 (creates the release COB on first add)
+$ rad-artifact add v1.0.0 --cid bafkr4ih... -n "linux-amd64-binary"
+
+# Announce where others can fetch it
+$ rad-artifact location add v1.0.0 --cid bafkr4ih... https://mycdn.example/myapp-v1.0.0
+
+# Or serve it directly over iroh-blobs (blocks the terminal)
+$ rad-artifact serve ./target/release/myapp
+```
+
+Another delegate then independently verifies it:
+
+```bash
+git checkout v1.0.0 && cargo build --release
+rad-artifact cid ./target/release/myapp            # should match bafkr4ih...
+rad-artifact attest v1.0.0 --cid bafkr4ih...
+```
+
+### Example output
+
+```
+$ rad-artifact show v1.0.0 --pretty
+Release v1.0.0 (commit a1b2c3d…)
+└── bafkr4ih…  linux-amd64-binary
+    author:        did:key:z6Mk…alice
+    attestations:  did:key:z6Mk…bob (delegate)
+    locations:     https://mycdn.example/myapp-v1.0.0
+                   iroh://…
+```
+
+### CI example
+
+Publishing on tag push, e.g. from GitHub Actions:
+
+```yaml
+- name: Publish artifact
+  run: |
+    cargo build --release
+    CID=$(rad-artifact cid ./target/release/myapp)
+    rad-artifact add "$GITHUB_REF_NAME" --cid "$CID" -n "linux-amd64-binary" --no-input
+    rad-artifact location add "$GITHUB_REF_NAME" --cid "$CID" \
+      "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/myapp" --no-input
+```
+
+## Glossary
+
+| Term         | Meaning                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------ |
+| **COB**      | Collaborative Object — Radicle's signed, replayable state machine stored in git                        |
+| **CID**      | Content Identifier — a hash that uniquely addresses a blob's bytes ([spec](https://dasl.ing/cid.html)) |
+| **DID**      | Decentralized Identifier — who signed an action; currently 1:1 with a Radicle NodeID                   |
+| **OID**      | Git Object ID — the SHA-1 of a commit or annotated tag                                                 |
+| **RID**      | Radicle Repository ID                                                                                  |
+| **Delegate** | A maintainer whose key is authorized to establish canonical branches and tags for a repo               |
+| **Attest**   | Sign a statement that you independently produced the same CID from the same commit                     |
+| **Redact**   | Sign a statement that an artifact should not be used (compromise, build failure, etc.)                 |
 
 ## Project structure
 
