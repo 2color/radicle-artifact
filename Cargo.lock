@@ -334,12 +334,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "base32"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23ce669cd6c8588f79e15cf450314f9638f967fc5770ff1c7c1deb0925ea7cfa"
-
-[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -868,6 +862,21 @@ dependencies = [
 
 [[package]]
 name = "curve25519-dalek"
+version = "4.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "curve25519-dalek-derive",
+ "digest 0.10.7",
+ "fiat-crypto 0.2.9",
+ "rustc_version",
+ "subtle",
+]
+
+[[package]]
+name = "curve25519-dalek"
 version = "5.0.0-pre.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "335f1947f241137a14106b6f5acc5918a5ede29c9d71d3f2cb1678d5075d9fc3"
@@ -876,7 +885,7 @@ dependencies = [
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
  "digest 0.11.2",
- "fiat-crypto",
+ "fiat-crypto 0.3.0",
  "rand_core 0.10.1",
  "rustc_version",
  "serde",
@@ -902,9 +911,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4204e8808fcdd40bed39e49371f13f56d6984c32bc03dcb577d2a40b989b9d68"
 dependencies = [
  "amplify",
- "base32",
  "cyphergraphy",
- "sha3",
 ]
 
 [[package]]
@@ -1204,6 +1211,15 @@ dependencies = [
 
 [[package]]
 name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "signature 2.2.0",
+]
+
+[[package]]
+name = "ed25519"
 version = "3.0.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6e914c7c52decb085cea910552e24c63ac019e3ab8bf001ff736da9a9d9d890"
@@ -1215,11 +1231,23 @@ dependencies = [
 
 [[package]]
 name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek 4.1.3",
+ "ed25519 2.2.3",
+ "sha2 0.10.9",
+ "subtle",
+]
+
+[[package]]
+name = "ed25519-dalek"
 version = "3.0.0-pre.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "053618a4c3d3bc24f188aa660ae75a46eeab74ef07fb415c61431e5e7cd4749b"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 5.0.0-pre.6",
  "ed25519 3.0.0-rc.4",
  "rand_core 0.10.1",
  "serde",
@@ -1343,6 +1371,12 @@ dependencies = [
  "rand_core 0.6.4",
  "subtle",
 ]
+
+[[package]]
+name = "fiat-crypto"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "fiat-crypto"
@@ -2225,7 +2259,7 @@ dependencies = [
  "ctutils",
  "data-encoding",
  "derive_more",
- "ed25519-dalek",
+ "ed25519-dalek 3.0.0-pre.6",
  "futures-util",
  "getrandom 0.4.2",
  "hickory-resolver",
@@ -2272,12 +2306,12 @@ version = "0.98.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "738865784637830fb14204ebd3047922db83bc1816a59027af29579b9c27bd99"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 5.0.0-pre.6",
  "data-encoding",
  "data-encoding-macro",
  "derive_more",
  "digest 0.11.2",
- "ed25519-dalek",
+ "ed25519-dalek 3.0.0-pre.6",
  "getrandom 0.4.2",
  "n0-error",
  "rand 0.10.1",
@@ -2581,15 +2615,6 @@ checksum = "b49715b7073f385ba4bc528e5747d02e66cb39c6146efb66b781f131f0fb399c"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "keccak"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
-dependencies = [
- "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -3765,9 +3790,9 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radicle"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "422f73e2e92f6db76dc68e4efaaef9fd82c1db19696aea869253e7bb6565a1a1"
+checksum = "0c07a8a270e9b1b8064a33f0aa78b4fd39924ce4d31e0715659a923917e07b46"
 dependencies = [
  "amplify",
  "base64 0.21.7",
@@ -3781,17 +3806,15 @@ dependencies = [
  "indexmap",
  "libc",
  "log",
- "multibase",
  "nonempty 0.9.0",
  "qcheck",
  "radicle-cob",
  "radicle-core",
  "radicle-crypto",
- "radicle-git-metadata 0.2.0",
+ "radicle-git-metadata",
  "radicle-git-ref-format",
  "radicle-localtime",
- "radicle-oid",
- "radicle-ssh",
+ "radicle-oid 0.2.0",
  "serde",
  "serde-untagged",
  "serde_json",
@@ -3821,7 +3844,7 @@ dependencies = [
  "n0-future",
  "nonempty 0.11.0",
  "radicle",
- "radicle-oid",
+ "radicle-oid 0.1.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -3834,9 +3857,9 @@ dependencies = [
 
 [[package]]
 name = "radicle-cob"
-version = "0.19.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd49b584b0a61cba52cfd8ec873bb5f3cbc50763d020a4c333aeffa95a5c839e"
+checksum = "59e5d3e54429dff785bee3f80b334d67b701f4bd66b7e825d1b4efa8435bba74"
 dependencies = [
  "fastrand",
  "git-ref-format-core",
@@ -3845,8 +3868,8 @@ dependencies = [
  "nonempty 0.9.0",
  "radicle-crypto",
  "radicle-dag",
- "radicle-git-metadata 0.1.0",
- "radicle-oid",
+ "radicle-git-metadata",
+ "radicle-oid 0.2.0",
  "serde",
  "serde_json",
  "signature 2.2.0",
@@ -3855,15 +3878,15 @@ dependencies = [
 
 [[package]]
 name = "radicle-core"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617b55b262b946470a355052a6d72c7f8efc724b8d8068021234cda74df7dd30"
+checksum = "656cf8f177c04702ac4b4702e622c75a370da0634f925c56c10cab5cadf7487f"
 dependencies = [
  "git2",
  "multibase",
  "qcheck",
  "radicle-crypto",
- "radicle-oid",
+ "radicle-oid 0.2.0",
  "schemars",
  "serde",
  "sqlite",
@@ -3872,9 +3895,9 @@ dependencies = [
 
 [[package]]
 name = "radicle-crypto"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f77cf406d3e448de958e3a821bb09612bb2f97ac1dbb2ee314b59264cde8281d"
+checksum = "514c5e0c63134b80da4cbcca9a22f7b5cdd741ec63c6acce16ad9389b0f0cd6e"
 dependencies = [
  "amplify",
  "cyphernet",
@@ -3883,12 +3906,13 @@ dependencies = [
  "git-ref-format-core",
  "multibase",
  "qcheck",
- "radicle-ssh",
  "serde",
  "signature 2.2.0",
  "sqlite",
+ "ssh-agent-lib",
  "ssh-key",
  "thiserror 2.0.18",
+ "winpipe",
  "zeroize",
 ]
 
@@ -3899,15 +3923,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb41c7e10ada3a4df960190a96bfb4af56d33ada890f917acc8e3b122b614875"
 dependencies = [
  "fastrand",
-]
-
-[[package]]
-name = "radicle-git-metadata"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "522d7fa07dfe61981b5d96e9aeb2b7fb2f4a8d5804638e928eaedb33e423eccb"
-dependencies = [
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3943,20 +3958,18 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d95c486f589d4f5ef7bd8fce56419854d90cc63a8bbcebe021e0a4f4cca75ac9"
 dependencies = [
- "git2",
  "qcheck",
- "serde",
 ]
 
 [[package]]
-name = "radicle-ssh"
-version = "0.10.0"
+name = "radicle-oid"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "216e9e1259d8c857cdb38b2f832fb117e8e26478f110b9a2690bca20b87ec9c5"
+checksum = "e60c3fab5115369bee5b757dab3ba9b93825236d3edde230742becb36ba0930a"
 dependencies = [
- "thiserror 1.0.69",
- "winpipe",
- "zeroize",
+ "git2",
+ "qcheck",
+ "serde",
 ]
 
 [[package]]
@@ -4382,6 +4395,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "zeroize",
+]
+
+[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4535,16 +4557,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.11.2",
-]
-
-[[package]]
-name = "sha3"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77fd7028345d415a4034cf8777cd4f8ab1851274233b45f84e3d955502d93874"
-dependencies = [
- "digest 0.10.7",
- "keccak",
 ]
 
 [[package]]
@@ -4768,6 +4780,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssh-agent-lib"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3d0582e6e5724c4a5d038472976e8fad64d824b3de37210aa60c35883e3e766"
+dependencies = [
+ "byteorder",
+ "log",
+ "secrecy",
+ "signature 2.2.0",
+ "ssh-encoding",
+ "ssh-key",
+ "subtle",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ssh-cipher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4802,6 +4830,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b86f5297f0f04d08cabaa0f6bff7cb6aec4d9c3b49d87990d63da9d9156a8c3"
 dependencies = [
  "bcrypt-pbkdf",
+ "ed25519-dalek 2.2.0",
+ "num-bigint-dig",
  "p256",
  "p384",
  "p521",
