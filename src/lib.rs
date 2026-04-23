@@ -557,15 +557,8 @@ impl<R: ReadRepository> Evaluate<R> for Release {
 ///   - [`Releases::create`]
 ///   - [`Releases::get_mut`]
 pub struct Releases<'a, R> {
-    raw: store::Store<'a, Release, R>,
-}
-
-impl<'a, R> Deref for Releases<'a, R> {
-    type Target = store::Store<'a, Release, R>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.raw
-    }
+    repo: &'a R,
+    identity: Oid,
 }
 
 impl<'a, R> Releases<'a, R>
@@ -575,21 +568,51 @@ where
     /// Open a releases store.
     pub fn open(repository: &'a R) -> Result<Self, RepositoryError> {
         let identity = repository.identity_head()?;
-        let raw = store::Store::open(repository)?.identity(identity);
+        Ok(Self {
+            repo: repository,
+            identity,
+        })
+    }
 
-        Ok(Self { raw })
+    /// Build a read-only view of the underlying COB store.
+    fn read_store(
+        &self,
+    ) -> Result<store::Store<'a, Release, R, store::access::ReadOnly>, store::Error> {
+        Ok(store::Store::open(self.repo, store::access::ReadOnly)?.identity(self.identity))
+    }
+
+    /// Build a write-capable view of the underlying COB store, bound to `signer`.
+    fn write_store<'s, G>(
+        &self,
+        signer: &'s Device<G>,
+    ) -> Result<store::Store<'a, Release, R, store::access::WriteAs<'s, Device<G>>>, store::Error>
+    {
+        Ok(
+            store::Store::open(self.repo, store::access::WriteAs::new(signer))?
+                .identity(self.identity),
+        )
     }
 
     /// Return the number of [`Release`]s in the store.
     ///
     /// Note: this deserializes every COB, so it is O(n).
     pub fn count(&self) -> Result<usize, store::Error> {
-        Ok(self.all()?.count())
+        self.read_store()?.count()
+    }
+
+    /// Iterate over every [`Release`] in the store.
+    pub fn all(
+        &self,
+    ) -> Result<
+        impl ExactSizeIterator<Item = Result<(ObjectId, Release), store::Error>> + use<'a, R>,
+        store::Error,
+    > {
+        self.read_store()?.all()
     }
 
     /// Get a [`Release`], given its [`ReleaseId`] identifier.
     pub fn get(&self, id: &ReleaseId) -> Result<Option<Release>, store::Error> {
-        self.raw.get(id.as_object_id())
+        self.read_store()?.get(id.as_object_id())
     }
 
     /// Find the [`Release`]s that are associated with the `wanted` commit.
@@ -606,7 +629,7 @@ where
     /// should aggregate across the returned releases.
     pub fn find_by_cid(&self, cid: &Cid) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
         let mut out = Vec::new();
-        for result in self.all()? {
+        for result in self.read_store()?.all()? {
             let (id, release) = result?;
             if release.artifact(cid).is_some() {
                 out.push((ReleaseId::from(id), release));
@@ -629,7 +652,7 @@ impl<'a> FindByCommit<'a> {
         R: ReadRepository + cob::Store<Namespace = NodeId>,
     {
         Ok(Self {
-            releases: Box::new(releases.all()?),
+            releases: Box::new(releases.read_store()?.all()?),
             needle,
         })
     }
@@ -667,7 +690,7 @@ where
         id: &ReleaseId,
     ) -> Result<ReleaseMut<'a, 'g, R>, store::Error> {
         let release = self
-            .raw
+            .read_store()?
             .get(id.as_object_id())?
             .ok_or_else(move || store::Error::NotFound(TYPENAME.clone(), (*id).into()))?;
 
@@ -706,7 +729,7 @@ where
             // Reject anything but an annotated tag whose target peels
             // to oid.
             use radicle::git::raw::ObjectType;
-            let raw = self.raw.as_ref().raw();
+            let raw = self.repo.raw();
             let object = raw
                 .find_object(tag_oid.into(), Some(ObjectType::Tag))
                 .map_err(|err| error::Create::MissingTag { tag: tag_oid, err })?;
@@ -723,10 +746,10 @@ where
             }
         }
 
-        let (id, release) = store::Transaction::initial::<_, _, Transaction<R>>(
+        let mut store = self.write_store(signer)?;
+        let (id, release) = store::Transaction::initial::<_, Transaction<R>, _>(
             "Create release",
-            &mut self.raw,
-            signer,
+            &mut store,
             |tx, _| {
                 tx.create(oid, tag)?;
                 Ok(())
@@ -902,8 +925,8 @@ where
         let mut tx = Transaction::default();
         operations(&mut tx)?;
 
-        let (release, commit) =
-            tx.0.commit(message, self.id.into(), &mut self.store.raw, signer)?;
+        let mut store = self.store.write_store(signer)?;
+        let (release, commit) = tx.0.commit(message, self.id.into(), &mut store)?;
         self.release = release;
 
         Ok(commit)

@@ -126,7 +126,7 @@ fn release_visible(
 }
 
 fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
-    let mut node = Node::new(profile.home.socket());
+    let mut node = Node::new(profile.home.socket_from_env());
 
     // Check seed sync status for the local node's namespace, matching the
     // behavior of the deprecated `seeds()` method which passed `[self.nid()]`.
