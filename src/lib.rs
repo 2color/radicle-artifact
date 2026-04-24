@@ -545,10 +545,7 @@ where
     /// users concurrently created the release before syncing. Retrieval should
     /// union locations across all of them, so callers building a fetch plan
     /// should aggregate across the returned releases.
-    pub fn find_by_cid(
-        &self,
-        cid: &Cid,
-    ) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
+    pub fn find_by_cid(&self, cid: &Cid) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
         let mut out = Vec::new();
         for result in self.all()? {
             let (id, release) = result?;
@@ -1894,11 +1891,13 @@ mod test {
         let cid = test_cid(1);
         {
             let mut r = releases.create(oid, &alice.signer).unwrap();
-            r.add_artifact(cid, "alice-built".into(), &alice.signer).unwrap();
+            r.add_artifact(cid, "alice-built".into(), &alice.signer)
+                .unwrap();
         }
         {
             let mut r = releases.create(oid, &bob.signer).unwrap();
-            r.add_artifact(cid, "bob-built".into(), &bob.signer).unwrap();
+            r.add_artifact(cid, "bob-built".into(), &bob.signer)
+                .unwrap();
         }
 
         let found = releases.find_by_cid(&cid).unwrap();

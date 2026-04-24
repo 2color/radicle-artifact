@@ -474,8 +474,7 @@ fn show_release(
         redacted,
         all_authors,
     };
-    let show =
-        radicle_artifact::display::Release::new(id, &release, aliases, filters, title);
+    let show = radicle_artifact::display::Release::new(id, &release, aliases, filters, title);
     if use_pretty(pretty, json) {
         println!("{}", show.pretty(verbose));
     } else {

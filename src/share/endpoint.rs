@@ -76,6 +76,9 @@ mod tests {
 
     #[test]
     fn default_is_radworks() {
-        assert!(matches!(EndpointPreset::default(), EndpointPreset::Radworks));
+        assert!(matches!(
+            EndpointPreset::default(),
+            EndpointPreset::Radworks
+        ));
     }
 }

@@ -207,9 +207,10 @@ impl Release {
                 // Redaction filter: hide artifacts redacted by a trusted
                 // party (the author itself or any repository delegate).
                 if !filters.redacted {
-                    let hidden = artifact.redactions().keys().any(|did| {
-                        *did == *artifact.author() || filters.delegates.contains(did)
-                    });
+                    let hidden = artifact
+                        .redactions()
+                        .keys()
+                        .any(|did| *did == *artifact.author() || filters.delegates.contains(did));
                     if hidden {
                         return false;
                     }
@@ -312,7 +313,11 @@ impl Release {
                 artifact.cid.clone()
             } else {
                 // Truncate CID to first 6 and last 6 visible chars for column width.
-                format!("{}…{}", &artifact.cid[..6], &artifact.cid[artifact.cid.len() - 6..])
+                format!(
+                    "{}…{}",
+                    &artifact.cid[..6],
+                    &artifact.cid[artifact.cid.len() - 6..]
+                )
             };
             let author = format_did(&artifact.author, &artifact.author_alias, verbose);
             // BTreeMap keeps the summary in a stable, scheme-sorted order.
@@ -326,7 +331,12 @@ impl Release {
                 .map(|(scheme, count)| format!("{scheme}: {count}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            rows.push(vec![cid_cell, author, artifact.name.clone(), locations_cell]);
+            rows.push(vec![
+                cid_cell,
+                author,
+                artifact.name.clone(),
+                locations_cell,
+            ]);
 
             if !artifact.attestations.is_empty() {
                 let nodes: Vec<_> = artifact
