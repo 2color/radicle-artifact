@@ -34,6 +34,7 @@ share = [
     "dep:dunce",
     "dep:indicatif",
     "dep:n0-future",
+    "dep:rayon",
 ]
 
 [dependencies]
@@ -51,7 +52,8 @@ url = { version = "2.5", features = ["serde"] }
 # Optional deps (share feature)
 iroh = { version = "0.98.1", optional = true }
 iroh-blobs = { version = "0.100", optional = true }
-blake3 = { version = "1", optional = true }
+blake3 = { version = "1", optional = true, features = ["rayon", "mmap"] }
+rayon = { version = "1", optional = true }
 multihash = { version = "0.19", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "signal"], optional = true }
 ureq = { version = "3", optional = true }

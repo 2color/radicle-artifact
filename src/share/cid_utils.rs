@@ -166,13 +166,18 @@ pub fn canonical_walk(dir: &Path) -> Result<Vec<(String, PathBuf)>, io::Error> {
 ///
 /// The resulting CID uses the `blake3-hashseq` codec (0x80).
 pub fn compute_content_id(dir: &Path) -> Result<Cid, io::Error> {
-    let entries: Vec<(String, iroh_blobs::Hash)> = canonical_walk(dir)?
-        .into_iter()
+    use rayon::prelude::*;
+
+    let walked = canonical_walk(dir)?;
+
+    // Hash files in parallel across rayon workers. Within each file,
+    // `update_mmap_rayon` mmap's the file and hashes its chunks in parallel
+    // as well — giving both inter-file and intra-file parallelism.
+    let entries: Vec<(String, iroh_blobs::Hash)> = walked
+        .into_par_iter()
         .map(|(name, path)| {
-            let file = std::fs::File::open(&path)?;
-            let mut reader = io::BufReader::new(file);
             let mut hasher = blake3::Hasher::new();
-            io::copy(&mut reader, &mut hasher)?;
+            hasher.update_mmap_rayon(&path).map_err(io::Error::other)?;
             Ok((name, hasher.finalize().into()))
         })
         .collect::<Result<_, io::Error>>()?;
