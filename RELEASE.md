@@ -40,6 +40,10 @@ cargo release X.Y.Z --execute
 # 3. Build and upload binaries + install script
 make release
 make upload
+
+# 4. Record each binary's CID and download URL in the release COB.
+#    Runs after upload so the announced URL is live.
+make register-artifacts
 ```
 
 You can use `minor`, `major`, or `patch` instead of an explicit version, and
@@ -137,6 +141,39 @@ window where `latest` advertises a version whose binaries aren't yet on disk.
 
 Re-running `make upload` at the same version overwrites that version's files
 but leaves other versions untouched.
+
+## Register artifacts
+
+```sh
+make register-artifacts
+```
+
+This dogfoods `rad-artifact` on its own release. For each of the four binaries,
+it computes the BLAKE3 CID, adds the artifact to the release COB tagged
+`releases/X.Y.Z`, and announces the `files.radicle.dev` URL as a discovery
+location:
+
+```
+rad-artifact add    --cid <CID> --commit releases/X.Y.Z --name <binary>
+rad-artifact location add releases/X.Y.Z --cid <CID> <public-url>
+```
+
+The COB is created on the first `add` and reused for the remaining binaries.
+After this step, users can discover and fetch releases with:
+
+```sh
+rad-artifact list
+rad-artifact fetch releases/X.Y.Z --cid <CID>
+```
+
+Run this **after** `make upload` so the announced URL resolves. Re-running is
+safe: `add` with the same `(commit, cid)` from the same author is idempotent,
+and `location add` dedups URLs.
+
+Unlike `make release` / `make upload`, this step talks to your local Radicle
+profile and the network, so it requires `rad auth` to be configured with a
+key that has publishing rights on this repo. Inspect the result with
+`rad-artifact show releases/X.Y.Z --pretty`.
 
 ## Install script
 
