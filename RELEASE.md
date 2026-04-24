@@ -13,7 +13,9 @@ The Makefile builds cross-platform release binaries for `rad-artifact` and
 - `cargo-zigbuild` (for Linux cross-compilation): `cargo install cargo-zigbuild`
 - `zig` (backend for `cargo-zigbuild`): `brew install zig`
 - SSH access to `files.radicle.dev` with write permission under
-  `/var/www/files.radicle.dev/releases/radicle-artifact/`
+  `/var/www/files.radicle.dev/releases/radicle-artifact/`. The Makefile uses
+  your local `$USER`; if the remote account differs, add a matching
+  `User` entry in `~/.ssh/config` for this host.
 
 ## Build
 

@@ -105,7 +105,7 @@ fi
 export PATH="$PREFIX/bin:$PATH"
 
 # ── 2. rad-artifact ──────────────────────────────────────────────────
-# Resolve version: --version= wins; otherwise fetch the latest pointer from S3.
+# Resolve version: --version= wins; otherwise fetch the latest pointer.
 if [ -z "$VERSION" ]; then
   VERSION=$(curl -fsSL "$RAD_ARTIFACT_BASE/latest" 2>/dev/null | tr -d '[:space:]') || VERSION=""
   if [ -z "$VERSION" ]; then
