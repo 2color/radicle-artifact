@@ -973,7 +973,10 @@ mod prompt {
         let tag_names = raw
             .tag_names(None)
             .map_err(|e| format!("failed to list tags: {e}"))?;
-        let mut tag_entries: Vec<(i64, String, Oid)> = Vec::new();
+        // (committer time, tag name, tag object OID, peeled commit OID).
+        // The tag OID keys the release COB; the commit OID is used only
+        // to dedup against the HEAD walk below.
+        let mut tag_entries: Vec<(i64, String, Oid, Oid)> = Vec::new();
         for maybe_name in tag_names.iter() {
             let Some(name) = maybe_name else { continue };
             let full = format!("refs/tags/{name}");
@@ -989,21 +992,21 @@ mod prompt {
             if obj.kind() != Some(radicle::git::raw::ObjectType::Tag) {
                 continue;
             }
+            let tag_oid: Oid = ref_target.into();
             let Ok(peeled) = reference.peel(radicle::git::raw::ObjectType::Commit) else {
                 continue;
             };
             let commit_oid: Oid = peeled.id().into();
             let time = peeled.as_commit().map(|c| c.time().seconds()).unwrap_or(0);
-            tag_entries.push((time, name.to_string(), commit_oid));
+            tag_entries.push((time, name.to_string(), tag_oid, commit_oid));
         }
         tag_entries.sort_by(|a, b| b.0.cmp(&a.0));
-        for (_, name, commit_oid) in tag_entries {
-            if seen.insert(commit_oid) {
-                entries.push(Entry::Tag {
-                    name,
-                    oid: commit_oid,
-                });
-            }
+        for (_, name, tag_oid, _commit_oid) in tag_entries {
+            // The tag's peeled commit is intentionally left out of `seen`
+            // so the HEAD walk below still surfaces it as a separate
+            // picker entry: a user may want to link an artifact to the
+            // commit itself rather than the annotated tag object.
+            entries.push(Entry::Tag { name, oid: tag_oid });
         }
 
         // Recent commits walked from HEAD, dedup against tag targets. The

@@ -72,13 +72,16 @@ fn format_table(rows: &[Vec<String>], indent: usize) -> String {
     out
 }
 
-/// Resolve the first line of a git commit message for display.
+/// Resolve the first line of a release's title for display.
 ///
-/// Implementations typically look up the commit via `git2` and return
-/// its summary. Return `None` when the OID cannot be resolved (e.g.
-/// it lives in a fork that hasn't been fetched).
+/// Releases are keyed by either a commit OID or an annotated tag OID.
+/// Implementations return the first line of the tag message for tag
+/// OIDs, or the commit summary for commit OIDs. Return `None` when the
+/// OID cannot be resolved (e.g. it lives in a fork that hasn't been
+/// fetched).
 pub trait CommitTitle {
-    /// Return the first line of the commit message for `oid`, if available.
+    /// Return the first line of the commit or tag message for `oid`,
+    /// if available.
     fn title(&self, oid: &Oid) -> Option<String>;
 }
 
@@ -90,12 +93,38 @@ impl CommitTitle for () {
 }
 
 /// Resolve titles from a Radicle git repository.
+///
+/// Looks up the object at `oid` and extracts the first line of its
+/// message. For annotated tags with no message (or a blank message),
+/// falls back to the peeled commit's summary so there's always
+/// something useful to show.
 impl CommitTitle for Repository {
     fn title(&self, oid: &Oid) -> Option<String> {
-        self.backend
-            .find_commit((*oid).into())
-            .ok()
-            .and_then(|c| c.summary().map(String::from))
+        let obj = self.backend.find_object((*oid).into(), None).ok()?;
+        match obj.kind() {
+            Some(radicle::git::raw::ObjectType::Tag) => {
+                let tag = obj.as_tag()?;
+                let first_line = tag
+                    .message()
+                    .and_then(|m| m.lines().next())
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(String::from);
+                // Tag with empty/missing message: fall back to the
+                // peeled commit's summary.
+                first_line.or_else(|| {
+                    tag.target()
+                        .ok()
+                        .and_then(|t| t.peel(radicle::git::raw::ObjectType::Commit).ok())
+                        .and_then(|c| c.into_commit().ok())
+                        .and_then(|c| c.summary().map(String::from))
+                })
+            }
+            _ => obj
+                .into_commit()
+                .ok()
+                .and_then(|c| c.summary().map(String::from)),
+        }
     }
 }
 
