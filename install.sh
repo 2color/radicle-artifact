@@ -88,14 +88,14 @@ INSTALL_DIR="$PREFIX/bin"
 # ── 1. Radicle ────────────────────────────────────────────────────────
 # rad-artifact runs inside a Radicle repo and relies on `rad` for identity,
 # storage, and node interaction — so we install Radicle first if it's missing.
-# We don't auto-create an identity or start the node; the radicle.xyz installer
+# We don't auto-create an identity or start the node; the radicle.dev installer
 # handles those prompts itself.
 if command -v rad >/dev/null 2>&1; then
   step "Radicle already installed ($(rad --version 2>/dev/null || echo 'unknown version'))"
 else
   step "rad-artifact requires the Radicle CLI. Skip if you plan to install it manually."
   if confirm "Install Radicle?"; then
-    curl -sSf https://radicle.xyz/install | sh -s -- --prefix="$PREFIX"
+    curl -sSf https://radicle.dev/install | sh -s -- --prefix="$PREFIX"
   else
     warn "Skipped Radicle installation — rad-artifact won't work end-to-end until 'rad' is on PATH."
   fi
@@ -178,5 +178,5 @@ fi
 
 # ── Done ──────────────────────────────────────────────────────────────
 printf '\n\033[1;32m✓ Ready.\033[0m\n'
-info "Run 'rad-artifact --help' to get started, or see https://app.radicle.xyz/nodes/iris.radicle.xyz/rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv"
+info "Run 'rad-artifact --help' to get started, or see https://radicle.network/nodes/iris.radicle.network/rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv"
 printf '\n'
