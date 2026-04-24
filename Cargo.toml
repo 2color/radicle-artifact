@@ -64,6 +64,12 @@ n0-future = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+# radicle 0.23.0's `test` feature compiles an Arbitrary impl that
+# assumes `radicle_oid::Oid: Arbitrary`, but its own feature chain
+# doesn't enable `radicle-oid/qcheck` (which provides that impl).
+# Pull radicle-oid in with `qcheck` here so feature unification
+# activates the impl for radicle's test code too.
+radicle-oid = { version = "0.1.0", features = ["qcheck"] }
 
 [dev-dependencies.radicle]
 version = "0.23.0"
