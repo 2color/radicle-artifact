@@ -28,8 +28,8 @@ A release has two halves:
 ```sh
 # 1. Draft the commit list for the upcoming release, then hand-edit prose.
 #    Commit whenever — this can happen well before release day.
-git cliff --unreleased --prepend CHANGELOG.md
-$EDITOR CHANGELOG.md
+make changelog                 # prepends commit list under [Unreleased]
+$EDITOR CHANGELOG.md           # add prose summary, reorder, drop noise
 git commit -am "Update changelog"
 
 # 2. Cut the crate release with a clean working tree.
@@ -57,15 +57,19 @@ the release commit.
 
 ```sh
 # Drop the commit list for the upcoming release under [Unreleased]:
-git cliff --unreleased --prepend CHANGELOG.md
+make changelog
+
+# Then open CHANGELOG.md in your editor and add prose.
 ```
 
+`make changelog` wraps `git cliff --unreleased --prepend CHANGELOG.md`.
 `--prepend` inserts the new section at the top without touching older
-entries. `git cliff --unreleased` with no `--tag` emits the heading as
-`## [Unreleased]`, which is exactly what the replacement regex matches.
-Then edit `CHANGELOG.md` to add a prose summary, reorder entries, and drop
-noise, keeping the auto-generated commit list below the prose. Commit the
-result whenever — it doesn't need to happen at release time.
+entries, and `git cliff --unreleased` with no `--tag` emits the heading
+as `## [Unreleased]`, which is exactly what the replacement regex matches.
+After running it, open `CHANGELOG.md` in your editor to add a prose
+summary, reorder entries, and drop noise, keeping the auto-generated
+commit list below the prose. Commit the result whenever — it doesn't need
+to happen at release time.
 
 To preview the commit list without writing the file:
 `git cliff --unreleased`.

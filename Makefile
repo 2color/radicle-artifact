@@ -1,4 +1,4 @@
-.PHONY: release release-macos release-linux upload clean clean-all help
+.PHONY: changelog release release-macos release-linux upload clean clean-all help
 
 # Version and binary name from Cargo.toml using cargo metadata
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .version')
@@ -13,12 +13,21 @@ BASE_URL    := https://files.radicle.dev/releases/radicle-artifact
 
 help:
 	@echo "Available targets:"
+	@echo "  make changelog        - Prepend commit list since last tag to CHANGELOG.md under [Unreleased]"
 	@echo "  make release          - Build all architectures (macOS + Linux)"
 	@echo "  make release-macos    - Build native macOS architectures (run on macOS)"
 	@echo "  make release-linux    - Build Linux musl architectures (cross via zigbuild)"
 	@echo "  make upload           - scp binaries + install script to $(UPLOAD_HOST)"
 	@echo "  make clean            - Remove built release binaries"
 	@echo "  make clean-all        - Also run cargo clean"
+
+# Draft the changelog section for the upcoming release. Prepends a new
+# [Unreleased] block with the commit list since the last tag via git-cliff,
+# then opens $EDITOR for hand-written prose.
+changelog:
+	@command -v git-cliff >/dev/null 2>&1 || \
+	    (echo "git-cliff not found. Install with: cargo install git-cliff" && exit 1)
+	git cliff --unreleased --prepend CHANGELOG.md
 
 # Build all targets. Note: release-macos only works on macOS hosts; run
 # release-macos / release-linux individually on single-OS machines.
