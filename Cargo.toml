@@ -1,5 +1,5 @@
 [workspace]
-members = ["."]
+members = [".", "bench"]
 
 [[bin]]
 name = "rad-artifact"

@@ -1,2 +1,5 @@
 /target
 .claude
+.community-computer/
+bench/target/
+bench/Cargo.lock
