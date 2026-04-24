@@ -54,7 +54,8 @@ impl fmt::Display for EndpointPreset {
 impl Preset for EndpointPreset {
     fn apply(self, builder: iroh::endpoint::Builder) -> iroh::endpoint::Builder {
         match self {
-            Self::Radworks => builder
+            Self::Radworks => presets::Minimal
+                .apply(builder)
                 .address_lookup(PkarrPublisher::builder(
                     RADWORKS_PKARR_URL
                         .parse()
