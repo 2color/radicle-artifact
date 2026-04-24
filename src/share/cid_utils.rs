@@ -170,14 +170,15 @@ pub fn compute_content_id(dir: &Path) -> Result<Cid, io::Error> {
 
     let walked = canonical_walk(dir)?;
 
-    // Hash files in parallel across rayon workers. Within each file,
-    // `update_mmap_rayon` mmap's the file and hashes its chunks in parallel
-    // as well — giving both inter-file and intra-file parallelism.
+    // Hash files in parallel across rayon workers. Each worker hashes a
+    // whole file serially via mmap; the inter-file parallelism already
+    // saturates cores, so intra-file rayon fan-out would just add dispatch
+    // overhead.
     let entries: Vec<(String, iroh_blobs::Hash)> = walked
         .into_par_iter()
         .map(|(name, path)| {
             let mut hasher = blake3::Hasher::new();
-            hasher.update_mmap_rayon(&path).map_err(io::Error::other)?;
+            hasher.update_mmap(&path).map_err(io::Error::other)?;
             Ok((name, hasher.finalize().into()))
         })
         .collect::<Result<_, io::Error>>()?;
