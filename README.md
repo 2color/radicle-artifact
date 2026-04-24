@@ -132,17 +132,9 @@ Each mutation (create, add artifact, attest, redact, etc.) is an `Action` that i
 
 ## Cutting a release
 
-Requires [cargo-release](https://github.com/crate-ci/cargo-release) and
-[git-cliff](https://git-cliff.org/).
-
-```
-cargo release minor --execute
-```
-
-You can use `minor`, `major`, or `patch` and cargo-release will automatically calculate the next version number. You can also pass an explicit version like `cargo release 0.3.0 --execute` if needed. This will bump the version in `Cargo.toml`, generate the changelog via git-cliff,
-commit, tag, and publish to crates.io.
-
-By default, `cargo release` runs in dry-run mode — omit `--execute` to preview what will happen. To preview just the changelog: `git cliff --tag 0.3.0`
+See [RELEASE.md](./RELEASE.md) for the full process — drafting the changelog,
+cutting the crate release with `cargo release`, and building and uploading
+cross-platform binaries alongside the install script.
 
 ## License
 

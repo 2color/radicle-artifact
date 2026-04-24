@@ -1,11 +1,17 @@
 # Releasing rad-artifact
 
-The Makefile builds cross-platform release binaries for `rad-artifact` and
-`scp`s them to `files.radicle.dev` alongside the one-line install script.
+A release has two halves:
+
+1. **The crate** — `cargo release` bumps the version in `Cargo.toml`, tags
+   `releases/X.Y.Z`, pushes to the `rad` remote, and publishes to crates.io.
+2. **The binaries** — the `Makefile` builds cross-platform binaries and
+   `scp`s them to `files.radicle.dev` alongside the one-line install script.
 
 ## Prerequisites
 
-- Rust toolchain with the following targets installed:
+- [`cargo-release`](https://github.com/crate-ci/cargo-release) — crate release automation
+- [`git-cliff`](https://git-cliff.org/) — changelog drafting
+- Rust toolchain with cross-compilation targets:
   ```sh
   rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl
   ```
@@ -17,10 +23,65 @@ The Makefile builds cross-platform release binaries for `rad-artifact` and
   your local `$USER`; if the remote account differs, add a matching
   `User` entry in `~/.ssh/config` for this host.
 
+## Full release flow
+
+```sh
+# 1. Draft the commit list for the upcoming release, then hand-edit prose.
+#    Commit whenever — this can happen well before release day.
+git cliff --unreleased --prepend CHANGELOG.md
+$EDITOR CHANGELOG.md
+git commit -am "Update changelog"
+
+# 2. Cut the crate release with a clean working tree.
+#    This bumps Cargo.toml, rewrites the [Unreleased] header to the version,
+#    commits, tags `releases/X.Y.Z`, pushes, and publishes to crates.io.
+cargo release X.Y.Z --execute
+
+# 3. Build and upload binaries + install script
+make release
+make upload
+```
+
+You can use `minor`, `major`, or `patch` instead of an explicit version, and
+`cargo release` will compute the next version automatically. Omit `--execute`
+to dry-run.
+
+## Changelog
+
+The changelog is written by hand, using an auto-generated commit list as a
+starting point. `CHANGELOG.md` always has an `## [Unreleased]` section at
+the top that accumulates prose between releases; `cargo release` rewrites
+that header to `## [X.Y.Z] - YYYY-MM-DD` at release time (via
+`pre-release-replacements` in `release.toml`) and folds the rewrite into
+the release commit.
+
+```sh
+# Drop the commit list for the upcoming release under [Unreleased]:
+git cliff --unreleased --prepend CHANGELOG.md
+```
+
+`--prepend` inserts the new section at the top without touching older
+entries. `git cliff --unreleased` with no `--tag` emits the heading as
+`## [Unreleased]`, which is exactly what the replacement regex matches.
+Then edit `CHANGELOG.md` to add a prose summary, reorder entries, and drop
+noise, keeping the auto-generated commit list below the prose. Commit the
+result whenever — it doesn't need to happen at release time.
+
+To preview the commit list without writing the file:
+`git cliff --unreleased`.
+
+**Caveat:** `--prepend` unconditionally adds a new section each time it
+runs. If commits land after you've already prepended, either add them to
+the existing `[Unreleased]` section by hand, or delete that section and
+re-run `--prepend` to regenerate with the full list (you'll need to
+re-paste your prose).
+
+After the release, add a fresh empty `## [Unreleased]` heading back to the
+top of `CHANGELOG.md` so the next cycle has something to accumulate under.
+
 ## Build
 
 ```sh
-# From this directory:
 make release              # all platforms (macOS host required for macOS targets)
 make release-macos        # macOS (aarch64 + x86_64)
 make release-linux        # Linux musl (aarch64 + x86_64)
@@ -30,7 +91,9 @@ make release-linux        # Linux musl (aarch64 + x86_64)
 built on a macOS host — on Linux or CI, run `make release-linux` and do macOS
 builds separately on a Mac.
 
-Binaries are written to the workspace `target/release/` directory as:
+The version comes from `Cargo.toml` via `cargo metadata`, so `cargo release`
+in step 2 is the only place it needs to be set. Binaries are written to
+`target/release/` as:
 
 ```
 rad-artifact_<version>_<target-triple>
@@ -84,12 +147,6 @@ URL reads cleanly). The installer has no hardcoded version — at runtime it
 reads `/latest` to decide which binary to fetch. So a single `make upload`
 publishes the binaries, the script, and the pointer in one shot. Users can
 still pin with `--version=X.Y.Z`.
-
-## Bumping the version
-
-Update the `version` field in `Cargo.toml` — the Makefile reads it
-automatically via `cargo metadata`, and `upload` writes the same value to
-the `latest` pointer. Nothing else to edit.
 
 ## Cleanup
 
