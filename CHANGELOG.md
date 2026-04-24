@@ -44,6 +44,9 @@ The artifact author's DID now sits alongside the CID of artifact so ownership is
 * `818cdf7` build: fix make upload pre-check and docs drift *<daniel@norman.life>*
 * `41900e2` build: support hand-written changelog notes *<daniel@norman.life>*
 * `94857a2` build: add make changelog target *<daniel@norman.life>*
+* `833150f` docs: update changelog *<daniel@norman.life>*
+* `06be413` build: fix test compilation via radicle-oid qcheck *<daniel@norman.life>*
+
 
 ## [0.9.0] - 2026-04-21
 
