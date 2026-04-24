@@ -1,1 +1,1 @@
-{"base":"f7a4921ae7da4a033284005220f349b33fe240c8","description":"","oid":"6b150041ef94ad09482cd2eb44ec54966bcb548f","type":"revision"}
+{"base":"f7a4921ae7da4a033284005220f349b33fe240c8","description":"ci: add cargo fmt and test to ambient","oid":"4718d58bb47a77579af049f81cc30eb1b6c0d3dd","type":"revision"}
