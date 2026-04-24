@@ -172,19 +172,33 @@ pub fn canonical_walk(dir: &Path) -> Result<Vec<(String, PathBuf)>, io::Error> {
 /// The resulting CID uses the `blake3-hashseq` codec (0x80).
 pub fn compute_content_id(dir: &Path) -> Result<Cid, io::Error> {
     use rayon::prelude::*;
+    use std::cell::RefCell;
+    use std::io::Read;
+
+    thread_local! {
+        static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    }
 
     let walked = canonical_walk(dir)?;
 
-    // Hash files in parallel across rayon workers. Each worker hashes a
-    // whole file serially via mmap; the inter-file parallelism already
-    // saturates cores, so intra-file rayon fan-out would just add dispatch
-    // overhead.
+    // Hash files in parallel across rayon workers. Each worker reuses a
+    // thread-local scratch buffer to read the whole file and hashes from
+    // RAM; this avoids per-file mmap setup/teardown and keeps allocations
+    // out of the hot path.
     let entries: Vec<(String, iroh_blobs::Hash)> = walked
         .into_par_iter()
         .map(|(name, path)| {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update_mmap(&path).map_err(io::Error::other)?;
-            Ok((name, hasher.finalize().into()))
+            SCRATCH.with(|buf| {
+                let mut buf = buf.borrow_mut();
+                buf.clear();
+                let mut file = std::fs::File::open(&path)?;
+                let meta = file.metadata()?;
+                buf.reserve(meta.len() as usize);
+                file.read_to_end(&mut buf)?;
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(&buf);
+                Ok::<(String, iroh_blobs::Hash), io::Error>((name, hasher.finalize().into()))
+            })
         })
         .collect::<Result<_, io::Error>>()?;
 
