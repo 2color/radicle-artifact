@@ -141,7 +141,12 @@ pub fn canonical_walk(dir: &Path) -> Result<Vec<(String, PathBuf)>, io::Error> {
             continue;
         }
 
-        let abs = dunce::canonicalize(entry.path())?;
+        // walkdir yields entries rooted under `root_dir`; because
+        // `root_dir` is already canonicalized and walkdir does not follow
+        // symlinks (so every intermediate directory component is real), the
+        // entry path is already canonical. Re-canonicalizing would be one
+        // extra stat per file for no behavioural difference.
+        let abs = entry.into_path();
         let rel = abs.strip_prefix(&root_dir).map_err(io::Error::other)?;
 
         // Normalize path separators to forward slashes for cross-platform consistency
