@@ -8,15 +8,29 @@ Git was never built to distribute large file and binaries. Existing solutions li
 
 - **Verifiable and signed** — every artifact is hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) and content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`Add`, `Attest`, `AddLocation`) is signed by its author's Ed25519 key.
 - **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
-- **Transport-agnostic** — artifacts can have multiple *locations* and shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The cli comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
+- **Transport-agnostic** — artifacts can have multiple _locations_ and shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The cli comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
 
-Trust is multi-party and follows from the repository **delegates**, the trusted maintianers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their  matches, and can also **redact** artifacts if compromised or broken.
+Trust is multi-party and follows from the repository **delegates**, the trusted maintianers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their matches, and can also **redact** artifacts if compromised or broken.
 
 radicle-artifact is useful for distributing any data related to code: binaries, static sites, model weights, and scientific datasets.
 
+## Installation
+
+Install a prebuilt binary:
+
+```
+curl -sSf https://files.radicle.dev/releases/radicle-artifact/install | sh
+```
+
+Or build from source via crates.io:
+
+```
+cargo install radicle-artifact
+```
+
 ## How it works
 
-A **Release** is associated with a Git OID (annotated tag or commit). A release contains one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help serve content by announcing location URLs for any artifact, enabling decentralized mirroring. 
+A **Release** is associated with a Git OID (annotated tag or commit). A release contains one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help serve content by announcing location URLs for any artifact, enabling decentralized mirroring.
 
 Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
