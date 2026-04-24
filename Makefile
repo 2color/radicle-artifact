@@ -1,4 +1,4 @@
-.PHONY: changelog release release-macos release-linux upload clean clean-all help
+.PHONY: changelog release release-macos release-linux upload register-artifacts clean clean-all help
 
 # Version and binary name from Cargo.toml using cargo metadata
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .version')
@@ -18,6 +18,7 @@ help:
 	@echo "  make release-macos    - Build native macOS architectures (run on macOS)"
 	@echo "  make release-linux    - Build Linux musl architectures (cross via zigbuild)"
 	@echo "  make upload           - scp binaries + install script to $(UPLOAD_HOST)"
+	@echo "  make register-artifacts - Record binary CIDs + download URLs in the release COB"
 	@echo "  make clean            - Remove built release binaries"
 	@echo "  make clean-all        - Also run cargo clean"
 
@@ -107,6 +108,35 @@ upload:
 	@echo "✓ $(BASE_URL)/$(VERSION)/  (binaries)"
 	@echo "✓ $(BASE_URL)/install"
 	@echo "✓ $(BASE_URL)/latest → $(VERSION)"
+
+# Record each built binary as an artifact in the release COB tagged
+# `releases/$(VERSION)`, and attach its public download URL as a location.
+# Runs AFTER `make upload` so the announced URL is live before it's published.
+# Uses `cargo run` so we don't depend on a pre-installed `rad-artifact` on PATH.
+register-artifacts:
+	@for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do \
+	    bin="$(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_$$target"; \
+	    if [ ! -f "$$bin" ]; then \
+	        echo "Missing $$bin — run 'make release' first"; \
+	        exit 1; \
+	    fi; \
+	done
+	@echo "Building native rad-artifact for CID + COB calls..."
+	@cargo build --release --quiet --bin $(BINARY_NAME)
+	@RAD_ARTIFACT="cargo run --release --quiet --bin $(BINARY_NAME) --"; \
+	for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do \
+	    name="$(BINARY_NAME)_$(VERSION)_$$target"; \
+	    bin="$(RELEASE_DIR)/$$name"; \
+	    url="$(BASE_URL)/$(VERSION)/$$name"; \
+	    echo "→ $$name"; \
+	    cid=$$($$RAD_ARTIFACT cid "$$bin") || exit 1; \
+	    echo "   cid: $$cid"; \
+	    $$RAD_ARTIFACT --no-input add --cid "$$cid" --commit "releases/$(VERSION)" --name "$$name" || exit 1; \
+	    $$RAD_ARTIFACT --no-input location add "releases/$(VERSION)" --cid "$$cid" "$$url" || exit 1; \
+	done
+	@echo
+	@echo "✓ Registered 4 artifacts under releases/$(VERSION)"
+	@echo "  Inspect with: rad-artifact show releases/$(VERSION) --pretty"
 
 # Clean up built binaries (keep target/ directory structure)
 clean:
