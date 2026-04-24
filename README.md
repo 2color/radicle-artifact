@@ -1,12 +1,12 @@
 # radicle-artifact
 
-Secure artifact distribution for [radicle](https://radicle.xyz/).
+Secure artifact distribution for [radicle](https://radicle.dev/).
 
 Git was never built to distribute large file and binaries. Existing solutions like Git LFS encode a URL in the repository tree, which breaks Git's content-addressed nature and leaves every artifact prone to link rot.
 
 `radicle-artifact` makes artifact distribution:
 
-- **Verifiable and signed** — every artifact is content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`Add`, `Attest`, `AddLocation`) is signed by its author's Ed25519 key.
+- **Verifiable and signed** — every artifact is hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) and content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`Add`, `Attest`, `AddLocation`) is signed by its author's Ed25519 key.
 - **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
 - **Transport-agnostic** — artifacts can have multiple *locations* and shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The cli comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
 
@@ -28,7 +28,7 @@ This COB is **build-system agnostic**. It works with any toolchain or build proc
 
 ## Workflow
 
-1. **Tag** — Create a [canonical reference](https://radicle.xyz/2025/08/12/canonical-references) from an annotated tag or commit.
+1. **Tag** — Create a [canonical reference](https://radicle.dev/2025/08/12/canonical-references) from an annotated tag or commit.
 2. **Build** — Build the release artifacts and derive their content identifiers (CIDs).
 3. **Compute CID** — Compute the CID of each artifact by hashing the contents. Folders are hashed as [iroh-blob collections](https://docs.iroh.computer/protocols/blobs#collections).
 4. **Add** — Add artifacts to a release using the `rad-artifact add` command, which creates the release if it doesn't exist and records the artifact CID.
@@ -148,4 +148,4 @@ By default, `cargo release` runs in dry-run mode — omit `--execute` to preview
 
 MIT OR Apache-2.0
 
-[cob]: https://radicle.xyz/guides/protocol#collaborative-objects
+[cob]: https://radicle.dev/guides/protocol#collaborative-objects
