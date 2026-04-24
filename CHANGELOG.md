@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Small release fixing a regression introduced in `0.10.0` causing the the `serve` and `fetch` commands to fail creating an endpoint.
+
+### Added
+
+* `15f1c1b` add toy CI plan for Ambient to see if this can work at all *<liw@liw.fi>*
+
+### Fixed
+
+* `f7237fa` fix: iroh endpoint binding *<daniel@norman.life>*
+
+### Other
+
+* `7f6ddfa` build: chmod latest to 0644 before upload *<daniel@norman.life>*
+* `0cfc62c` ci: add cargo fmt and test to ambient *<daniel@norman.life>*
+* `d845dfc` chore: run cargo fmt *<daniel@norman.life>*
+
 ## [0.10.0] - 2026-04-24
 
 This release brings a number of UX improvements to the `rad-artifact` cli, in addition to some improvements to the build and release process.
