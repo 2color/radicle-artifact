@@ -70,7 +70,10 @@ upload:
 	@[ -f install.sh ] || (echo "install.sh missing" && exit 1)
 	@for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do \
 	    bin="$(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_$$target"; \
-	    [ -f "$$bin" ] || (echo "Missing $$bin — run 'make release' first" && exit 1); \
+	    if [ ! -f "$$bin" ]; then \
+	        echo "Missing $$bin — run 'make release' first"; \
+	        exit 1; \
+	    fi; \
 	done
 	@echo "Creating $(UPLOAD_PATH)/$(VERSION)/ on $(UPLOAD_HOST)..."
 	@ssh $(UPLOAD_HOST) "mkdir -p $(UPLOAD_PATH)/$(VERSION)"
