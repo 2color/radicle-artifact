@@ -1,6 +1,10 @@
 [workspace]
 members = [".", "bench"]
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [[bin]]
 name = "rad-artifact"
 path = "src/bin/rad-artifact.rs"
