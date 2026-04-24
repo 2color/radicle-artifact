@@ -6,9 +6,9 @@ Git was never built to distribute large files and binaries. Existing solutions l
 
 ## In plain English
 
-You tag a release, add your build artifacts, and anyone can verify they're exactly what you built — no matter where they're downloaded from. Other team members can independently rebuild the release and cryptographically sign that they got the same result. If an artifact turns out to be compromised or broken, any maintainer can flag it so others know not to trust it.
+Delegates create a canonical tag for a release, build artifacts, and anyone can verify they're exactly what you built — no matter where they're downloaded from. Other team members can independently rebuild the release and cryptographically sign that they got the same result. If an artifact turns out to be compromised or broken, any delegate can redact it with a reason so others know not to trust it.
 
-Artifacts can live on any HTTP server, on IPFS, or be served directly peer-to-peer. They persist as long as at least one location URL is reachable, and you can host them on any combination of servers you like.
+Artifacts can be hosted by an HTTP server, directly from the cli (peer-to-peer serving with [iroh](https://www.iroh.computer/)), BitTorrent, or IPFS. They persist as long as at least one location URL is reachable. Hosting is participatory — any radicle user can announce a location to increase redundancy.
 
 ## Why radicle-artifact
 
@@ -23,7 +23,7 @@ More specifically, `radicle-artifact` makes artifact distribution:
 
 - **Verifiable and signed** — every artifact is content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`Add`, `Attest`, `AddLocation`) is signed by its author's Ed25519 key.
 - **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
-- **Transport-agnostic** — artifacts can have multiple *locations* and be shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
+- **Transport-agnostic** — artifacts can have multiple _locations_ and be shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
 
 Trust is multi-party and follows from the repository **delegates**, the trusted maintainers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their build matches, and they can also **redact** artifacts if compromised or broken.
 
@@ -39,14 +39,7 @@ Users can **announce locations** for any artifact — URLs where the bytes can b
 
 ### Trust model
 
-The trust model is graph-like: multiple delegates independently build the same commit and attest that the CIDs match.
-
-```
-[Delegate A builds] ──┐
-[Delegate B builds] ──┼──> matching CID ──> attested ✓
-[Delegate C builds] ──┘
-                      └──> mismatch      ──> redacted ✗
-```
+The trust model follows from radicle: multiple delegates independently build the same commit and attest that the CIDs match.
 
 This COB is **build-system agnostic**. It works with any toolchain or build process that produces addressable artifacts. Ideally your builds are deterministic (reproducible), which lets other delegates independently verify artifacts and record attestations. However, deterministic builds are not a requirement; you can use radicle-artifact purely for publishing and discovering release artifacts without attestation.
 
