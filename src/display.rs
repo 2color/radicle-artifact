@@ -72,17 +72,46 @@ fn format_table(rows: &[Vec<String>], indent: usize) -> String {
     out
 }
 
-/// Resolve the first line of a release's title for display.
+/// Kind of git ref a release is keyed by.
+///
+/// Releases can be keyed by either a commit OID or an annotated tag
+/// object OID. This is surfaced in display output so users can tell
+/// them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RefKind {
+    /// The release is keyed by a git commit OID.
+    Commit,
+    /// The release is keyed by an annotated tag object OID.
+    Tag,
+}
+
+impl RefKind {
+    fn label(self) -> &'static str {
+        match self {
+            RefKind::Commit => "commit",
+            RefKind::Tag => "tag",
+        }
+    }
+}
+
+/// Resolve display metadata for a release's keying ref.
 ///
 /// Releases are keyed by either a commit OID or an annotated tag OID.
 /// Implementations return the first line of the tag message for tag
-/// OIDs, or the commit summary for commit OIDs. Return `None` when the
-/// OID cannot be resolved (e.g. it lives in a fork that hasn't been
-/// fetched).
+/// OIDs, or the commit summary for commit OIDs. `ref_kind` reports
+/// which one the OID resolves to, so output can label it accurately.
 pub trait CommitTitle {
     /// Return the first line of the commit or tag message for `oid`,
-    /// if available.
+    /// if available. Returns `None` when the OID cannot be resolved
+    /// (e.g. it lives in a fork that hasn't been fetched).
     fn title(&self, oid: &Oid) -> Option<String>;
+
+    /// Report whether `oid` refers to a commit or an annotated tag.
+    /// Defaults to `Commit` for resolvers that can't distinguish.
+    fn ref_kind(&self, _oid: &Oid) -> RefKind {
+        RefKind::Commit
+    }
 }
 
 /// No-op resolver that never produces a title.
@@ -126,6 +155,18 @@ impl CommitTitle for Repository {
                 .and_then(|c| c.summary().map(String::from)),
         }
     }
+
+    fn ref_kind(&self, oid: &Oid) -> RefKind {
+        match self
+            .backend
+            .find_object((*oid).into(), None)
+            .ok()
+            .and_then(|o| o.kind())
+        {
+            Some(radicle::git::raw::ObjectType::Tag) => RefKind::Tag,
+            _ => RefKind::Commit,
+        }
+    }
 }
 
 /// Visibility rules for artifacts rendered in `list` / `show` output.
@@ -159,7 +200,9 @@ impl Releases {
     /// redaction and author-trust knobs. When `show_empty` is false,
     /// releases with no visible artifacts are excluded from the output.
     ///
-    /// The `titles` resolver looks up commit summaries for pretty output.
+    /// The `titles` resolver looks up a title line for each release's
+    /// keying OID (tag message or commit summary) and reports whether
+    /// the OID is a commit or an annotated tag, for pretty output.
     ///
     /// [release]: crate::Release
     pub fn new(
@@ -172,7 +215,8 @@ impl Releases {
         let mut releases: Vec<_> = releases
             .map(|(id, release)| {
                 let title = titles.title(release.oid());
-                Release::new(id, &release, aliases, filters, title)
+                let ref_kind = titles.ref_kind(release.oid());
+                Release::new(id, &release, aliases, filters, title, ref_kind)
             })
             .filter(|r| show_empty || !r.artifacts.is_empty())
             .collect();
@@ -206,7 +250,12 @@ pub struct Release {
     /// Unix seconds when this release COB was created.
     created_at: u64,
     oid: Oid,
-    /// Locally-resolved commit summary; not persisted in the COB.
+    /// Whether `oid` resolves to a commit or an annotated tag in the
+    /// local repository. Locally-resolved; not persisted in the COB.
+    ref_kind: RefKind,
+    /// First line of the tag message (for tag-keyed releases) or commit
+    /// summary (for commit-keyed releases). Locally-resolved; not
+    /// persisted in the COB.
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     artifacts: Vec<Artifact>,
@@ -221,13 +270,16 @@ impl Release {
     /// author is not a delegate are hidden. Set the corresponding
     /// [`Filters`] flags to `true` to include them.
     ///
-    /// `title` is the first line of the commit message, if available.
+    /// `title` is the first line of the tag or commit message, if
+    /// available. `ref_kind` reports whether the release's OID keys a
+    /// commit or an annotated tag so pretty output can label it.
     pub fn new(
         release_id: ReleaseId,
         release: &crate::Release,
         aliases: &impl AliasStore,
         filters: Filters<'_>,
         title: Option<String>,
+        ref_kind: RefKind,
     ) -> Self {
         let mut artifacts: Vec<_> = release
             .artifacts()
@@ -306,6 +358,7 @@ impl Release {
             release_id,
             created_at: release.timestamp(),
             oid: *release.oid(),
+            ref_kind,
             title,
             artifacts,
         }
@@ -329,7 +382,10 @@ impl Release {
             .unwrap_or_else(|| self.created_at.to_string());
         push_line(
             &mut s,
-            format!("ID {short_id} | commit {short_oid} | {date} {title_suffix}"),
+            format!(
+                "ID {short_id} | {kind} {short_oid} | {date} {title_suffix}",
+                kind = self.ref_kind.label()
+            ),
         );
         // Build a per-release artifact table: CID | name | author | locations.
         // The locations cell summarises counts by URL scheme (e.g.

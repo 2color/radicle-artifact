@@ -469,12 +469,15 @@ fn show_release(
         .map_err(|err| error::Find::Lookup { oid, err })?
         .ok_or(error::Find::NoRelease(oid))?;
     let title = display::CommitTitle::title(repo, release.oid());
+    let ref_kind = display::CommitTitle::ref_kind(repo, release.oid());
     let filters = display::Filters {
         delegates,
         redacted,
         all_authors,
     };
-    let show = radicle_artifact::display::Release::new(id, &release, aliases, filters, title);
+    let show = radicle_artifact::display::Release::new(
+        id, &release, aliases, filters, title, ref_kind,
+    );
     if use_pretty(pretty, json) {
         println!("{}", show.pretty(verbose));
     } else {
