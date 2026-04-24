@@ -1,13 +1,15 @@
 #!/bin/sh
 # radicle-artifact installer
-# Usage: curl -sSf https://radworks-releases.s3.fr-par.scw.cloud/rad-artifact/install | sh
-#        curl -sSf <URL> | sh -s -- --prefix=/usr/local --version=0.9.0 -y
+# Usage: curl -sSf https://files.radicle.dev/releases/radicle-artifact/install | sh
+#        curl -sSf <URL> | sh -s -- --prefix=/usr/local --version=X.Y.Z -y
 set -eu
 
-# Pinned version: both the minimum-version sentinel (skip if already met) and
-# the version fetched when we need to install. Overridable with --version=X.Y.Z.
-RAD_ARTIFACT_VERSION="0.9.0"
-RAD_ARTIFACT_BASE="https://radworks-releases.s3.fr-par.scw.cloud/rad-artifact"
+# The latest published version is read at runtime from $RAD_ARTIFACT_BASE/latest
+# (a one-line text file the Makefile's `upload` target writes). This means
+# bumping the release is a single action: Cargo.toml + make upload, no second
+# edit to pin a version here. Override with --version=X.Y.Z to install a
+# specific version.
+RAD_ARTIFACT_BASE="https://files.radicle.dev/releases/radicle-artifact"
 
 info() { printf '  \033[1m%s\033[0m\n' "$*"; }
 step() { printf '\n\033[1;32m▸ %s\033[0m\n' "$*"; }
@@ -25,12 +27,12 @@ usage() {
 rad-artifact installer
 
 Usage:
-  curl -sSf https://radworks-releases.s3.fr-par.scw.cloud/rad-artifact/install | sh
+  curl -sSf https://files.radicle.dev/releases/radicle-artifact/install | sh
   curl -sSf <URL> | sh -s -- [OPTIONS]
 
 Options:
   --prefix=PATH       Installation prefix (default: \$RAD_HOME or ~/.radicle)
-  --version=X.Y.Z     Install a specific version (default: $RAD_ARTIFACT_VERSION)
+  --version=X.Y.Z     Install a specific version (default: latest published)
   -y, --yes           Accept all prompts (non-interactive)
   -h, --help          Show this help
 EOF
@@ -53,7 +55,7 @@ confirm() {
 # ── Parse arguments ──────────────────────────────────────────────────
 PREFIX=${RAD_HOME:-"$HOME/.radicle"}
 YES_ALL=false
-VERSION="$RAD_ARTIFACT_VERSION"
+VERSION=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -103,6 +105,14 @@ fi
 export PATH="$PREFIX/bin:$PATH"
 
 # ── 2. rad-artifact ──────────────────────────────────────────────────
+# Resolve version: --version= wins; otherwise fetch the latest pointer from S3.
+if [ -z "$VERSION" ]; then
+  VERSION=$(curl -fsSL "$RAD_ARTIFACT_BASE/latest" 2>/dev/null | tr -d '[:space:]') || VERSION=""
+  if [ -z "$VERSION" ]; then
+    fail "Could not fetch latest version from $RAD_ARTIFACT_BASE/latest. Pass --version=X.Y.Z to install a specific version."
+  fi
+fi
+
 NEED_INSTALL=false
 
 if command -v rad-artifact >/dev/null 2>&1; then
@@ -128,7 +138,7 @@ if [ "$NEED_INSTALL" = true ]; then
       *) fail "Unsupported platform: $(uname)/$(uname -m)" ;;
     esac
 
-    URL="${RAD_ARTIFACT_BASE}/rad-artifact_${VERSION}_${TARGET}"
+    URL="${RAD_ARTIFACT_BASE}/${VERSION}/rad-artifact_${VERSION}_${TARGET}"
     mkdir -p "$INSTALL_DIR"
 
     info "Downloading rad-artifact ${VERSION} for ${TARGET}..."

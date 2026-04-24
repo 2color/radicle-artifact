@@ -1,7 +1,7 @@
 # Releasing rad-artifact
 
 The Makefile builds cross-platform release binaries for `rad-artifact` and
-uploads them to Scaleway Object Storage alongside the one-line install script.
+`scp`s them to `files.radicle.dev` alongside the one-line install script.
 
 ## Prerequisites
 
@@ -12,7 +12,8 @@ uploads them to Scaleway Object Storage alongside the one-line install script.
 - `jq` — metadata extraction
 - `cargo-zigbuild` (for Linux cross-compilation): `cargo install cargo-zigbuild`
 - `zig` (backend for `cargo-zigbuild`): `brew install zig`
-- `s3cmd` configured for Scaleway: `brew install s3cmd`
+- SSH access to `files.radicle.dev` with write permission under
+  `/var/www/files.radicle.dev/releases/radicle-artifact/`
 
 ## Build
 
@@ -35,56 +36,58 @@ rad-artifact_<version>_<target-triple>
 
 ## Upload
 
-Binaries and the install script are uploaded to Scaleway Object Storage via
-`s3cmd`:
-
 ```sh
-make upload-s3
+make upload
 ```
 
-This uploads to `s3://radworks-releases/rad-artifact/` with public-read ACL.
-Binaries are then available at:
+This `scp`s the four built binaries, `install.sh`, and a one-line `latest`
+pointer to `files.radicle.dev`, producing this layout on the server:
 
 ```
-https://radworks-releases.s3.fr-par.scw.cloud/rad-artifact/rad-artifact_<version>_<target-triple>
+/var/www/files.radicle.dev/releases/radicle-artifact/
+├── install                         # stable URL for `curl | sh`
+├── latest                          # one-line text file: newest published version
+└── <version>/
+    ├── rad-artifact_<version>_aarch64-apple-darwin
+    ├── rad-artifact_<version>_x86_64-apple-darwin
+    ├── rad-artifact_<version>_aarch64-unknown-linux-musl
+    └── rad-artifact_<version>_x86_64-unknown-linux-musl
 ```
 
-Uploads overwrite existing files with the same name — bump the version in
-`Cargo.toml` before re-uploading if you want to preserve the previous release.
+Public URLs:
 
-Create `~/.s3cfg` with your Scaleway API keys:
-
-```ini
-[default]
-host_base = s3.fr-par.scw.cloud
-host_bucket = %(bucket)s.s3.fr-par.scw.cloud
-bucket_location = fr-par
-use_https = True
-access_key = <SCW_ACCESS_KEY>
-secret_key = <SCW_SECRET_KEY>
+```
+https://files.radicle.dev/releases/radicle-artifact/install
+https://files.radicle.dev/releases/radicle-artifact/latest
+https://files.radicle.dev/releases/radicle-artifact/<version>/rad-artifact_<version>_<target-triple>
 ```
 
-Or generate it with the Scaleway CLI: `scw object config get type=s3cmd region=fr-par`
+Per-version directories preserve historical releases automatically. The
+`latest` pointer is uploaded **after** the binaries, so there's never a
+window where `latest` advertises a version whose binaries aren't yet on disk.
+
+Re-running `make upload` at the same version overwrites that version's files
+but leaves other versions untouched.
 
 ## Install script
 
 `install.sh` at the repo root is the one-line installer users run via:
 
 ```sh
-curl -sSf https://radworks-releases.s3.fr-par.scw.cloud/rad-artifact/install | sh
+curl -sSf https://files.radicle.dev/releases/radicle-artifact/install | sh
 ```
 
-`make upload-s3` uploads it alongside the binaries as
-`s3://radworks-releases/rad-artifact/install` (no `.sh` suffix, so the URL
-reads cleanly). The installer pins the version it fetches — after cutting a
-new release, edit `RAD_ARTIFACT_VERSION` in `install.sh` and re-run
-`make upload-s3` so new users get the new binary.
+`make upload` copies it to the server as `install` (no `.sh` suffix, so the
+URL reads cleanly). The installer has no hardcoded version — at runtime it
+reads `/latest` to decide which binary to fetch. So a single `make upload`
+publishes the binaries, the script, and the pointer in one shot. Users can
+still pin with `--version=X.Y.Z`.
 
 ## Bumping the version
 
 Update the `version` field in `Cargo.toml` — the Makefile reads it
-automatically via `cargo metadata`. Also bump `RAD_ARTIFACT_VERSION` in
-`install.sh` so the hosted installer fetches the matching binary.
+automatically via `cargo metadata`, and `upload` writes the same value to
+the `latest` pointer. Nothing else to edit.
 
 ## Cleanup
 
@@ -92,81 +95,3 @@ automatically via `cargo metadata`. Also bump `RAD_ARTIFACT_VERSION` in
 make clean                # remove release binaries
 make clean-all            # also run cargo clean
 ```
-
-## Testing the release pipeline
-
-Start cheap and local; escalate only if earlier steps pass.
-
-### 1. Static checks (seconds)
-
-```sh
-sh -n install.sh              # POSIX parse
-./install.sh --help           # usage prints, no side effects
-make help                     # targets parse
-make -n release-macos         # dry-run: verify expanded commands
-```
-
-Optional: `brew install shellcheck && shellcheck install.sh` catches quoting
-bugs the shell won't.
-
-### 2. Build one binary (~1–3 min)
-
-```sh
-rustup target add aarch64-apple-darwin    # if not already installed
-make release-macos
-./target/release/rad-artifact_<version>_aarch64-apple-darwin --help
-```
-
-If `--help` prints, cross-compile and binary-naming are correct. Skip
-`release-linux` unless `cargo-zigbuild` + `zig` are installed — the target
-fails fast with a clear message otherwise.
-
-### 3. End-to-end install test against a local S3 stand-in
-
-Exercises download → smoke-test → PATH wiring without touching Scaleway.
-
-```sh
-# Serve the built binaries so the script can download them
-(cd target/release && python3 -m http.server 8000) &
-SERVER_PID=$!
-
-# Point a copy of the installer at the local server
-sed 's|^RAD_ARTIFACT_BASE=.*|RAD_ARTIFACT_BASE="http://localhost:8000"|' \
-    install.sh > /tmp/install-local.sh
-chmod +x /tmp/install-local.sh
-
-# Install into a throwaway prefix
-TMPPREFIX=$(mktemp -d)
-/tmp/install-local.sh --prefix="$TMPPREFIX" -y
-
-# Verify
-"$TMPPREFIX/bin/rad-artifact" --version
-
-kill $SERVER_PID
-rm -rf "$TMPPREFIX" /tmp/install-local.sh
-```
-
-`-y` skips the "Install Radicle?" prompt. To also test the Radicle-missing
-path, drop `-y` and answer `n` — the script should warn and continue.
-
-### 4. Publish and test the real URL
-
-Only after steps 1–3 pass:
-
-```sh
-make release                  # full build (macOS host; needs zigbuild for Linux)
-make upload-s3                # publishes binaries + installer to Scaleway
-
-# Then on a clean shell:
-curl -sSf https://radworks-releases.s3.fr-par.scw.cloud/rad-artifact/install \
-  | sh -s -- --prefix=$(mktemp -d) -y
-```
-
-### What each step catches
-
-| Step | Catches                                                               |
-| ---- | --------------------------------------------------------------------- |
-| 1    | shell syntax errors, Makefile typos                                   |
-| 2    | wrong package/binary name in cargo flags, missing rustup target       |
-| 3    | bad URL construction, arch detection, PATH/shadowing, trap cleanup    |
-| 4    | S3 ACL / MIME / URL reality, real `curl \| sh` under a fresh env      |

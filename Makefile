@@ -1,4 +1,4 @@
-.PHONY: release release-macos release-linux upload-s3 clean clean-all help
+.PHONY: release release-macos release-linux upload clean clean-all help
 
 # Version and binary name from Cargo.toml using cargo metadata
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .version')
@@ -6,18 +6,17 @@ BINARY_NAME := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.pac
 TARGET_DIR := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
 RELEASE_DIR := $(TARGET_DIR)/release
 
-# Scaleway S3 settings
-SCW_BUCKET := radworks-releases
-SCW_REGION := fr-par
-SCW_ENDPOINT := https://s3.$(SCW_REGION).scw.cloud
-SCW_PREFIX := rad-artifact
+# Upload destination (scp to the Radicle seed server)
+UPLOAD_HOST := files.radicle.dev
+UPLOAD_PATH := /var/www/files.radicle.dev/releases/radicle-artifact
+BASE_URL    := https://files.radicle.dev/releases/radicle-artifact
 
 help:
 	@echo "Available targets:"
 	@echo "  make release          - Build all architectures (macOS + Linux)"
 	@echo "  make release-macos    - Build native macOS architectures (run on macOS)"
 	@echo "  make release-linux    - Build Linux musl architectures (cross via zigbuild)"
-	@echo "  make upload-s3        - Upload release binaries and install script to Scaleway S3"
+	@echo "  make upload           - scp binaries + install script to $(UPLOAD_HOST)"
 	@echo "  make clean            - Remove built release binaries"
 	@echo "  make clean-all        - Also run cargo clean"
 
@@ -62,30 +61,37 @@ release-linux:
 	     $(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_x86_64-unknown-linux-musl
 	@echo "✓ Created: $(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_x86_64-unknown-linux-musl"
 
-# Upload release binaries and install script to Scaleway S3.
-# Requires s3cmd configured for Scaleway (see RELEASE.md).
-upload-s3:
-	@command -v s3cmd >/dev/null 2>&1 || \
-	    (echo "s3cmd not found. Install with: brew install s3cmd" && exit 1)
+# Upload binaries and install script to the Radicle seed server via scp.
+# Layout on the server:
+#   $(UPLOAD_PATH)/install               — stable URL for `curl | sh`
+#   $(UPLOAD_PATH)/latest                — one-line text file with newest version
+#   $(UPLOAD_PATH)/<version>/<binary>    — per-target binaries, versioned
+upload:
+	@[ -f install.sh ] || (echo "install.sh missing" && exit 1)
 	@for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do \
 	    bin="$(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_$$target"; \
-	    if [ ! -f "$$bin" ]; then \
-	        echo "⚠ Skipping $$target (not built)"; \
-	        continue; \
-	    fi; \
-	    echo "Uploading $$target..."; \
-	    s3cmd put --acl-public "$$bin" \
-	        "s3://$(SCW_BUCKET)/$(SCW_PREFIX)/$(BINARY_NAME)_$(VERSION)_$$target"; \
-	    echo "✓ https://$(SCW_BUCKET).s3.$(SCW_REGION).scw.cloud/$(SCW_PREFIX)/$(BINARY_NAME)_$(VERSION)_$$target"; \
+	    [ -f "$$bin" ] || (echo "Missing $$bin — run 'make release' first" && exit 1); \
 	done
-	@if [ -f install.sh ]; then \
-	    echo "Uploading install.sh..."; \
-	    s3cmd put --acl-public --mime-type=text/x-shellscript install.sh \
-	        "s3://$(SCW_BUCKET)/$(SCW_PREFIX)/install"; \
-	    echo "✓ https://$(SCW_BUCKET).s3.$(SCW_REGION).scw.cloud/$(SCW_PREFIX)/install"; \
-	else \
-	    echo "⚠ Skipping install.sh (not present)"; \
-	fi
+	@echo "Creating $(UPLOAD_PATH)/$(VERSION)/ on $(UPLOAD_HOST)..."
+	@ssh $(UPLOAD_HOST) "mkdir -p $(UPLOAD_PATH)/$(VERSION)"
+	@echo "Uploading binaries..."
+	@scp $(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_aarch64-apple-darwin \
+	     $(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_x86_64-apple-darwin \
+	     $(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_aarch64-unknown-linux-musl \
+	     $(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_x86_64-unknown-linux-musl \
+	     $(UPLOAD_HOST):$(UPLOAD_PATH)/$(VERSION)/
+	@echo "Uploading install.sh as $(UPLOAD_PATH)/install..."
+	@scp install.sh $(UPLOAD_HOST):$(UPLOAD_PATH)/install
+	@# Publish the `latest` pointer last: install.sh reads this to decide which
+	@# version to fetch, so it must only flip once the new binaries are live.
+	@echo "Updating latest pointer to $(VERSION)..."
+	@tmp_latest=$$(mktemp) && printf '%s\n' "$(VERSION)" > "$$tmp_latest" && \
+	    scp "$$tmp_latest" $(UPLOAD_HOST):$(UPLOAD_PATH)/latest && \
+	    rm -f "$$tmp_latest"
+	@echo
+	@echo "✓ $(BASE_URL)/$(VERSION)/  (binaries)"
+	@echo "✓ $(BASE_URL)/install"
+	@echo "✓ $(BASE_URL)/latest → $(VERSION)"
 
 # Clean up built binaries (keep target/ directory structure)
 clean:
