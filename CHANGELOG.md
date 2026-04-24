@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release brings a number of UX improvements to the `rad-artifact` cli, in addition to some improvements to the build and release process.
+
+### ✨ Highlights
+
+#### Streamlined artifact publishing with `rad-artifact add <PATH>`
+
+You can now publish artifacts with `rad-artifact add <PATH>` and will be prompted to pick the commit/tag OID to which the artifact will be added. The CID is computed automatically, and if a release doesn't exist already, it will be created automatically.
+
+You can still set the CID and commit/tag manually using `--cid` and `--commit`.
+
+#### Delegate-only listing in `list` and `show` by default
+
+`list` and `show` now hide non-delegate artifacts by default. The former `--delegates-only` flag is replaced by `--all-authors`, which widens the view back.
+
+#### More informative pretty output in `rad-artifact list`
+
+The artifact author's DID now sits alongside the CID of artifact so ownership is visible, and per-location rows are collapsed into a compact `scheme: count` summary so tables stay tight when an artifact is seeded from many endpoints.
+
+### Added
+
+* `4e571eb` Address cargo clippy warnings *<daniel@norman.life>*
+
+### Other
+
+* `15a6efa` Bump cid and multihash due to core2 getting yanked *<daniel@norman.life>*
+* `db3a807` Bump iroh dependencies *<daniel@norman.life>*
+* `8864895` cli: interactive add with path or CID source *<daniel@norman.life>*
+* `bd11134` cli: show artifact author & location counts *<daniel@norman.life>*
+* `0ed15ac` cli: default to only showing delegate artifacts *<daniel@norman.life>*
+* `3b86140` docs: rewrite README intro *<daniel@norman.life>*
+* `b48358d` cli: use commit OID in add examples *<daniel@norman.life>*
+* `f7a4921` Bump radicle to 0.23.0 *<daniel@norman.life>*
+* `bff8110` build: add install script *<daniel@norman.life>*
+* `d7e0f06` build: update links to new radicle urls *<daniel@norman.life>*
+* `818cdf7` build: fix make upload pre-check and docs drift *<daniel@norman.life>*
+* `41900e2` build: support hand-written changelog notes *<daniel@norman.life>*
+* `94857a2` build: add make changelog target *<daniel@norman.life>*
+
 ## [0.9.0] - 2026-04-21
 
 ### Other
