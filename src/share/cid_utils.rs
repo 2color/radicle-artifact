@@ -5,11 +5,47 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use cid::multihash::Multihash;
 use cid::Cid;
 
 use super::Error;
+
+/// Rayon thread pool sized to the number of physical (performance) cores
+/// reported by the OS, not logical CPUs. On hybrid CPUs (Apple Silicon,
+/// Alder Lake, …) saturating the efficiency cores with BLAKE3 SIMD work
+/// tends to hurt throughput more than it helps.
+static HASH_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    let n = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    // Clamp to the physical-core count when we can detect it (Unix / macOS).
+    let n = physical_cores().unwrap_or(n.min(8));
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .thread_name(|i| format!("rad-artifact-hash-{i}"))
+        .build()
+        .expect("build rayon pool")
+});
+
+#[cfg(target_os = "macos")]
+fn physical_cores() -> Option<usize> {
+    use std::process::Command;
+    let out = Command::new("sysctl")
+        .args(["-n", "hw.perflevel0.physicalcpu"])
+        .output()
+        .ok()?;
+    let s = std::str::from_utf8(&out.stdout).ok()?.trim();
+    s.parse().ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn physical_cores() -> Option<usize> {
+    // On non-macOS we fall back to the logical-core count; rayon's default
+    // already handles hyperthreading reasonably on most workloads.
+    None
+}
 
 /// BLAKE3 multihash code.
 ///
@@ -173,14 +209,16 @@ pub fn compute_content_id(dir: &Path) -> Result<Cid, io::Error> {
     // Hash files in parallel across rayon workers. Within each file,
     // `update_mmap_rayon` mmap's the file and hashes its chunks in parallel
     // as well — giving both inter-file and intra-file parallelism.
-    let entries: Vec<(String, iroh_blobs::Hash)> = walked
-        .into_par_iter()
-        .map(|(name, path)| {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update_mmap_rayon(&path).map_err(io::Error::other)?;
-            Ok((name, hasher.finalize().into()))
-        })
-        .collect::<Result<_, io::Error>>()?;
+    let entries: Vec<(String, iroh_blobs::Hash)> = HASH_POOL.install(|| {
+        walked
+            .into_par_iter()
+            .map(|(name, path)| {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update_mmap_rayon(&path).map_err(io::Error::other)?;
+                Ok((name, hasher.finalize().into()))
+            })
+            .collect::<Result<_, io::Error>>()
+    })?;
 
     let collection = iroh_blobs::format::collection::Collection::from_iter(entries);
 
