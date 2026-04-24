@@ -121,8 +121,6 @@ register-artifacts:
 	        exit 1; \
 	    fi; \
 	done
-	@echo "Building native rad-artifact for CID + COB calls..."
-	@cargo build --release --quiet --bin $(BINARY_NAME)
 	@RAD_ARTIFACT="cargo run --release --quiet --bin $(BINARY_NAME) --"; \
 	for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do \
 	    name="$(BINARY_NAME)_$(VERSION)_$$target"; \
