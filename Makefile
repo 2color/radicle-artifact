@@ -97,7 +97,10 @@ upload:
 	@# Publish the `latest` pointer last: install.sh reads this to decide which
 	@# version to fetch, so it must only flip once the new binaries are live.
 	@echo "Updating latest pointer to $(VERSION)..."
+	@# chmod 644 before scp: mktemp creates files mode 0600 and scp preserves
+	@# that, which would leave the webserver unable to read `latest` (403).
 	@tmp_latest=$$(mktemp) && printf '%s\n' "$(VERSION)" > "$$tmp_latest" && \
+	    chmod 644 "$$tmp_latest" && \
 	    scp "$$tmp_latest" $(UPLOAD_HOST):$(UPLOAD_PATH)/latest && \
 	    rm -f "$$tmp_latest"
 	@echo
