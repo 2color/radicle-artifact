@@ -545,7 +545,11 @@ impl Release {
                 ),
             );
 
+            // For label/value lines, pad to 14 columns so values align. For
+            // standalone label lines (introducing a nested block), drop the
+            // padding so we don't emit trailing whitespace.
             let label = |k: &str| pad_right(&style.dim(k), 14);
+            let bare_label = |k: &str| style.dim(k);
             let cid_str = if style.verbose {
                 artifact.cid.clone()
             } else {
@@ -568,7 +572,7 @@ impl Release {
                     format!("    {}{}", label("locations"), style.dim("(none)")),
                 );
             } else {
-                push_line(&mut s, format!("    {}", label("locations")));
+                push_line(&mut s, format!("    {}", bare_label("locations")));
                 // Group locations by DID so each provider is one block.
                 let mut by_did: indexmap::IndexMap<Did, (Option<String>, Vec<&Url>)> =
                     indexmap::IndexMap::new();
@@ -589,14 +593,14 @@ impl Release {
             }
 
             if !artifact.attestations.is_empty() {
-                push_line(&mut s, format!("    {}", label("attestations")));
+                push_line(&mut s, format!("    {}", bare_label("attestations")));
                 for a in artifact.attestations.iter() {
                     let did = format_did(&a.did, &a.alias, style.verbose);
                     push_line(&mut s, format!("      {} {did}", style.green("✓")));
                 }
             }
             if !artifact.redactions.is_empty() {
-                push_line(&mut s, format!("    {}", label("redactions")));
+                push_line(&mut s, format!("    {}", bare_label("redactions")));
                 for r in artifact.redactions.iter() {
                     let did = format_did(&r.did, &r.alias, style.verbose);
                     let reason = if r.reason.is_empty() {

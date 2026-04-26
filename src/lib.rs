@@ -1933,4 +1933,73 @@ mod test {
         assert!(oids.contains(&oid1));
         assert!(oids.contains(&oid2));
     }
+
+    /// Visual smoke test: render a release with one artifact, one location and
+    /// one attestation in both compact (list) and detailed (show) styles. We
+    /// assert key visible substrings so the structure is locked in, and dump
+    /// the rendered output via `eprintln!` so `cargo test -- --nocapture` can
+    /// be used as a quick eyeball check during development.
+    #[test]
+    fn pretty_renders_compact_and_detailed() {
+        use std::collections::HashMap;
+
+        use crate::display;
+
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Initial commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "linux-amd64.tar.gz".into(), &alice.signer)
+            .unwrap();
+        release
+            .add_location(
+                cid,
+                Url::parse("https://alice.example.com/linux-amd64.tar.gz").unwrap(),
+                &alice.signer,
+            )
+            .unwrap();
+        // Bob attests; alice's self-attestation would be a no-op.
+        release.attest(cid, &bob.signer).unwrap();
+        let id = *release.id();
+        drop(release);
+
+        let release = releases.get(&id).unwrap().unwrap();
+        use radicle::storage::ReadRepository;
+        let delegates: BTreeSet<Did> = repo.delegates().unwrap().into_iter().collect();
+        let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
+        let filters = display::Filters {
+            delegates: &delegates,
+            redacted: false,
+            all_authors: false,
+        };
+        let title = display::CommitTitle::title(&*repo, release.oid());
+        let shown = display::Release::new(id, &release, &aliases, filters, title);
+
+        let plain = display::Style::plain(false);
+        let compact = shown.pretty_compact(plain);
+        let detailed = shown.pretty(plain);
+
+        eprintln!("=== compact ===\n{compact}");
+        eprintln!("=== detailed ===\n{detailed}");
+
+        // Compact carries the bullet, the artifact name, and the attestation
+        // badge with its count.
+        assert!(compact.contains('●'));
+        assert!(compact.contains("linux-amd64.tar.gz"));
+        assert!(compact.contains("✓1"));
+        assert!(compact.contains("Initial commit"));
+
+        // Detailed surfaces labeled fields and the location URL.
+        assert!(detailed.contains("Artifacts (1 item)"));
+        assert!(detailed.contains("cid"));
+        assert!(detailed.contains("author"));
+        assert!(detailed.contains("locations"));
+        assert!(detailed.contains("attestations"));
+        assert!(detailed.contains("alice.example.com/linux-amd64.tar.gz"));
+    }
 }
