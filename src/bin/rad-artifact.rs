@@ -446,6 +446,14 @@ fn use_pretty(pretty: bool, json: bool) -> bool {
     std::io::stdout().is_terminal()
 }
 
+/// Build a [`display::Style`]: color is on when stdout is a TTY and `NO_COLOR`
+/// is unset, off otherwise. `verbose` is forwarded to the style.
+fn pretty_style(verbose: bool) -> display::Style {
+    let color = std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    display::Style { verbose, color }
+}
+
 fn show_release(
     command::Show {
         pretty,
@@ -476,7 +484,7 @@ fn show_release(
     };
     let show = radicle_artifact::display::Release::new(id, &release, aliases, filters, title);
     if use_pretty(pretty, json) {
-        println!("{}", show.pretty(verbose));
+        println!("{}", show.pretty(pretty_style(verbose)));
     } else {
         println!(
             "{}",
@@ -525,7 +533,7 @@ fn list_releases(
     };
     let releases = display::Releases::new(iter, aliases, filters, empty, repo);
     if use_pretty(pretty, json) {
-        println!("{}", releases.pretty(verbose));
+        println!("{}", releases.pretty(pretty_style(verbose)));
     } else {
         println!(
             "{}",

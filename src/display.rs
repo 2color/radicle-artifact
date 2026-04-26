@@ -36,6 +36,55 @@ fn format_did(did: &Did, alias: &Option<String>, full: bool) -> String {
     }
 }
 
+/// Visible width of a string, ignoring ANSI SGR escape sequences and counting
+/// each remaining `char` as a single column. Sufficient for the limited set of
+/// characters used in our output (ASCII + a few BMP symbols like `…`, `●`, `▸`).
+fn visible_width(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut width = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            // Skip CSI sequence up to and including the final byte (0x40-0x7e).
+            i += 2;
+            while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        // Advance one UTF-8 codepoint.
+        let b = bytes[i];
+        let step = if b < 0x80 {
+            1
+        } else if b < 0xe0 {
+            2
+        } else if b < 0xf0 {
+            3
+        } else {
+            4
+        };
+        i += step;
+        width += 1;
+    }
+    width
+}
+
+/// Pad `s` on the right with spaces so its visible width is at least `target`.
+fn pad_right(s: &str, target: usize) -> String {
+    let w = visible_width(s);
+    if w >= target {
+        s.to_string()
+    } else {
+        let mut out = String::with_capacity(s.len() + target - w);
+        out.push_str(s);
+        for _ in 0..(target - w) {
+            out.push(' ');
+        }
+        out
+    }
+}
+
 /// Append a line to a string buffer.
 fn push_line(s: &mut String, line: String) {
     s.push_str(&line);
@@ -46,13 +95,13 @@ fn push_line(s: &mut String, line: String) {
 ///
 /// Computes column widths from all rows in a first pass, then emits each row
 /// with cells padded to those widths. Trailing whitespace on each line is
-/// trimmed.
+/// trimmed. ANSI escapes are excluded from width calculation.
 fn format_table(rows: &[Vec<String>], indent: usize) -> String {
     let ncols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut widths = vec![0usize; ncols];
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
-            widths[i] = widths[i].max(cell.len());
+            widths[i] = widths[i].max(visible_width(cell));
         }
     }
     let prefix = " ".repeat(indent);
@@ -61,7 +110,8 @@ fn format_table(rows: &[Vec<String>], indent: usize) -> String {
         let mut line = prefix.clone();
         for (i, cell) in row.iter().enumerate() {
             if i + 1 < row.len() {
-                line.push_str(&format!("{:<width$}  ", cell, width = widths[i]));
+                line.push_str(&pad_right(cell, widths[i]));
+                line.push_str("  ");
             } else {
                 line.push_str(cell);
             }
@@ -70,6 +120,63 @@ fn format_table(rows: &[Vec<String>], indent: usize) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Display style: knobs for verbosity and ANSI color output.
+#[derive(Clone, Copy, Default)]
+pub struct Style {
+    /// When true, render full IDs/keys instead of truncating.
+    pub verbose: bool,
+    /// When true, emit ANSI color escapes; when false, plain text.
+    pub color: bool,
+}
+
+impl Style {
+    /// Style with the given verbosity and color enabled.
+    pub fn colored(verbose: bool) -> Self {
+        Self {
+            verbose,
+            color: true,
+        }
+    }
+
+    /// Style with the given verbosity and color disabled.
+    pub fn plain(verbose: bool) -> Self {
+        Self {
+            verbose,
+            color: false,
+        }
+    }
+
+    fn paint(&self, code: &str, s: &str) -> String {
+        if self.color && !s.is_empty() {
+            format!("\x1b[{code}m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    }
+
+    fn bold(&self, s: &str) -> String {
+        self.paint("1", s)
+    }
+    fn dim(&self, s: &str) -> String {
+        self.paint("2", s)
+    }
+    fn cyan(&self, s: &str) -> String {
+        self.paint("36", s)
+    }
+    fn yellow(&self, s: &str) -> String {
+        self.paint("33", s)
+    }
+    fn green(&self, s: &str) -> String {
+        self.paint("32", s)
+    }
+    fn red(&self, s: &str) -> String {
+        self.paint("31", s)
+    }
+    fn magenta(&self, s: &str) -> String {
+        self.paint("35", s)
+    }
 }
 
 /// Resolve the first line of a git commit message for display.
@@ -152,18 +259,37 @@ impl Releases {
         Self { releases }
     }
 
-    /// Pretty print the set of [`Release`]s.
-    ///
-    /// When `verbose` is true, CIDs and NodeIDs are rendered in full rather
-    /// than being truncated.
-    pub fn pretty(&self, verbose: bool) -> String {
+    /// Pretty print the set of [`Release`]s as a compact list.
+    pub fn pretty(&self, style: Style) -> String {
         let mut s = String::new();
+        let total_artifacts: usize = self.releases.iter().map(|r| r.artifacts.len()).sum();
 
-        for shown in self.releases.iter() {
-            s.push_str(&shown.pretty(verbose));
-            s.push('\n');
+        for (i, shown) in self.releases.iter().enumerate() {
+            if i > 0 {
+                push_line(&mut s, style.dim("─────"));
+            }
+            s.push_str(&shown.pretty_compact(style));
         }
 
+        if !self.releases.is_empty() {
+            s.push('\n');
+        }
+        let summary = format!(
+            "{} {}, {} {}",
+            self.releases.len(),
+            if self.releases.len() == 1 {
+                "release"
+            } else {
+                "releases"
+            },
+            total_artifacts,
+            if total_artifacts == 1 {
+                "artifact"
+            } else {
+                "artifacts"
+            },
+        );
+        push_line(&mut s, style.dim(&summary));
         s
     }
 }
@@ -282,45 +408,57 @@ impl Release {
         }
     }
 
-    /// Pretty print a release.
-    ///
-    /// When `verbose` is true, CIDs and NodeIDs are rendered in full rather
-    /// than being truncated.
-    pub fn pretty(&self, verbose: bool) -> String {
-        let mut s = String::new();
-
-        let short_id = &self.release_id.to_string()[..7];
-        let short_oid = &self.oid.to_string()[..7];
-        let title_suffix = match &self.title {
-            Some(t) => t,
-            None => "",
+    /// Format the release header: bullet, ids, date, commit title.
+    fn header(&self, style: Style) -> String {
+        let id_str = if style.verbose {
+            self.release_id.to_string()
+        } else {
+            self.release_id.to_string()[..7].to_string()
+        };
+        let oid_str = if style.verbose {
+            self.oid.to_string()
+        } else {
+            self.oid.to_string()[..7].to_string()
         };
         let date = DateTime::<Utc>::from_timestamp(self.created_at as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
             .unwrap_or_else(|| self.created_at.to_string());
-        push_line(
-            &mut s,
-            format!("ID {short_id} | commit {short_oid} | {date} {title_suffix}"),
-        );
-        // Build a per-release artifact table: CID | name | author | locations.
-        // The locations cell summarises counts by URL scheme (e.g.
-        // "https: 2, iroh: 1") to keep the table compact even when an
-        // artifact is seeded from many endpoints.
-        // Attestations and redactions follow as additional rows.
+
+        let bullet = style.cyan("●");
+        let id = style.bold(&id_str);
+        let oid = style.yellow(&oid_str);
+        let date = style.dim(&date);
+        let title = match &self.title {
+            Some(t) if !t.is_empty() => format!("  {}", t),
+            _ => String::new(),
+        };
+        format!("{bullet} {id}  {oid}  {date}{title}")
+    }
+
+    /// Pretty print a release in compact form, suitable for `list`.
+    pub fn pretty_compact(&self, style: Style) -> String {
+        let mut s = String::new();
+        push_line(&mut s, self.header(style));
+
+        if self.artifacts.is_empty() {
+            push_line(&mut s, style.dim("  (no artifacts)"));
+            return s;
+        }
+
         let mut rows: Vec<Vec<String>> = Vec::new();
         for artifact in self.artifacts.iter() {
-            let cid_cell = if verbose {
+            let cid_cell = if style.verbose {
                 artifact.cid.clone()
             } else {
-                // Truncate CID to first 6 and last 6 visible chars for column width.
                 format!(
                     "{}…{}",
                     &artifact.cid[..6],
                     &artifact.cid[artifact.cid.len() - 6..]
                 )
             };
-            let author = format_did(&artifact.author, &artifact.author_alias, verbose);
-            // BTreeMap keeps the summary in a stable, scheme-sorted order.
+            let author = format_did(&artifact.author, &artifact.author_alias, style.verbose);
+
+            // Summarise location counts by URL scheme to keep the row compact.
             let mut scheme_counts: std::collections::BTreeMap<&str, usize> =
                 std::collections::BTreeMap::new();
             for loc in artifact.locations.iter() {
@@ -331,35 +469,145 @@ impl Release {
                 .map(|(scheme, count)| format!("{scheme}: {count}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            rows.push(vec![
-                cid_cell,
-                author,
-                artifact.name.clone(),
-                locations_cell,
-            ]);
 
+            let mut badges = String::new();
             if !artifact.attestations.is_empty() {
-                let nodes: Vec<_> = artifact
-                    .attestations
-                    .iter()
-                    .map(|a| format_did(&a.did, &a.alias, verbose))
-                    .collect();
-                rows.push(vec![
-                    String::new(),
-                    format!("attestations: {}", nodes.join(", ")),
-                ]);
+                badges.push_str(&style.green(&format!("✓{}", artifact.attestations.len())));
             }
-            for r in artifact.redactions.iter() {
-                let did = format_did(&r.did, &r.alias, verbose);
-                rows.push(vec![
-                    String::new(),
-                    format!("redacted: {did}"),
-                    r.reason.clone(),
-                ]);
+            if !artifact.redactions.is_empty() {
+                if !badges.is_empty() {
+                    badges.push(' ');
+                }
+                badges.push_str(&style.red(&format!("⊘{}", artifact.redactions.len())));
             }
+
+            rows.push(vec![
+                style.magenta(&cid_cell),
+                style.bold(&artifact.name),
+                style.dim(&author),
+                locations_cell,
+                badges,
+            ]);
         }
         s.push_str(&format_table(&rows, 2));
+        s
+    }
 
+    /// Pretty print a release in detailed form, suitable for `show`.
+    ///
+    /// Lays out each artifact as a labeled block with one field per line, so
+    /// individual fields are easy to scan and copy.
+    pub fn pretty(&self, style: Style) -> String {
+        let mut s = String::new();
+        push_line(&mut s, self.header(style));
+
+        if style.verbose {
+            // Surface the full release-id and oid as their own lines for copy/paste.
+            let label = |k: &str| style.dim(k);
+            push_line(
+                &mut s,
+                format!("  {} {}", label("release"), self.release_id),
+            );
+            push_line(&mut s, format!("  {} {}", label("commit "), self.oid));
+        }
+
+        if self.artifacts.is_empty() {
+            s.push('\n');
+            push_line(&mut s, style.dim("  (no artifacts)"));
+            return s;
+        }
+
+        s.push('\n');
+        let count = self.artifacts.len();
+        let heading = format!(
+            "Artifacts ({count} {})",
+            if count == 1 { "item" } else { "items" }
+        );
+        push_line(&mut s, format!("  {}", style.bold(&heading)));
+
+        for artifact in self.artifacts.iter() {
+            s.push('\n');
+            // Artifact heading: name in bold, badges aligned to the right.
+            let mut badges = String::new();
+            if !artifact.attestations.is_empty() {
+                badges.push_str(&style.green(&format!(" ✓{}", artifact.attestations.len())));
+            }
+            if !artifact.redactions.is_empty() {
+                badges.push_str(&style.red(&format!(" ⊘{}", artifact.redactions.len())));
+            }
+            push_line(
+                &mut s,
+                format!(
+                    "  {} {}{}",
+                    style.cyan("▸"),
+                    style.bold(&artifact.name),
+                    badges
+                ),
+            );
+
+            let label = |k: &str| pad_right(&style.dim(k), 14);
+            let cid_str = if style.verbose {
+                artifact.cid.clone()
+            } else {
+                format!(
+                    "{}…{}",
+                    &artifact.cid[..6],
+                    &artifact.cid[artifact.cid.len() - 6..]
+                )
+            };
+            push_line(
+                &mut s,
+                format!("    {}{}", label("cid"), style.magenta(&cid_str)),
+            );
+            let author = format_did(&artifact.author, &artifact.author_alias, style.verbose);
+            push_line(&mut s, format!("    {}{}", label("author"), author));
+
+            if artifact.locations.is_empty() {
+                push_line(
+                    &mut s,
+                    format!("    {}{}", label("locations"), style.dim("(none)")),
+                );
+            } else {
+                push_line(&mut s, format!("    {}", label("locations")));
+                // Group locations by DID so each provider is one block.
+                let mut by_did: indexmap::IndexMap<Did, (Option<String>, Vec<&Url>)> =
+                    indexmap::IndexMap::new();
+                for loc in artifact.locations.iter() {
+                    by_did
+                        .entry(loc.did)
+                        .or_insert_with(|| (loc.alias.clone(), Vec::new()))
+                        .1
+                        .push(&loc.url);
+                }
+                for (did, (alias, urls)) in by_did {
+                    let provider = format_did(&did, &alias, style.verbose);
+                    push_line(&mut s, format!("      {}", style.dim(&provider)));
+                    for url in urls {
+                        push_line(&mut s, format!("        {}", url));
+                    }
+                }
+            }
+
+            if !artifact.attestations.is_empty() {
+                push_line(&mut s, format!("    {}", label("attestations")));
+                for a in artifact.attestations.iter() {
+                    let did = format_did(&a.did, &a.alias, style.verbose);
+                    push_line(&mut s, format!("      {} {did}", style.green("✓")));
+                }
+            }
+            if !artifact.redactions.is_empty() {
+                push_line(&mut s, format!("    {}", label("redactions")));
+                for r in artifact.redactions.iter() {
+                    let did = format_did(&r.did, &r.alias, style.verbose);
+                    let reason = if r.reason.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {}", style.dim(&r.reason))
+                    };
+                    push_line(&mut s, format!("      {} {did}{reason}", style.red("⊘")));
+                }
+            }
+        }
         s
     }
 }
