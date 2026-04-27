@@ -474,7 +474,13 @@ fn show_release(
         .get(&id)
         .map_err(|err| error::Find::Lookup { oid, err })?
         .ok_or(error::Find::NoRelease(oid))?;
-    let title = display::CommitTitle::title(repo, release.oid());
+    // Prefer the tag's title (the annotated tag's message line) when
+    // the release records a tag; fall back to the commit summary if
+    // the tag object isn't fetched locally.
+    let title = release
+        .tag()
+        .and_then(|t| display::CommitTitle::title(repo, t))
+        .or_else(|| display::CommitTitle::title(repo, release.oid()));
     let filters = display::Filters {
         delegates,
         redacted,

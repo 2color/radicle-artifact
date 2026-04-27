@@ -72,13 +72,16 @@ fn format_table(rows: &[Vec<String>], indent: usize) -> String {
     out
 }
 
-/// Resolve the first line of a git commit message for display.
+/// Resolve the first line of a release's title for display.
 ///
-/// Implementations typically look up the commit via `git2` and return
-/// its summary. Return `None` when the OID cannot be resolved (e.g.
-/// it lives in a fork that hasn't been fetched).
+/// A release's title is the first line of either the annotated tag's
+/// message (for tag-keyed releases) or the commit summary (for plain
+/// commit releases). Implementations look the object up via `git2`.
+/// Return `None` when the OID cannot be resolved (e.g. it lives in a
+/// fork that hasn't been fetched).
 pub trait CommitTitle {
-    /// Return the first line of the commit message for `oid`, if available.
+    /// Return the first line of the message for `oid`, if available.
+    /// `oid` may refer to either a commit or an annotated tag object.
     fn title(&self, oid: &Oid) -> Option<String>;
 }
 
@@ -90,12 +93,36 @@ impl CommitTitle for () {
 }
 
 /// Resolve titles from a Radicle git repository.
+///
+/// Looks up the object at `oid`. If it's an annotated tag, returns the
+/// first non-empty line of the tag message, falling back to the peeled
+/// commit's summary when the tag has no message. If it's a commit,
+/// returns the commit summary.
 impl CommitTitle for Repository {
     fn title(&self, oid: &Oid) -> Option<String> {
-        self.backend
-            .find_commit((*oid).into())
-            .ok()
-            .and_then(|c| c.summary().map(String::from))
+        let obj = self.backend.find_object((*oid).into(), None).ok()?;
+        match obj.kind() {
+            Some(radicle::git::raw::ObjectType::Tag) => {
+                let tag = obj.as_tag()?;
+                let from_tag = tag
+                    .message()
+                    .and_then(|m| m.lines().next())
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(String::from);
+                from_tag.or_else(|| {
+                    tag.target()
+                        .ok()
+                        .and_then(|t| t.peel(radicle::git::raw::ObjectType::Commit).ok())
+                        .and_then(|c| c.into_commit().ok())
+                        .and_then(|c| c.summary().map(String::from))
+                })
+            }
+            _ => obj
+                .into_commit()
+                .ok()
+                .and_then(|c| c.summary().map(String::from)),
+        }
     }
 }
 
@@ -130,7 +157,9 @@ impl Releases {
     /// redaction and author-trust knobs. When `show_empty` is false,
     /// releases with no visible artifacts are excluded from the output.
     ///
-    /// The `titles` resolver looks up commit summaries for pretty output.
+    /// The `titles` resolver looks up the title line for each release's
+    /// keying ref — the tag message when the release records a tag,
+    /// otherwise the commit summary.
     ///
     /// [release]: crate::Release
     pub fn new(
@@ -142,7 +171,12 @@ impl Releases {
     ) -> Self {
         let mut releases: Vec<_> = releases
             .map(|(id, release)| {
-                let title = titles.title(release.oid());
+                // Prefer the tag's title when set; fall back to the commit
+                // summary if the tag object isn't present locally.
+                let title = release
+                    .tag()
+                    .and_then(|t| titles.title(t))
+                    .or_else(|| titles.title(release.oid()));
                 Release::new(id, &release, aliases, filters, title)
             })
             .filter(|r| show_empty || !r.artifacts.is_empty())
@@ -176,8 +210,15 @@ pub struct Release {
     release_id: ReleaseId,
     /// Unix seconds when this release COB was created.
     created_at: u64,
+    /// Commit OID this release is keyed by.
     oid: Oid,
-    /// Locally-resolved commit summary; not persisted in the COB.
+    /// Annotated tag OID, when this release is associated with a tag.
+    /// Absent for plain commit-keyed releases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<Oid>,
+    /// First line of the tag message (for tag-keyed releases) or commit
+    /// summary (for commit-keyed releases). Locally-resolved; not
+    /// persisted in the COB.
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     artifacts: Vec<Artifact>,
@@ -192,7 +233,8 @@ impl Release {
     /// author is not a delegate are hidden. Set the corresponding
     /// [`Filters`] flags to `true` to include them.
     ///
-    /// `title` is the first line of the commit message, if available.
+    /// `title` is the first line of the tag or commit message, if
+    /// available — see [`CommitTitle`].
     pub fn new(
         release_id: ReleaseId,
         release: &crate::Release,
@@ -277,6 +319,7 @@ impl Release {
             release_id,
             created_at: release.timestamp(),
             oid: *release.oid(),
+            tag: release.tag().copied(),
             title,
             artifacts,
         }
@@ -298,9 +341,18 @@ impl Release {
         let date = DateTime::<Utc>::from_timestamp(self.created_at as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
             .unwrap_or_else(|| self.created_at.to_string());
+        // When a tag association is recorded, surface both the tag and
+        // the commit; otherwise just the commit.
+        let ref_label = match &self.tag {
+            Some(tag_oid) => {
+                let short_tag = &tag_oid.to_string()[..7];
+                format!("tag {short_tag} -> commit {short_oid}")
+            }
+            None => format!("commit {short_oid}"),
+        };
         push_line(
             &mut s,
-            format!("ID {short_id} | commit {short_oid} | {date} {title_suffix}"),
+            format!("ID {short_id} | {ref_label} | {date} {title_suffix}"),
         );
         // Build a per-release artifact table: CID | name | author | locations.
         // The locations cell summarises counts by URL scheme (e.g.
