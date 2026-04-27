@@ -670,6 +670,9 @@ where
 
     /// Create a new [`Release`] in the repository.
     ///
+    /// `tag` is an optional annotated tag OID to record alongside the
+    /// commit; see [`Release::tag`].
+    ///
     /// The signer's DID confers no release-level privilege — it's the git
     /// committer of the wrapping COB op, not the "owner" of the release.
     /// Prefer [`Releases::find_or_create_by_oid`] to avoid creating duplicate
@@ -677,6 +680,7 @@ where
     pub fn create<'g, G>(
         &'g mut self,
         oid: Oid,
+        tag: Option<Oid>,
         signer: &Device<G>,
     ) -> Result<ReleaseMut<'a, 'g, R>, store::Error>
     where
@@ -687,7 +691,7 @@ where
             &mut self.raw,
             signer,
             |tx, _| {
-                tx.create(oid, None)?;
+                tx.create(oid, tag)?;
                 Ok(())
             },
         )?;
@@ -699,33 +703,65 @@ where
         })
     }
 
-    /// Find a [`Release`] for the given OID, or create one if none exists.
+    /// Find a [`Release`] for the given commit OID, or create one if no
+    /// suitable release exists.
     ///
-    /// When duplicate release COBs exist for the same OID (concurrent creation
-    /// across unsynced nodes), returns the one with the smallest [`ReleaseId`].
-    /// The tie-break is deterministic across replicas, so subsequent writes
-    /// converge on a single release rather than spawning more duplicates; the
-    /// read path already unions across duplicates via [`Releases::find_by_cid`].
+    /// When duplicate release COBs exist for the same commit (concurrent
+    /// creation across unsynced nodes), the canonical COB is selected by:
+    ///
+    /// 1. Prefer releases authored by a repository delegate (see
+    ///    [`Release::creator`]); pick the smallest [`ReleaseId`] among
+    ///    them.
+    /// 2. Otherwise, if the signer is a delegate, create a fresh release
+    ///    so the delegate writes against a delegate-authored COB rather
+    ///    than inheriting a non-delegate's metadata.
+    /// 3. Otherwise, reuse the existing release with the smallest
+    ///    [`ReleaseId`].
+    /// 4. If no release exists, create one.
+    ///
+    /// `tag` is recorded only when this call creates a new release. If an
+    /// existing release is returned, the caller-supplied `tag` is
+    /// discarded — the original creator's tag wins (first-writer-wins).
     pub fn find_or_create_by_oid<'g, G>(
         &'g mut self,
         oid: Oid,
+        tag: Option<Oid>,
+        delegates: &BTreeSet<Did>,
         signer: &Device<G>,
     ) -> Result<ReleaseMut<'a, 'g, R>, store::Error>
     where
         G: Signer<crypto::Signature>,
     {
-        let mut canonical: Option<ReleaseId> = None;
+        let mut delegate_canonical: Option<ReleaseId> = None;
+        let mut any_canonical: Option<ReleaseId> = None;
         for result in self.find_by_oid(oid)? {
-            let (id, _) = result?;
-            canonical = Some(match canonical {
-                Some(current) if current <= id => current,
-                _ => id,
-            });
+            let (id, release) = result?;
+            // Smallest ID wins among each class — deterministic across
+            // replicas so callers converge.
+            match any_canonical {
+                Some(current) if current <= id => {}
+                _ => any_canonical = Some(id),
+            }
+            if delegates.contains(release.creator()) {
+                match delegate_canonical {
+                    Some(current) if current <= id => {}
+                    _ => delegate_canonical = Some(id),
+                }
+            }
         }
 
-        match canonical {
-            None => self.create(oid, signer),
-            Some(id) => self.get_mut(&id),
+        if let Some(id) = delegate_canonical {
+            return self.get_mut(&id);
+        }
+        let signer_is_delegate = delegates.contains(&Did::from(*signer.public_key()));
+        match (any_canonical, signer_is_delegate) {
+            // Delegates always land on a delegate-authored COB; create
+            // a fresh one rather than reusing a non-delegate's release.
+            (_, true) => self.create(oid, tag, signer),
+            // Non-delegate caller: reuse any existing COB if there is
+            // one, else bootstrap a new non-delegate release.
+            (Some(id), false) => self.get_mut(&id),
+            (None, false) => self.create(oid, tag, signer),
         }
     }
 }

@@ -265,12 +265,12 @@ where
         }
     };
 
-    // One release per OID: reuse the existing release regardless of who
-    // created it, otherwise create a fresh one. If duplicate release COBs
-    // exist for this OID (concurrent creation across unsynced nodes), the
-    // store deterministically picks one so all replicas converge on it.
+    // Find an existing release for this commit, preferring delegate-
+    // authored COBs; if the signer is a delegate, bootstrap a fresh COB
+    // rather than reusing a non-delegate's release.
+    let delegates = repo_delegates(repo)?;
     let mut release = releases
-        .find_or_create_by_oid(oid, signer)
+        .find_or_create_by_oid(oid, None, &delegates, signer)
         .map_err(|err| error::Add::Create { oid, err })?;
     let id = *release.id();
     release
@@ -1510,6 +1510,8 @@ mod error {
         Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
+        #[error(transparent)]
+        Delegates(#[from] Delegates),
         #[error("failed to create release for commit {oid}")]
         Create {
             oid: Oid,
