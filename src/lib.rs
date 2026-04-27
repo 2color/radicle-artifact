@@ -130,16 +130,25 @@ impl From<ObjectId> for ReleaseId {
     }
 }
 
-/// A `Release` groups content-addressed artifacts under a single Git OID
-/// (annotated tag or commit).
+/// A `Release` groups content-addressed artifacts under a single Git commit.
 ///
 /// Multiple artifacts can exist per release, and multiple users can announce
-/// discovery locations for each artifact. A release has no distinguished
-/// "creator" — the signer of the first COB op is incidental and confers no
-/// privileges. Per-artifact attribution lives on [`Artifact::author`].
+/// discovery locations for each artifact. Per-artifact attribution lives on
+/// [`Artifact::author`].
+///
+/// A release may optionally record the OID of an annotated tag whose target
+/// peels to [`Release::oid`]. The COB itself is always commit-keyed (the COB
+/// store requires a commit object as the parent), but the tag OID is
+/// preserved as metadata so the link to the tag survives across replicas.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
     oid: Oid,
+    /// Optional annotated tag object OID associated with this release.
+    /// `None` for plain commit-keyed releases. Set once at creation time
+    /// from the initial `Action::Create`'s `tag` field; first-writer-wins
+    /// — subsequent `Create` actions are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tag: Option<Oid>,
     artifacts: IndexMap<Cid, Artifact>,
     /// Unix seconds when this release COB was first created.
     /// Derived from the first op's timestamp; not stored in the action payload.
@@ -240,12 +249,18 @@ impl Artifact {
 /// The collaborative object actions for artifact releases.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
-    /// Create a [`Release`] for the given [`Oid`].
+    /// Create a [`Release`] for the given commit [`Oid`].
     ///
     /// Must be the first action. Subsequent `Create` actions are ignored.
     Create {
-        /// The commit or annotated tag OID this release corresponds to.
+        /// The commit OID this release is keyed by. Must be a commit
+        /// object — the COB store rejects non-commit parents.
         oid: Oid,
+        /// Optional annotated tag object OID. When `Some`, the tag's
+        /// target is expected to peel to `oid`; the COB records the
+        /// link as durable metadata. `None` for plain commit releases.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tag: Option<Oid>,
     },
     /// Add an artifact to the release.
     ///
@@ -307,7 +322,10 @@ pub enum Action {
 impl CobAction for Action {
     fn parents(&self) -> Vec<radicle::git::Oid> {
         match self {
-            Action::Create { oid } => vec![*oid],
+            // Only the commit OID is exposed as a parent — the optional
+            // tag OID is metadata, not a COB-graph parent (and the COB
+            // store would reject a tag object as a parent).
+            Action::Create { oid, .. } => vec![*oid],
             _ => Vec::new(),
         }
     }
@@ -315,17 +333,27 @@ impl CobAction for Action {
 
 impl Release {
     /// Construct a new [`Release`].
-    fn new(oid: Oid, timestamp: u64) -> Self {
+    fn new(oid: Oid, tag: Option<Oid>, timestamp: u64) -> Self {
         Self {
             oid,
+            tag,
             artifacts: IndexMap::new(),
             timestamp,
         }
     }
 
-    /// Get the [`Oid`] this release is associated with.
+    /// Get the commit [`Oid`] this release is keyed by.
     pub fn oid(&self) -> &Oid {
         &self.oid
+    }
+
+    /// Get the annotated tag [`Oid`] linked to this release, if any.
+    ///
+    /// `None` means the release was created against a commit directly.
+    /// `Some(tag_oid)` means the release was created against an annotated
+    /// tag whose target peels to [`Self::oid`].
+    pub fn tag(&self) -> Option<&Oid> {
+        self.tag.as_ref()
     }
 
     /// Get the Unix timestamp (seconds) when this release was created.
@@ -415,7 +443,7 @@ impl store::Cob for Release {
 
     fn from_root<R: ReadRepository>(op: Op<Self::Action>, repo: &R) -> Result<Self, Self::Error> {
         let mut actions = op.actions.into_iter();
-        let Some(Action::Create { oid }) = actions.next() else {
+        let Some(Action::Create { oid, tag }) = actions.next() else {
             return Err(error::Build::Initial);
         };
         repo.commit(oid)
@@ -423,7 +451,7 @@ impl store::Cob for Release {
         // Per-op author is still needed for artifact/attestation/redaction
         // attribution, but is no longer recorded at the release level.
         let author = Did::from(op.author);
-        let mut release = Self::new(oid, op.timestamp.as_secs());
+        let mut release = Self::new(oid, tag, op.timestamp.as_secs());
         for action in actions {
             release.action(author, action);
         }
@@ -638,7 +666,7 @@ where
             &mut self.raw,
             signer,
             |tx, _| {
-                tx.create(oid)?;
+                tx.create(oid, None)?;
                 Ok(())
             },
         )?;
@@ -870,8 +898,8 @@ where
     R: ReadRepository,
 {
     /// Add a create operation to the transaction.
-    fn create(&mut self, oid: Oid) -> Result<(), store::Error> {
-        self.0.push(Action::Create { oid })
+    fn create(&mut self, oid: Oid, tag: Option<Oid>) -> Result<(), store::Error> {
+        self.0.push(Action::Create { oid, tag })
     }
 
     /// Add an artifact to the transaction.
