@@ -140,6 +140,11 @@ impl From<ObjectId> for ReleaseId {
 /// peels to [`Release::oid`]. The COB itself is always commit-keyed (the COB
 /// store requires a commit object as the parent), but the tag OID is
 /// preserved as metadata so the link to the tag survives across replicas.
+///
+/// The DID of the user who created the COB is recorded as [`Release::creator`].
+/// This is used by [`Releases::find_or_create_by_oid`] and
+/// [`Releases::find_unique_by_oid`] to prefer delegate-authored releases when
+/// duplicate COBs exist for the same commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
     oid: Oid,
@@ -149,6 +154,10 @@ pub struct Release {
     /// — subsequent `Create` actions are ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tag: Option<Oid>,
+    /// DID of the user that created the COB (signer of the initial op).
+    /// Used to apply delegate-priority rules when multiple COBs exist for
+    /// the same commit. Persisted; not derived from the action stream.
+    creator: Did,
     artifacts: IndexMap<Cid, Artifact>,
     /// Unix seconds when this release COB was first created.
     /// Derived from the first op's timestamp; not stored in the action payload.
@@ -333,10 +342,11 @@ impl CobAction for Action {
 
 impl Release {
     /// Construct a new [`Release`].
-    fn new(oid: Oid, tag: Option<Oid>, timestamp: u64) -> Self {
+    fn new(oid: Oid, tag: Option<Oid>, creator: Did, timestamp: u64) -> Self {
         Self {
             oid,
             tag,
+            creator,
             artifacts: IndexMap::new(),
             timestamp,
         }
@@ -354,6 +364,16 @@ impl Release {
     /// tag whose target peels to [`Self::oid`].
     pub fn tag(&self) -> Option<&Oid> {
         self.tag.as_ref()
+    }
+
+    /// Get the [`Did`] of the user who created this release COB.
+    ///
+    /// This is the signer of the initial op, recorded once at creation.
+    /// Used by canonical-COB selection rules (see
+    /// [`Releases::find_or_create_by_oid`]) to prefer delegate-authored
+    /// releases when duplicates exist for the same commit.
+    pub fn creator(&self) -> &Did {
+        &self.creator
     }
 
     /// Get the Unix timestamp (seconds) when this release was created.
@@ -448,10 +468,11 @@ impl store::Cob for Release {
         };
         repo.commit(oid)
             .map_err(|err| error::Build::MissingCommit { oid, err })?;
-        // Per-op author is still needed for artifact/attestation/redaction
-        // attribution, but is no longer recorded at the release level.
+        // The signer of the initial op becomes the COB's creator. The
+        // same DID is used as the author for any further actions in
+        // this op (artifact/attestation/redaction attribution).
         let author = Did::from(op.author);
-        let mut release = Self::new(oid, tag, op.timestamp.as_secs());
+        let mut release = Self::new(oid, tag, author, op.timestamp.as_secs());
         for action in actions {
             release.action(author, action);
         }
