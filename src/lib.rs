@@ -35,11 +35,18 @@
 //! #     node: alice, repo, ..
 //! # } = test::setup::NodeWithRepo::default();
 //! # let oid = commit(&repo.backend, "Test Commit");
+//! # let delegates: std::collections::BTreeSet<radicle::identity::Did> =
+//! #     <radicle::storage::git::Repository as radicle::prelude::ReadRepository>::delegates(&*repo)
+//! #         .unwrap()
+//! #         .into_iter()
+//! #         .collect();
 //! # let repo = (&*repo).clone();
 //! let mut releases = Releases::open(repo).unwrap();
 //!
 //! // find_or_create_by_oid creates the release COB automatically if needed.
-//! let mut release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+//! let mut release = releases
+//!     .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
+//!     .unwrap();
 //!
 //! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse().unwrap();
 //! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
@@ -1052,6 +1059,15 @@ mod test {
             .into()
     }
 
+    /// Collect the delegate set for a Radicle storage repository for use
+    /// with `find_or_create_by_oid` and `find_unique_by_oid`.
+    fn delegates(
+        repo: &radicle::storage::git::Repository,
+    ) -> std::collections::BTreeSet<Did> {
+        use radicle::prelude::ReadRepository;
+        repo.delegates().unwrap().into_iter().collect()
+    }
+
     #[test]
     fn e2e() {
         let test::setup::NodeWithRepo {
@@ -1061,7 +1077,7 @@ mod test {
         let mut releases = Releases::open(&*repo).unwrap();
 
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         // Alice adds an artifact.
         let cid = test_cid(1);
@@ -1113,7 +1129,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let mut releases = Releases::open(&*repo).unwrap();
         let oid = test::arbitrary::oid();
-        let release = releases.create(oid, &alice.signer);
+        let release = releases.create(oid, None, &alice.signer);
         assert!(release.is_err());
     }
 
@@ -1125,11 +1141,11 @@ mod test {
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let r1 = {
-            let r1 = releases.create(oid, &alice.signer).unwrap();
+            let r1 = releases.create(oid, None, &alice.signer).unwrap();
             r1.id
         };
         let r2 = {
-            let r2 = releases.create(oid, &alice.signer).unwrap();
+            let r2 = releases.create(oid, None, &alice.signer).unwrap();
             r2.id
         };
 
@@ -1145,7 +1161,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1168,7 +1184,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1187,7 +1203,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1211,7 +1227,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(99);
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
@@ -1230,8 +1246,8 @@ mod test {
         let oid2 = commit(&repo.backend, "Commit B");
         let mut releases = Releases::open(&*repo).unwrap();
 
-        let id1 = releases.create(oid1, &alice.signer).unwrap().id;
-        let _id2 = releases.create(oid2, &alice.signer).unwrap().id;
+        let id1 = releases.create(oid1, None, &alice.signer).unwrap().id;
+        let _id2 = releases.create(oid2, None, &alice.signer).unwrap().id;
 
         // find_by_oid should return only the release matching oid1.
         let results: Vec<_> = releases
@@ -1253,7 +1269,7 @@ mod test {
         let other_oid = commit(&repo.backend, "Commit B");
         let mut releases = Releases::open(&*repo).unwrap();
 
-        releases.create(oid, &alice.signer).unwrap();
+        releases.create(oid, None, &alice.signer).unwrap();
 
         let results: Vec<_> = releases
             .find_by_oid(other_oid)
@@ -1270,7 +1286,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1330,7 +1346,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1352,7 +1368,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1374,7 +1390,7 @@ mod test {
         let test::setup::NodeWithRepo { node: carol, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1400,7 +1416,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1423,7 +1439,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1445,7 +1461,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         // Attest a CID that doesn't exist in the release.
         let cid = test_cid(99);
@@ -1462,7 +1478,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1484,7 +1500,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1510,7 +1526,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1544,7 +1560,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1572,7 +1588,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1598,7 +1614,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1624,7 +1640,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1651,7 +1667,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1679,7 +1695,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1705,7 +1721,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1726,7 +1742,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1747,7 +1763,7 @@ mod test {
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         // Try to redact a CID that was never added — should error.
         let cid = test_cid(99);
@@ -1776,7 +1792,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1827,7 +1843,7 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
-        let mut release = releases.create(oid, &alice.signer).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         let cid = test_cid(1);
         release
@@ -1872,12 +1888,12 @@ mod test {
 
         // Create two releases with different artifacts.
         {
-            let mut r1 = releases.create(oid1, &alice.signer).unwrap();
+            let mut r1 = releases.create(oid1, None, &alice.signer).unwrap();
             r1.add_artifact(cid1, "artifact-one".into(), &alice.signer)
                 .unwrap();
         }
         {
-            let mut r2 = releases.create(oid2, &alice.signer).unwrap();
+            let mut r2 = releases.create(oid2, None, &alice.signer).unwrap();
             r2.add_artifact(cid2, "artifact-two".into(), &alice.signer)
                 .unwrap();
         }
@@ -1904,10 +1920,13 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
+        let delegates = delegates(&repo);
         let mut releases = Releases::open(&*repo).unwrap();
 
         // No release exists yet — find_or_create_by_oid should create one.
-        let release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+        let release = releases
+            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
+            .unwrap();
         assert_eq!(release.oid(), &oid);
     }
 
@@ -1917,69 +1936,145 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
+        let delegates = delegates(&repo);
         let mut releases = Releases::open(&*repo).unwrap();
 
         let id = {
-            let r = releases.create(oid, &alice.signer).unwrap();
+            let r = releases.create(oid, None, &alice.signer).unwrap();
             *r.id()
         };
 
         // Release already exists — find_or_create_by_oid should return it.
-        let release = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+        let release = releases
+            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
+            .unwrap();
         assert_eq!(*release.id(), id);
     }
 
     #[test]
-    fn find_or_create_picks_smallest_id_when_duplicates_exist() {
-        // Duplicate release COBs for the same OID can exist when two nodes
-        // concurrently create a release before syncing. find_or_create_by_oid
-        // must deterministically return the same one on every replica so that
-        // subsequent writes converge rather than spawning more duplicates.
+    fn find_or_create_prefers_delegate_release() {
+        // Two duplicate COBs for the same commit, one by a delegate
+        // (Alice) and one by a non-delegate (Bob). find_or_create_by_oid
+        // must return the delegate's COB regardless of which has the
+        // smaller ReleaseId, so that delegate-authored releases are
+        // canonical across replicas.
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
+        let delegates = delegates(&repo);
         let mut releases = Releases::open(&*repo).unwrap();
 
-        let a = *releases.create(oid, &alice.signer).unwrap().id();
-        let b = *releases.create(oid, &bob.signer).unwrap().id();
-        let expected = std::cmp::min(a, b);
+        let alice_id = *releases.create(oid, None, &alice.signer).unwrap().id();
+        let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
 
-        let picked = *releases
-            .find_or_create_by_oid(oid, &alice.signer)
+        // Alice is a repo delegate, Bob is not. The selection must
+        // return Alice's COB irrespective of which side has the lower
+        // id and which signer is making the lookup.
+        let picked_alice = *releases
+            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
             .unwrap()
             .id();
-        assert_eq!(picked, expected);
-
-        // A different signer must pick the same release — the tie-break is
-        // signer-independent so replicas converge.
-        let picked_again = *releases
-            .find_or_create_by_oid(oid, &bob.signer)
+        let picked_bob = *releases
+            .find_or_create_by_oid(oid, None, &delegates, &bob.signer)
             .unwrap()
             .id();
-        assert_eq!(picked_again, expected);
+        assert_eq!(picked_alice, alice_id);
+        assert_eq!(picked_bob, alice_id);
+        assert_ne!(alice_id, bob_id);
     }
 
     #[test]
-    fn find_or_create_reuses_release_across_signers() {
-        // Exercises the post-refactor invariant: a non-delegate calling
-        // find_or_create_by_oid on a commit that already has a release
-        // (regardless of who created it) must reuse the existing release
-        // rather than creating a duplicate.
+    fn find_or_create_creates_new_when_only_non_delegate_exists() {
+        // A non-delegate (Bob) has created a release on a commit; a
+        // delegate (Alice) then calls find_or_create_by_oid. The
+        // delegate must bootstrap their own COB rather than reuse
+        // Bob's, so delegate-authored metadata (tag, timestamp,
+        // creator) lives on the canonical release.
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "v1.0");
+        let delegates = delegates(&repo);
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
+        let alice_id = *releases
+            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
+            .unwrap()
+            .id();
+        assert_ne!(alice_id, bob_id, "delegate should bootstrap a fresh COB");
+
+        // A second find_or_create_by_oid by Alice must converge on her
+        // freshly bootstrapped delegate COB rather than churn out
+        // another duplicate.
+        let again = *releases
+            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
+            .unwrap()
+            .id();
+        assert_eq!(again, alice_id);
+    }
+
+    #[test]
+    fn find_or_create_non_delegate_reuses_non_delegate_release() {
+        // No delegate-authored release exists, so a non-delegate
+        // calling find_or_create_by_oid must reuse whatever
+        // non-delegate release is already there rather than create
+        // duplicates. The repo's only delegate is `_alice`; she never
+        // calls into the store herself in this test.
+        let test::setup::NodeWithRepo {
+            node: _alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: carol, .. } =
+            test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "v1.0");
+        // Bob and Carol are not delegates of repo.
+        let delegates = delegates(&repo);
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
+        let carol_id = *releases
+            .find_or_create_by_oid(oid, None, &delegates, &carol.signer)
+            .unwrap()
+            .id();
+        assert_eq!(carol_id, bob_id);
+        let all: Vec<_> = releases
+            .find_by_oid(oid)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn find_or_create_reuses_release_across_signers() {
+        // Two delegates calling find_or_create_by_oid against the same
+        // commit must converge on a single release. (The first
+        // delegate creates it; the second finds it.)
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "v1.0");
+        // Spike the delegate set to include both Alice and Bob so that
+        // Bob's call doesn't bootstrap its own COB.
+        let mut delegates = delegates(&repo);
+        delegates.insert(Did::from(*bob.signer.public_key()));
         let mut releases = Releases::open(&*repo).unwrap();
 
         let alice_id = {
-            let r = releases.find_or_create_by_oid(oid, &alice.signer).unwrap();
+            let r = releases
+                .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
+                .unwrap();
             *r.id()
         };
         let bob_id = {
-            let r = releases.find_or_create_by_oid(oid, &bob.signer).unwrap();
+            let r = releases
+                .find_or_create_by_oid(oid, None, &delegates, &bob.signer)
+                .unwrap();
             *r.id()
         };
 
@@ -2006,12 +2101,12 @@ mod test {
 
         let cid = test_cid(1);
         {
-            let mut r = releases.create(oid, &alice.signer).unwrap();
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
             r.add_artifact(cid, "alice-built".into(), &alice.signer)
                 .unwrap();
         }
         {
-            let mut r = releases.create(oid, &bob.signer).unwrap();
+            let mut r = releases.create(oid, None, &bob.signer).unwrap();
             r.add_artifact(cid, "bob-built".into(), &bob.signer)
                 .unwrap();
         }
@@ -2035,11 +2130,11 @@ mod test {
 
         let cid = test_cid(1);
         {
-            let mut r = releases.create(oid1, &alice.signer).unwrap();
+            let mut r = releases.create(oid1, None, &alice.signer).unwrap();
             r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
         }
         {
-            let mut r = releases.create(oid2, &alice.signer).unwrap();
+            let mut r = releases.create(oid2, None, &alice.signer).unwrap();
             r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
         }
 
@@ -2048,5 +2143,184 @@ mod test {
         let oids: BTreeSet<_> = found.iter().map(|(_, r)| *r.oid()).collect();
         assert!(oids.contains(&oid1));
         assert!(oids.contains(&oid2));
+    }
+
+    #[test]
+    fn create_records_tag_oid() {
+        // The tag argument passed to create must be persisted on the
+        // resulting release and survive a subsequent lookup.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Tagged release");
+        let tag_oid = test::arbitrary::oid();
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let id = *releases
+            .create(oid, Some(tag_oid), &alice.signer)
+            .unwrap()
+            .id();
+        let release = releases.get(&id).unwrap().unwrap();
+        assert_eq!(release.tag(), Some(&tag_oid));
+        assert_eq!(release.oid(), &oid);
+    }
+
+    #[test]
+    fn create_without_tag_leaves_none() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Plain commit release");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let id = *releases.create(oid, None, &alice.signer).unwrap().id();
+        let release = releases.get(&id).unwrap().unwrap();
+        assert_eq!(release.tag(), None);
+    }
+
+    #[test]
+    fn find_or_create_first_writer_wins_tag() {
+        // Once a release records a tag, a later find_or_create_by_oid
+        // call passing a different tag must not overwrite it. The
+        // canonical (first) creator's tag wins.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Tagged release");
+        let tag_a = test::arbitrary::oid();
+        let tag_b = test::arbitrary::oid();
+        let delegates = delegates(&repo);
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let first_id = *releases
+            .find_or_create_by_oid(oid, Some(tag_a), &delegates, &alice.signer)
+            .unwrap()
+            .id();
+        let second_id = *releases
+            .find_or_create_by_oid(oid, Some(tag_b), &delegates, &alice.signer)
+            .unwrap()
+            .id();
+        assert_eq!(first_id, second_id);
+
+        let release = releases.get(&first_id).unwrap().unwrap();
+        assert_eq!(release.tag(), Some(&tag_a));
+    }
+
+    #[test]
+    fn tag_persists_through_reload() {
+        // Reopening the store from disk must still surface the tag
+        // recorded at creation time.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Tagged release");
+        let tag_oid = test::arbitrary::oid();
+
+        let id = {
+            let mut releases = Releases::open(&*repo).unwrap();
+            *releases
+                .create(oid, Some(tag_oid), &alice.signer)
+                .unwrap()
+                .id()
+        };
+        let releases = Releases::open(&*repo).unwrap();
+        let release = releases.get(&id).unwrap().unwrap();
+        assert_eq!(release.tag(), Some(&tag_oid));
+    }
+
+    #[test]
+    fn creator_persists_through_reload() {
+        // The creator DID is recorded once at creation and must survive
+        // a store reopen — it's the input to delegate-priority rules.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let alice_did = Did::from(*alice.signer.public_key());
+
+        let id = {
+            let mut releases = Releases::open(&*repo).unwrap();
+            *releases.create(oid, None, &alice.signer).unwrap().id()
+        };
+        let releases = Releases::open(&*repo).unwrap();
+        let release = releases.get(&id).unwrap().unwrap();
+        assert_eq!(release.creator(), &alice_did);
+    }
+
+    #[test]
+    fn find_unique_prefers_delegate_release() {
+        // Same fixture as find_or_create_prefers_delegate_release but
+        // exercising the read path.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let delegates = delegates(&repo);
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let alice_id = *releases.create(oid, None, &alice.signer).unwrap().id();
+        let _bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
+
+        let picked = releases.find_unique_by_oid(oid, &delegates).unwrap();
+        assert_eq!(picked, alice_id);
+    }
+
+    #[test]
+    fn find_unique_returns_single_non_delegate() {
+        // A single non-delegate release with no delegate counterpart
+        // is unambiguous and must be returned without error.
+        let test::setup::NodeWithRepo {
+            node: _alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let delegates = delegates(&repo);
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
+        let picked = releases.find_unique_by_oid(oid, &delegates).unwrap();
+        assert_eq!(picked, bob_id);
+    }
+
+    #[test]
+    fn find_unique_ambiguous_only_among_non_delegates() {
+        // Two non-delegate releases and no delegate counterpart: the
+        // result must be Ambiguous (we have no rule to pick between
+        // peers neither of whom is privileged).
+        let test::setup::NodeWithRepo {
+            node: _alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: carol, .. } =
+            test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let delegates = delegates(&repo);
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let _bob_id = releases.create(oid, None, &bob.signer).unwrap().id();
+        let _carol_id = releases.create(oid, None, &carol.signer).unwrap().id();
+
+        let err = releases.find_unique_by_oid(oid, &delegates).unwrap_err();
+        assert!(matches!(err, crate::error::FindRelease::Ambiguous(_)));
+    }
+
+    #[test]
+    fn tag_field_default_none_on_old_actions() {
+        // A persisted Action::Create JSON without the `tag` field must
+        // deserialize back into an Action::Create whose tag is None,
+        // ensuring backward-compatibility with COBs created before
+        // this field existed.
+        use crate::Action;
+        let oid = test::arbitrary::oid();
+        let json = format!(r#"{{"Create":{{"oid":"{oid}"}}}}"#);
+        let action: Action = serde_json::from_str(&json).unwrap();
+        match action {
+            Action::Create { oid: parsed, tag } => {
+                assert_eq!(parsed, oid);
+                assert_eq!(tag, None);
+            }
+            _ => panic!("expected Action::Create"),
+        }
     }
 }
