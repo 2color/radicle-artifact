@@ -215,7 +215,7 @@ fn add_artifact<G>(
     command::Add {
         path,
         cid,
-        commit,
+        revision,
         name,
     }: command::Add,
     no_input: bool,
@@ -246,8 +246,8 @@ where
         }
     };
 
-    // Resolve commit/tag: use --commit if given, otherwise prompt.
-    let resolved = match commit.as_deref() {
+    // Resolve revision: use --revision if given, otherwise prompt.
+    let resolved = match revision.as_deref() {
         Some(rev) => resolve_ref(rev, repo)?,
         None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::Add::Usage)?,
     };
@@ -305,7 +305,7 @@ fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::Add> {
 }
 
 fn location_add<G>(
-    command::LocationAdd { commit, cid, url }: command::LocationAdd,
+    command::LocationAdd { revision, cid, url }: command::LocationAdd,
     releases: &mut Releases<Repository>,
     repo: &Repository,
     signer: &Device<G>,
@@ -313,7 +313,7 @@ fn location_add<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_ref(&commit, repo)?.commit;
+    let oid = resolve_ref(&revision, repo)?.commit;
     let delegates = repo_delegates(repo)?;
     let id = releases
         .find_unique_by_oid(oid, &delegates)
@@ -326,13 +326,13 @@ where
         .map_err(|err| error::Locate::Store { id, err })?;
     eprintln!("Added location {url} for artifact {cid}");
     if std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact show --pretty {commit}` to verify the release");
+        eprintln!("Hint: use `rad-artifact show --pretty {revision}` to verify the release");
     }
     Ok(())
 }
 
 fn attest_artifact<G>(
-    command::Attest { commit, cid }: command::Attest,
+    command::Attest { revision, cid }: command::Attest,
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
@@ -341,8 +341,8 @@ fn attest_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let (oid, cid) = match (commit, cid) {
-        (Some(commit), Some(cid)) => (resolve_ref(&commit, repo)?.commit, cid),
+    let (oid, cid) = match (revision, cid) {
+        (Some(revision), Some(cid)) => (resolve_ref(&revision, repo)?.commit, cid),
         (None, None) => {
             prompt::pick_interactive(no_input, releases, repo).map_err(error::Attest::Usage)?
         }
@@ -367,7 +367,7 @@ where
 
 fn redact_artifact<G>(
     command::Redact {
-        commit,
+        revision,
         cid,
         reason,
     }: command::Redact,
@@ -379,9 +379,9 @@ fn redact_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let (oid, cid, reason) = match (commit, cid) {
-        (Some(commit), Some(cid)) => {
-            let oid = resolve_ref(&commit, repo)?.commit;
+    let (oid, cid, reason) = match (revision, cid) {
+        (Some(revision), Some(cid)) => {
+            let oid = resolve_ref(&revision, repo)?.commit;
             let reason = match reason {
                 Some(r) => r,
                 None => prompt::prompt_reason(no_input).map_err(error::Redact::Usage)?,
@@ -417,7 +417,7 @@ where
 }
 
 fn location_remove<G>(
-    command::LocationRemove { commit, cid, url }: command::LocationRemove,
+    command::LocationRemove { revision, cid, url }: command::LocationRemove,
     releases: &mut Releases<Repository>,
     repo: &Repository,
     signer: &Device<G>,
@@ -425,7 +425,7 @@ fn location_remove<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_ref(&commit, repo)?.commit;
+    let oid = resolve_ref(&revision, repo)?.commit;
     // The COB state machine already enforces that only the original
     // announcer can remove a given location.
     let delegates = repo_delegates(repo)?;
@@ -461,14 +461,14 @@ fn show_release(
         verbose,
         redacted,
         all_authors,
-        commit,
+        revision,
     }: command::Show,
     releases: &Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
-    let oid = resolve_ref(&commit, repo)?.commit;
+    let oid = resolve_ref(&revision, repo)?.commit;
     let id = releases
         .find_unique_by_oid(oid, delegates)
         .map_err(error::Find::from)?;
@@ -575,9 +575,9 @@ fn run_fetch(
     repo: &Repository,
 ) -> Result<(), RadArtifactError> {
     // clap's `requires` ensures both or neither are provided.
-    let (oid, cid) = match (args.commit, args.cid) {
-        (Some(commit), Some(cid)) => {
-            let oid = resolve_ref(&commit, repo)?.commit;
+    let (oid, cid) = match (args.revision, args.cid) {
+        (Some(revision), Some(cid)) => {
+            let oid = resolve_ref(&revision, repo)?.commit;
             (oid, cid)
         }
         (None, None) => {
@@ -1166,13 +1166,13 @@ fn resolve_ref(rev: &str, repo: &Repository) -> Result<ResolvedRef, error::Resol
 
     let raw = repo.raw();
     let object = raw.revparse_single(rev).map_err(|err| error::Resolve {
-        commit: rev.to_owned(),
+        revision: rev.to_owned(),
         err,
     })?;
     if object.kind() == Some(ObjectType::Tag) {
         let tag_oid: Oid = object.id().into();
         let peeled = object.peel(ObjectType::Commit).map_err(|err| error::Resolve {
-            commit: rev.to_owned(),
+            revision: rev.to_owned(),
             err,
         })?;
         Ok(ResolvedRef {
@@ -1290,19 +1290,19 @@ Examples:
     $ rad-artifact fetch
 
   Fetch a specific artifact:
-    $ rad-artifact fetch abc1234 --cid baf...abc
+    $ rad-artifact fetch v1.0 --cid baf...abc
 
   Fetch to a custom path:
-    $ rad-artifact fetch abc1234 --cid baf...abc -o ./downloads/my-binary
+    $ rad-artifact fetch v1.0 --cid baf...abc -o ./downloads/my-binary
 
   Fetch from a specific URL:
-    $ rad-artifact fetch abc1234 --cid baf...abc --url https://example.com/my-binary")]
+    $ rad-artifact fetch v1.0 --cid baf...abc --url https://example.com/my-binary")]
     pub struct Fetch {
-        /// Git commit, tag, or abbreviated OID. Required with --cid.
+        /// Git revision (commit, tag, or abbreviated OID). Required with --cid.
         #[clap(requires = "cid")]
-        pub commit: Option<String>,
-        /// Content identifier of the artifact to fetch. Required with <COMMIT>.
-        #[clap(long, requires = "commit")]
+        pub revision: Option<String>,
+        /// Content identifier of the artifact to fetch. Required with <REVISION>.
+        #[clap(long, requires = "revision")]
         pub cid: Option<radicle_artifact::Cid>,
         /// Output file path. Defaults to the artifact name in the current directory.
         #[clap(short, long)]
@@ -1336,8 +1336,8 @@ Examples:
     /// artifact you don't have locally. Exactly one of <PATH> or --cid
     /// must be provided.
     ///
-    /// The release commit and artifact name are prompted interactively
-    /// when not given. Pass --commit and -n/--name to skip prompts (or
+    /// The release revision and artifact name are prompted interactively
+    /// when not given. Pass --revision and -n/--name to skip prompts (or
     /// use --no-input in scripts to fail instead of hanging on a prompt).
     #[derive(Parser)]
     #[clap(
@@ -1348,10 +1348,10 @@ Examples:
     $ rad-artifact add ./my-binary
 
   Fully non-interactive:
-    $ rad-artifact add ./my-binary --commit abc1234 --name \"my-binary v1.0\"
+    $ rad-artifact add ./my-binary --revision v1.0 --name \"my-binary v1.0\"
 
   Register a precomputed CID without local bytes:
-    $ rad-artifact add --cid baf...abc --commit abc1234 --name \"my-binary v1.0\""
+    $ rad-artifact add --cid baf...abc --revision v1.0 --name \"my-binary v1.0\""
     )]
     pub struct Add {
         /// Path to the local file or directory to register.
@@ -1363,10 +1363,10 @@ Examples:
         /// locally. Conflicts with <PATH>.
         #[clap(long)]
         pub cid: Option<Cid>,
-        /// Git commit, tag, or abbreviated OID of the release. Prompts
-        /// interactively when omitted.
-        #[clap(long)]
-        pub commit: Option<String>,
+        /// Git revision (commit, tag, or abbreviated OID) of the release.
+        /// Prompts interactively when omitted.
+        #[clap(long, alias = "commit")]
+        pub revision: Option<String>,
         /// Human-readable name for the artifact. Prompts interactively
         /// when omitted (with the path basename as the default).
         #[clap(short, long)]
@@ -1380,13 +1380,13 @@ Examples:
     #[clap(after_long_help = "\
 Examples:
   Register an HTTPS download location:
-    $ rad-artifact location add abc1234 --cid baf...abc https://example.com/my-binary
+    $ rad-artifact location add v1.0 --cid baf...abc https://example.com/my-binary
 
   Register an iroh-blobs endpoint:
-    $ rad-artifact location add abc1234 --cid baf...abc iroh://<endpoint-id>")]
+    $ rad-artifact location add v1.0 --cid baf...abc iroh://<endpoint-id>")]
     pub struct LocationAdd {
-        /// Git commit, tag, or abbreviated OID of the release.
-        pub commit: String,
+        /// Git revision (commit, tag, or abbreviated OID) of the release.
+        pub revision: String,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -1400,7 +1400,7 @@ Examples:
     /// obtained the same CID. Idempotent — attesting twice is a no-op.
     ///
     /// Without arguments, interactively lists releases and artifacts to
-    /// pick from. Pass both <COMMIT> and --cid to skip the prompts.
+    /// pick from. Pass both <REVISION> and --cid to skip the prompts.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
@@ -1408,13 +1408,14 @@ Examples:
     $ rad-artifact attest
 
   Attest a specific artifact:
-    $ rad-artifact attest abc1234 --cid baf...abc")]
+    $ rad-artifact attest v1.0 --cid baf...abc")]
     pub struct Attest {
-        /// Git commit, tag, or abbreviated OID of the release. Required with --cid.
+        /// Git revision (commit, tag, or abbreviated OID) of the release.
+        /// Required with --cid.
         #[clap(requires = "cid")]
-        pub commit: Option<String>,
-        /// Content identifier for the artifact to attest. Required with <COMMIT>.
-        #[clap(long, requires = "commit")]
+        pub revision: Option<String>,
+        /// Content identifier for the artifact to attest. Required with <REVISION>.
+        #[clap(long, requires = "revision")]
         pub cid: Option<Cid>,
     }
 
@@ -1427,7 +1428,7 @@ Examples:
     /// attestation from the same DID.
     ///
     /// Without arguments, interactively lists releases and artifacts to
-    /// pick from and prompts for a reason. Pass both <COMMIT> and --cid
+    /// pick from and prompts for a reason. Pass both <REVISION> and --cid
     /// to skip the release/artifact prompts; -m is still optional and
     /// will be prompted if omitted at a terminal.
     #[derive(Parser)]
@@ -1437,13 +1438,14 @@ Examples:
     $ rad-artifact redact
 
   Redact a specific artifact:
-    $ rad-artifact redact abc1234 --cid baf...abc -m \"build compromised, see advisory\"")]
+    $ rad-artifact redact v1.0 --cid baf...abc -m \"build compromised, see advisory\"")]
     pub struct Redact {
-        /// Git commit, tag, or abbreviated OID of the release. Required with --cid.
+        /// Git revision (commit, tag, or abbreviated OID) of the release.
+        /// Required with --cid.
         #[clap(requires = "cid")]
-        pub commit: Option<String>,
-        /// Content identifier for the artifact to redact. Required with <COMMIT>.
-        #[clap(long, requires = "commit")]
+        pub revision: Option<String>,
+        /// Content identifier for the artifact to redact. Required with <REVISION>.
+        #[clap(long, requires = "revision")]
         pub cid: Option<Cid>,
         /// Reason for the redaction.
         #[clap(short = 'm', long = "reason")]
@@ -1455,8 +1457,8 @@ Examples:
     /// Retracts a previously announced location.
     #[derive(Parser)]
     pub struct LocationRemove {
-        /// Git commit, tag, or abbreviated OID of the release.
-        pub commit: String,
+        /// Git revision (commit, tag, or abbreviated OID) of the release.
+        pub revision: String,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -1472,13 +1474,13 @@ Examples:
     #[clap(after_long_help = "\
 Examples:
   Show a release as JSON (default):
-    $ rad-artifact show abc1234
+    $ rad-artifact show v1.0
 
   Show a release in human-readable format:
-    $ rad-artifact show --pretty abc1234
+    $ rad-artifact show --pretty v1.0
 
   Include redacted artifacts and artifacts from non-delegates:
-    $ rad-artifact show --pretty --redacted --all-authors abc1234")]
+    $ rad-artifact show --pretty --redacted --all-authors v1.0")]
     pub struct Show {
         /// Format output in a human-readable way.
         ///
@@ -1500,8 +1502,8 @@ Examples:
         /// repository delegates.
         #[clap(long)]
         pub all_authors: bool,
-        /// Git commit, tag, or abbreviated OID of the release.
-        pub commit: String,
+        /// Git revision (commit, tag, or abbreviated OID) of the release.
+        pub revision: String,
     }
 
     /// List all release COBs for a repository.
@@ -1705,9 +1707,9 @@ mod error {
     }
 
     #[derive(Debug, Error)]
-    #[error("could not resolve '{commit}' to a git object")]
+    #[error("could not resolve '{revision}' to a git object")]
     pub struct Resolve {
-        pub commit: String,
+        pub revision: String,
         #[source]
         pub err: radicle::git::raw::Error,
     }
