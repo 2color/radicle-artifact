@@ -348,7 +348,9 @@ where
         }
         _ => unreachable!("clap enforces both-or-neither"),
     };
-    // The COB state machine enforces per-signer ownership; no delegate filter needed.
+    // The COB state machine enforces per-signer ownership of the
+    // resulting attestation; the delegate set here only feeds the
+    // canonical-release lookup.
     let delegates = repo_delegates(repo)?;
     let id = releases
         .find_unique_by_oid(oid, &delegates)
@@ -397,7 +399,9 @@ where
         }
         _ => unreachable!("clap enforces both-or-neither"),
     };
-    // The COB state machine enforces per-signer ownership; no delegate filter needed.
+    // The COB state machine enforces per-signer ownership of the
+    // resulting redaction; the delegate set here only feeds the
+    // canonical-release lookup.
     let delegates = repo_delegates(repo)?;
     let id = releases
         .find_unique_by_oid(oid, &delegates)
@@ -422,10 +426,8 @@ where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_ref(&commit, repo)?.commit;
-    // Unlike location_add, we don't restrict to delegate-authored releases: any
-    // user should be able to retract their own locations from any release, and
-    // the COB state machine already enforces that only the original announcer
-    // can remove a given location.
+    // The COB state machine already enforces that only the original
+    // announcer can remove a given location.
     let delegates = repo_delegates(repo)?;
     let id = releases
         .find_unique_by_oid(oid, &delegates)
@@ -963,11 +965,11 @@ mod prompt {
 
     /// Interactively pick a commit or annotated tag from the repository.
     ///
-    /// Presents annotated tags (peeled to their target commit) first,
-    /// followed by recent commits reachable from HEAD, up to
-    /// [`PICKER_COMMIT_LIMIT`] total commit entries. Commits already covered
-    /// by an annotated tag entry are skipped. Errors if `no_input` is set or
-    /// stdin is not a TTY.
+    /// Annotated tags appear first, followed by up to
+    /// [`PICKER_COMMIT_LIMIT`] recent commits reachable from HEAD. A
+    /// tag and its peeled commit both appear as separate entries so
+    /// the user can opt out of tag-association by picking the commit.
+    /// Errors if `no_input` is set or stdin is not a TTY.
     pub fn pick_commit_or_tag(
         no_input: bool,
         repo: &Repository,

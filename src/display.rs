@@ -72,16 +72,14 @@ fn format_table(rows: &[Vec<String>], indent: usize) -> String {
     out
 }
 
-/// Resolve the first line of a release's title for display.
+/// Resolve the first line of a release's title for display: the tag
+/// message for tag-associated releases, the commit summary otherwise.
 ///
-/// A release's title is the first line of either the annotated tag's
-/// message (for tag-keyed releases) or the commit summary (for plain
-/// commit releases). Implementations look the object up via `git2`.
-/// Return `None` when the OID cannot be resolved (e.g. it lives in a
+/// Returns `None` when the OID cannot be resolved (e.g. it lives in a
 /// fork that hasn't been fetched).
 pub trait CommitTitle {
-    /// Return the first line of the message for `oid`, if available.
-    /// `oid` may refer to either a commit or an annotated tag object.
+    /// First line of `oid`'s message, where `oid` is a commit or an
+    /// annotated tag object.
     fn title(&self, oid: &Oid) -> Option<String>;
 }
 
@@ -92,12 +90,9 @@ impl CommitTitle for () {
     }
 }
 
-/// Resolve titles from a Radicle git repository.
-///
-/// Looks up the object at `oid`. If it's an annotated tag, returns the
-/// first non-empty line of the tag message, falling back to the peeled
-/// commit's summary when the tag has no message. If it's a commit,
-/// returns the commit summary.
+/// For an annotated tag, returns the first non-empty line of the tag
+/// message, falling back to the peeled commit's summary when the tag
+/// has no message. For a commit, returns the commit summary.
 impl CommitTitle for Repository {
     fn title(&self, oid: &Oid) -> Option<String> {
         let obj = self.backend.find_object((*oid).into(), None).ok()?;
@@ -212,12 +207,10 @@ pub struct Release {
     created_at: u64,
     /// Commit OID this release is keyed by.
     oid: Oid,
-    /// Annotated tag OID, when this release is associated with a tag.
-    /// Absent for plain commit-keyed releases.
+    /// Annotated tag OID when this release is associated with a tag.
     #[serde(skip_serializing_if = "Option::is_none")]
     tag: Option<Oid>,
-    /// First line of the tag message (for tag-keyed releases) or commit
-    /// summary (for commit-keyed releases). Locally-resolved; not
+    /// First line of the tag or commit message. Locally-resolved; not
     /// persisted in the COB.
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,

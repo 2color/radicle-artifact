@@ -139,35 +139,24 @@ impl From<ObjectId> for ReleaseId {
 
 /// A `Release` groups content-addressed artifacts under a single Git commit.
 ///
-/// Multiple artifacts can exist per release, and multiple users can announce
-/// discovery locations for each artifact. Per-artifact attribution lives on
+/// May record an annotated tag OID alongside the commit (the COB itself
+/// is always commit-keyed; the tag is metadata). The creator's DID is
+/// preserved so [`Releases::find_or_create_by_oid`] and
+/// [`Releases::find_unique_by_oid`] can prefer delegate-authored
+/// releases when duplicates exist. Per-artifact attribution lives on
 /// [`Artifact::author`].
-///
-/// A release may optionally record the OID of an annotated tag whose target
-/// peels to [`Release::oid`]. The COB itself is always commit-keyed (the COB
-/// store requires a commit object as the parent), but the tag OID is
-/// preserved as metadata so the link to the tag survives across replicas.
-///
-/// The DID of the user who created the COB is recorded as [`Release::creator`].
-/// This is used by [`Releases::find_or_create_by_oid`] and
-/// [`Releases::find_unique_by_oid`] to prefer delegate-authored releases when
-/// duplicate COBs exist for the same commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
     oid: Oid,
-    /// Optional annotated tag object OID associated with this release.
-    /// `None` for plain commit-keyed releases. Set once at creation time
-    /// from the initial `Action::Create`'s `tag` field; first-writer-wins
-    /// — subsequent `Create` actions are ignored.
+    /// Set once at creation from the initial `Action::Create`'s `tag`
+    /// field — first-writer-wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tag: Option<Oid>,
-    /// DID of the user that created the COB (signer of the initial op).
-    /// Used to apply delegate-priority rules when multiple COBs exist for
-    /// the same commit. Persisted; not derived from the action stream.
+    /// Signer of the initial op. Persisted; not derived from the
+    /// action stream.
     creator: Did,
     artifacts: IndexMap<Cid, Artifact>,
-    /// Unix seconds when this release COB was first created.
-    /// Derived from the first op's timestamp; not stored in the action payload.
+    /// Derived from the first op's timestamp; not in the action payload.
     #[serde(skip)]
     timestamp: u64,
 }
@@ -338,9 +327,8 @@ pub enum Action {
 impl CobAction for Action {
     fn parents(&self) -> Vec<radicle::git::Oid> {
         match self {
-            // Only the commit OID is exposed as a parent — the optional
-            // tag OID is metadata, not a COB-graph parent (and the COB
-            // store would reject a tag object as a parent).
+            // Only the commit OID is exposed: the COB store rejects any
+            // non-commit parent. The optional tag OID is metadata.
             Action::Create { oid, .. } => vec![*oid],
             _ => Vec::new(),
         }
@@ -364,21 +352,15 @@ impl Release {
         &self.oid
     }
 
-    /// Get the annotated tag [`Oid`] linked to this release, if any.
-    ///
-    /// `None` means the release was created against a commit directly.
-    /// `Some(tag_oid)` means the release was created against an annotated
-    /// tag whose target peels to [`Self::oid`].
+    /// Annotated tag [`Oid`] linked to this release, if any. The tag's
+    /// target peels to [`Self::oid`].
     pub fn tag(&self) -> Option<&Oid> {
         self.tag.as_ref()
     }
 
-    /// Get the [`Did`] of the user who created this release COB.
-    ///
-    /// This is the signer of the initial op, recorded once at creation.
-    /// Used by canonical-COB selection rules (see
-    /// [`Releases::find_or_create_by_oid`]) to prefer delegate-authored
-    /// releases when duplicates exist for the same commit.
+    /// [`Did`] of the user who created this release COB. Used by
+    /// [`Releases::find_or_create_by_oid`] and
+    /// [`Releases::find_unique_by_oid`] for delegate priority.
     pub fn creator(&self) -> &Did {
         &self.creator
     }
@@ -475,9 +457,7 @@ impl store::Cob for Release {
         };
         repo.commit(oid)
             .map_err(|err| error::Build::MissingCommit { oid, err })?;
-        // The signer of the initial op becomes the COB's creator. The
-        // same DID is used as the author for any further actions in
-        // this op (artifact/attestation/redaction attribution).
+        // Initial op's signer becomes the creator and the per-action author.
         let author = Did::from(op.author);
         let mut release = Self::new(oid, tag, author, op.timestamp.as_secs());
         for action in actions {
@@ -770,12 +750,12 @@ where
     where
         G: Signer<crypto::Signature>,
     {
+        // Smallest ID wins inside each class — deterministic so all
+        // replicas converge on the same canonical COB.
         let mut delegate_canonical: Option<ReleaseId> = None;
         let mut any_canonical: Option<ReleaseId> = None;
         for result in self.find_by_oid(oid)? {
             let (id, release) = result?;
-            // Smallest ID wins among each class — deterministic across
-            // replicas so callers converge.
             match any_canonical {
                 Some(current) if current <= id => {}
                 _ => any_canonical = Some(id),
@@ -793,11 +773,9 @@ where
         }
         let signer_is_delegate = delegates.contains(&Did::from(*signer.public_key()));
         match (any_canonical, signer_is_delegate) {
-            // Delegates always land on a delegate-authored COB; create
-            // a fresh one rather than reusing a non-delegate's release.
+            // Delegate signer with no delegate-authored COB → bootstrap one.
             (_, true) => self.create(oid, tag, signer),
-            // Non-delegate caller: reuse any existing COB if there is
-            // one, else bootstrap a new non-delegate release.
+            // Non-delegate signer: reuse if anything exists, else create.
             (Some(id), false) => self.get_mut(&id),
             (None, false) => self.create(oid, tag, signer),
         }
