@@ -247,10 +247,11 @@ where
     };
 
     // Resolve commit/tag: use --commit if given, otherwise prompt.
-    let oid = match commit.as_deref() {
-        Some(rev) => resolve_commit(rev, repo)?,
+    let resolved = match commit.as_deref() {
+        Some(rev) => resolve_ref(rev, repo)?,
         None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::Add::Usage)?,
     };
+    let oid = resolved.commit;
 
     // Resolve name: use -n if given, otherwise prompt with the path basename
     // as default (no default available when --cid was used without a path).
@@ -267,10 +268,11 @@ where
 
     // Find an existing release for this commit, preferring delegate-
     // authored COBs; if the signer is a delegate, bootstrap a fresh COB
-    // rather than reusing a non-delegate's release.
+    // rather than reusing a non-delegate's release. The optional tag
+    // OID is recorded only when this call creates a new COB.
     let delegates = repo_delegates(repo)?;
     let mut release = releases
-        .find_or_create_by_oid(oid, None, &delegates, signer)
+        .find_or_create_by_oid(oid, resolved.tag, &delegates, signer)
         .map_err(|err| error::Add::Create { oid, err })?;
     let id = *release.id();
     release
@@ -311,7 +313,7 @@ fn location_add<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_commit(&commit, repo)?;
+    let oid = resolve_ref(&commit, repo)?.commit;
     let delegates = repo_delegates(repo)?;
     let id = releases
         .find_unique_by_oid(oid, &delegates)
@@ -340,7 +342,7 @@ where
     G: Signer<crypto::Signature>,
 {
     let (oid, cid) = match (commit, cid) {
-        (Some(commit), Some(cid)) => (resolve_commit(&commit, repo)?, cid),
+        (Some(commit), Some(cid)) => (resolve_ref(&commit, repo)?.commit, cid),
         (None, None) => {
             prompt::pick_interactive(no_input, releases, repo).map_err(error::Attest::Usage)?
         }
@@ -377,7 +379,7 @@ where
 {
     let (oid, cid, reason) = match (commit, cid) {
         (Some(commit), Some(cid)) => {
-            let oid = resolve_commit(&commit, repo)?;
+            let oid = resolve_ref(&commit, repo)?.commit;
             let reason = match reason {
                 Some(r) => r,
                 None => prompt::prompt_reason(no_input).map_err(error::Redact::Usage)?,
@@ -419,7 +421,7 @@ fn location_remove<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_commit(&commit, repo)?;
+    let oid = resolve_ref(&commit, repo)?.commit;
     // Unlike location_add, we don't restrict to delegate-authored releases: any
     // user should be able to retract their own locations from any release, and
     // the COB state machine already enforces that only the original announcer
@@ -464,7 +466,7 @@ fn show_release(
     delegates: &BTreeSet<Did>,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
-    let oid = resolve_commit(&commit, repo)?;
+    let oid = resolve_ref(&commit, repo)?.commit;
     let id = releases
         .find_unique_by_oid(oid, delegates)
         .map_err(error::Find::from)?;
@@ -567,7 +569,7 @@ fn run_fetch(
     // clap's `requires` ensures both or neither are provided.
     let (oid, cid) = match (args.commit, args.cid) {
         (Some(commit), Some(cid)) => {
-            let oid = resolve_commit(&commit, repo)?;
+            let oid = resolve_ref(&commit, repo)?.commit;
             (oid, cid)
         }
         (None, None) => {
@@ -960,13 +962,15 @@ mod prompt {
     /// [`PICKER_COMMIT_LIMIT`] total commit entries. Commits already covered
     /// by an annotated tag entry are skipped. Errors if `no_input` is set or
     /// stdin is not a TTY.
-    pub fn pick_commit_or_tag(no_input: bool, repo: &Repository) -> Result<Oid, String> {
+    pub fn pick_commit_or_tag(
+        no_input: bool,
+        repo: &Repository,
+    ) -> Result<super::ResolvedRef, String> {
         if no_input || !std::io::stdin().is_terminal() {
             return Err("pass --commit <REF> for non-interactive use".into());
         }
         let raw = repo.raw();
         let mut entries: Vec<Entry> = Vec::new();
-        let mut seen: std::collections::BTreeSet<Oid> = std::collections::BTreeSet::new();
 
         // Annotated tags first — they're the common "pick a release" case.
         // Lightweight tags are intentionally skipped: their ref points
@@ -977,7 +981,8 @@ mod prompt {
         let tag_names = raw
             .tag_names(None)
             .map_err(|e| format!("failed to list tags: {e}"))?;
-        let mut tag_entries: Vec<(i64, String, Oid)> = Vec::new();
+        // (committer time, tag name, tag object OID, peeled commit OID).
+        let mut tag_entries: Vec<(i64, String, Oid, Oid)> = Vec::new();
         for maybe_name in tag_names.iter() {
             let Some(name) = maybe_name else { continue };
             let full = format!("refs/tags/{name}");
@@ -993,27 +998,31 @@ mod prompt {
             if obj.kind() != Some(radicle::git::raw::ObjectType::Tag) {
                 continue;
             }
+            let tag_oid: Oid = ref_target.into();
             let Ok(peeled) = reference.peel(radicle::git::raw::ObjectType::Commit) else {
                 continue;
             };
             let commit_oid: Oid = peeled.id().into();
             let time = peeled.as_commit().map(|c| c.time().seconds()).unwrap_or(0);
-            tag_entries.push((time, name.to_string(), commit_oid));
+            tag_entries.push((time, name.to_string(), tag_oid, commit_oid));
         }
         tag_entries.sort_by(|a, b| b.0.cmp(&a.0));
-        for (_, name, commit_oid) in tag_entries {
-            if seen.insert(commit_oid) {
-                entries.push(Entry::Tag {
-                    name,
-                    oid: commit_oid,
-                });
-            }
+        for (_, name, tag_oid, commit_oid) in tag_entries {
+            // The tag's peeled commit is intentionally NOT added to the
+            // dedup set: showing both the tag and the underlying commit
+            // lets the user explicitly opt out of recording a tag
+            // association by picking the commit entry instead.
+            entries.push(Entry::Tag {
+                name,
+                tag_oid,
+                commit_oid,
+            });
         }
 
-        // Recent commits walked from HEAD, dedup against tag targets. The
-        // default revwalk order visits each commit before its parents, i.e.
-        // reverse chronological on a linear history — good enough for a
-        // picker cap at `PICKER_COMMIT_LIMIT`.
+        // Recent commits walked from HEAD. The default revwalk order
+        // visits each commit before its parents, i.e. reverse
+        // chronological on a linear history — good enough for a picker
+        // cap at `PICKER_COMMIT_LIMIT`.
         if let Ok(mut revwalk) = raw.revwalk() {
             if revwalk.push_head().is_ok() {
                 let mut added = 0usize;
@@ -1023,10 +1032,8 @@ mod prompt {
                     }
                     let Ok(oid) = oid_res else { continue };
                     let commit_oid: Oid = oid.into();
-                    if seen.insert(commit_oid) {
-                        entries.push(Entry::Commit { oid: commit_oid });
-                        added += 1;
-                    }
+                    entries.push(Entry::Commit { oid: commit_oid });
+                    added += 1;
                 }
             }
         }
@@ -1037,13 +1044,19 @@ mod prompt {
 
         let labels: Vec<String> = entries
             .iter()
-            .map(|entry| {
-                let oid = entry.oid();
-                let short = &oid.to_string()[..7];
-                let title = display::CommitTitle::title(repo, &oid).unwrap_or_default();
-                match entry {
-                    Entry::Tag { name, .. } => format!("{name} -> {short}  {title}"),
-                    Entry::Commit { .. } => format!("{short}  {title}"),
+            .map(|entry| match entry {
+                Entry::Tag {
+                    name, commit_oid, ..
+                } => {
+                    let short = &commit_oid.to_string()[..7];
+                    let title =
+                        display::CommitTitle::title(repo, commit_oid).unwrap_or_default();
+                    format!("{name} -> {short}  {title}")
+                }
+                Entry::Commit { oid } => {
+                    let short = &oid.to_string()[..7];
+                    let title = display::CommitTitle::title(repo, oid).unwrap_or_default();
+                    format!("{short}  {title}")
                 }
             })
             .collect();
@@ -1051,7 +1064,7 @@ mod prompt {
         let selection = inquire::Select::new("Select commit or tag:", labels)
             .raw_prompt()
             .map_err(|e| format!("selection cancelled: {e}"))?;
-        Ok(entries[selection.index].oid())
+        Ok(entries[selection.index].resolved())
     }
 
     /// Cap on commits shown in the picker — enough to cover typical recent
@@ -1059,14 +1072,31 @@ mod prompt {
     const PICKER_COMMIT_LIMIT: usize = 30;
 
     enum Entry {
-        Tag { name: String, oid: Oid },
-        Commit { oid: Oid },
+        Tag {
+            name: String,
+            tag_oid: Oid,
+            commit_oid: Oid,
+        },
+        Commit {
+            oid: Oid,
+        },
     }
 
     impl Entry {
-        fn oid(&self) -> Oid {
+        fn resolved(&self) -> super::ResolvedRef {
             match self {
-                Entry::Tag { oid, .. } | Entry::Commit { oid } => *oid,
+                Entry::Tag {
+                    tag_oid,
+                    commit_oid,
+                    ..
+                } => super::ResolvedRef {
+                    commit: *commit_oid,
+                    tag: Some(*tag_oid),
+                },
+                Entry::Commit { oid } => super::ResolvedRef {
+                    commit: *oid,
+                    tag: None,
+                },
             }
         }
     }
@@ -1105,16 +1135,48 @@ mod prompt {
     }
 }
 
-/// Resolve a commit reference (full OID, short OID, or tag name) to an [`Oid`].
-fn resolve_commit(commit: &str, repo: &Repository) -> Result<Oid, error::Resolve> {
-    let object = repo
-        .raw()
-        .revparse_single(commit)
-        .map_err(|err| error::Resolve {
-            commit: commit.to_owned(),
+/// A git ref resolved to its commit OID, plus the annotated tag OID
+/// when the ref was an annotated tag.
+///
+/// `commit` is always the commit the COB will be keyed by. `tag` is
+/// `Some(tag_oid)` only when the user-provided ref pointed at an
+/// annotated tag object; in that case the tag is recorded as release
+/// metadata (see `Release::tag`). Lightweight tags (a ref pointing
+/// directly at a commit) and bare commit hashes both produce
+/// `tag = None`.
+#[derive(Clone, Copy, Debug)]
+struct ResolvedRef {
+    commit: Oid,
+    tag: Option<Oid>,
+}
+
+/// Resolve a git reference (full OID, short OID, or tag name) to a
+/// commit OID, peeling annotated tags and reporting the tag's own OID
+/// when applicable.
+fn resolve_ref(rev: &str, repo: &Repository) -> Result<ResolvedRef, error::Resolve> {
+    use radicle::git::raw::ObjectType;
+
+    let raw = repo.raw();
+    let object = raw.revparse_single(rev).map_err(|err| error::Resolve {
+        commit: rev.to_owned(),
+        err,
+    })?;
+    if object.kind() == Some(ObjectType::Tag) {
+        let tag_oid: Oid = object.id().into();
+        let peeled = object.peel(ObjectType::Commit).map_err(|err| error::Resolve {
+            commit: rev.to_owned(),
             err,
         })?;
-    Ok(object.id().into())
+        Ok(ResolvedRef {
+            commit: peeled.id().into(),
+            tag: Some(tag_oid),
+        })
+    } else {
+        Ok(ResolvedRef {
+            commit: object.id().into(),
+            tag: None,
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
