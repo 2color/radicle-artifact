@@ -569,22 +569,53 @@ where
         FindByOid::new(self, wanted)
     }
 
-    /// Find the unique release for a given OID across all authors.
+    /// Find the canonical release for a given commit OID.
     ///
-    /// Errors if no release exists for the OID or if multiple releases exist.
-    pub fn find_unique_by_oid(&self, oid: Oid) -> Result<ReleaseId, error::FindRelease> {
-        let mut found: Option<ReleaseId> = None;
+    /// When duplicate release COBs exist for the same commit, releases
+    /// authored by a repository delegate are preferred (smallest
+    /// [`ReleaseId`] wins among them). If no delegate-authored release
+    /// exists, the call returns `Ambiguous` only when there are multiple
+    /// non-delegate releases — a single non-delegate release is still
+    /// returned unambiguously.
+    ///
+    /// Errors:
+    /// - [`error::FindRelease::NoRelease`] when no release exists.
+    /// - [`error::FindRelease::Ambiguous`] when multiple non-delegate
+    ///   releases exist and no delegate-authored release is present.
+    pub fn find_unique_by_oid(
+        &self,
+        oid: Oid,
+        delegates: &BTreeSet<Did>,
+    ) -> Result<ReleaseId, error::FindRelease> {
+        let mut delegate_canonical: Option<ReleaseId> = None;
+        let mut non_delegate_count = 0usize;
+        let mut non_delegate_first: Option<ReleaseId> = None;
         for result in self
             .find_by_oid(oid)
             .map_err(|err| error::FindRelease::Store { oid, err })?
         {
-            let (id, _) = result.map_err(|err| error::FindRelease::Store { oid, err })?;
-            if found.is_some() {
-                return Err(error::FindRelease::Ambiguous(oid));
+            let (id, release) = result.map_err(|err| error::FindRelease::Store { oid, err })?;
+            if delegates.contains(release.creator()) {
+                match delegate_canonical {
+                    Some(current) if current <= id => {}
+                    _ => delegate_canonical = Some(id),
+                }
+            } else {
+                non_delegate_count += 1;
+                if non_delegate_first.is_none() {
+                    non_delegate_first = Some(id);
+                }
             }
-            found = Some(id);
         }
-        found.ok_or(error::FindRelease::NoRelease(oid))
+
+        if let Some(id) = delegate_canonical {
+            return Ok(id);
+        }
+        match non_delegate_count {
+            0 => Err(error::FindRelease::NoRelease(oid)),
+            1 => Ok(non_delegate_first.expect("count == 1")),
+            _ => Err(error::FindRelease::Ambiguous(oid)),
+        }
     }
 
     /// Return every release containing an artifact with the given CID.

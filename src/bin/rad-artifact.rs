@@ -312,8 +312,9 @@ where
     G: Signer<crypto::Signature>,
 {
     let oid = resolve_commit(&commit, repo)?;
+    let delegates = repo_delegates(repo)?;
     let id = releases
-        .find_unique_by_oid(oid)
+        .find_unique_by_oid(oid, &delegates)
         .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -346,8 +347,9 @@ where
         _ => unreachable!("clap enforces both-or-neither"),
     };
     // The COB state machine enforces per-signer ownership; no delegate filter needed.
+    let delegates = repo_delegates(repo)?;
     let id = releases
-        .find_unique_by_oid(oid)
+        .find_unique_by_oid(oid, &delegates)
         .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -394,8 +396,9 @@ where
         _ => unreachable!("clap enforces both-or-neither"),
     };
     // The COB state machine enforces per-signer ownership; no delegate filter needed.
+    let delegates = repo_delegates(repo)?;
     let id = releases
-        .find_unique_by_oid(oid)
+        .find_unique_by_oid(oid, &delegates)
         .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -421,8 +424,9 @@ where
     // user should be able to retract their own locations from any release, and
     // the COB state machine already enforces that only the original announcer
     // can remove a given location.
+    let delegates = repo_delegates(repo)?;
     let id = releases
-        .find_unique_by_oid(oid)
+        .find_unique_by_oid(oid, &delegates)
         .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -462,7 +466,7 @@ fn show_release(
 ) -> Result<(), error::Show> {
     let oid = resolve_commit(&commit, repo)?;
     let id = releases
-        .find_unique_by_oid(oid)
+        .find_unique_by_oid(oid, delegates)
         .map_err(error::Find::from)?;
     let release = releases
         .get(&id)
@@ -1536,6 +1540,8 @@ mod error {
         Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
+        #[error(transparent)]
+        Delegates(#[from] Delegates),
         #[error("failed to add location to release {id}")]
         Store {
             id: ReleaseId,
@@ -1552,6 +1558,8 @@ mod error {
         Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
+        #[error(transparent)]
+        Delegates(#[from] Delegates),
         #[error("failed to attest artifact in release {id}")]
         Store {
             id: ReleaseId,
@@ -1568,6 +1576,8 @@ mod error {
         Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
+        #[error(transparent)]
+        Delegates(#[from] Delegates),
         #[error("failed to redact artifact in release {id}")]
         Artifact {
             id: ReleaseId,
@@ -1588,6 +1598,8 @@ mod error {
         Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
+        #[error(transparent)]
+        Delegates(#[from] Delegates),
         #[error("failed to remove location from release {id}")]
         Store {
             id: ReleaseId,
@@ -1600,7 +1612,7 @@ mod error {
     pub enum Find {
         #[error("no release was found for the commit {0}")]
         NoRelease(Oid),
-        #[error("multiple delegate releases found for the commit {0}")]
+        #[error("multiple non-delegate releases found for the commit {0} and no delegate-authored release to disambiguate")]
         Ambiguous(Oid),
         #[error("failed to find a release for the commit {oid}")]
         Lookup {
