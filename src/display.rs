@@ -121,6 +121,31 @@ impl CommitTitle for Repository {
     }
 }
 
+/// Read the tag name out of an annotated-tag object (e.g. `v1.0`).
+/// Returns `None` when the OID isn't an annotated-tag object or the
+/// object isn't present locally.
+pub trait TagName {
+    /// Tag name embedded in the annotated-tag object at `tag_oid`.
+    fn tag_name(&self, tag_oid: &Oid) -> Option<String>;
+}
+
+/// No-op resolver that never produces a tag name.
+impl TagName for () {
+    fn tag_name(&self, _tag_oid: &Oid) -> Option<String> {
+        None
+    }
+}
+
+/// Reads the name field from the annotated-tag object directly. The
+/// COB stores the tag object's OID, so we don't need to scan refs.
+impl TagName for Repository {
+    fn tag_name(&self, tag_oid: &Oid) -> Option<String> {
+        let obj = self.backend.find_object((*tag_oid).into(), None).ok()?;
+        let tag = obj.as_tag()?;
+        tag.name().map(String::from)
+    }
+}
+
 /// Visibility rules for artifacts rendered in `list` / `show` output.
 ///
 /// Both filters below consult the repository's delegate set. The flags
@@ -154,7 +179,8 @@ impl Releases {
     ///
     /// The `titles` resolver looks up the title line for each release's
     /// keying ref — the tag message when the release records a tag,
-    /// otherwise the commit summary.
+    /// otherwise the commit summary. `tag_names` resolves the
+    /// annotated-tag object back to its `v1.0`-style name for display.
     ///
     /// [release]: crate::Release
     pub fn new(
@@ -163,6 +189,7 @@ impl Releases {
         filters: Filters<'_>,
         show_empty: bool,
         titles: &impl CommitTitle,
+        tag_names: &impl TagName,
     ) -> Self {
         let mut releases: Vec<_> = releases
             .map(|(id, release)| {
@@ -172,7 +199,8 @@ impl Releases {
                     .tag()
                     .and_then(|t| titles.title(t))
                     .or_else(|| titles.title(release.oid()));
-                Release::new(id, &release, aliases, filters, title)
+                let tag_name = release.tag().and_then(|t| tag_names.tag_name(t));
+                Release::new(id, &release, aliases, filters, title, tag_name)
             })
             .filter(|r| show_empty || !r.artifacts.is_empty())
             .collect();
@@ -210,10 +238,20 @@ pub struct Release {
     /// Annotated tag OID when this release is associated with a tag.
     #[serde(skip_serializing_if = "Option::is_none")]
     tag: Option<Oid>,
+    /// Annotated tag name (e.g. `v1.0`), resolved from the tag object.
+    /// `None` when the release has no tag, or when the tag object isn't
+    /// present locally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag_name: Option<String>,
     /// First line of the tag or commit message. Locally-resolved; not
     /// persisted in the COB.
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    /// DID of the user who authored the release COB.
+    creator: Did,
+    /// Alias for [`Self::creator`] when known to the local node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    creator_alias: Option<String>,
     artifacts: Vec<Artifact>,
 }
 
@@ -227,13 +265,16 @@ impl Release {
     /// [`Filters`] flags to `true` to include them.
     ///
     /// `title` is the first line of the tag or commit message, if
-    /// available — see [`CommitTitle`].
+    /// available — see [`CommitTitle`]. `tag_name` is the annotated
+    /// tag's name when one is associated and resolvable locally — see
+    /// [`TagName`].
     pub fn new(
         release_id: ReleaseId,
         release: &crate::Release,
         aliases: &impl AliasStore,
         filters: Filters<'_>,
         title: Option<String>,
+        tag_name: Option<String>,
     ) -> Self {
         let mut artifacts: Vec<_> = release
             .artifacts()
@@ -308,12 +349,16 @@ impl Release {
         // Sort artifacts by CID string for deterministic output.
         artifacts.sort_by(|a, b| a.cid.cmp(&b.cid));
 
+        let creator = *release.creator();
         Self {
             release_id,
             created_at: release.timestamp(),
             oid: *release.oid(),
             tag: release.tag().copied(),
+            tag_name,
             title,
+            creator,
+            creator_alias: resolve(&creator, aliases),
             artifacts,
         }
     }
@@ -334,18 +379,21 @@ impl Release {
         let date = DateTime::<Utc>::from_timestamp(self.created_at as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
             .unwrap_or_else(|| self.created_at.to_string());
-        // When a tag association is recorded, surface both the tag and
-        // the commit; otherwise just the commit.
-        let ref_label = match &self.tag {
-            Some(tag_oid) => {
+        // When a tag association is recorded, surface the tag name when
+        // resolvable (falling back to its short OID) alongside the
+        // commit; otherwise just the commit.
+        let ref_label = match (&self.tag_name, &self.tag) {
+            (Some(name), _) => format!("tag {name} -> commit {short_oid}"),
+            (None, Some(tag_oid)) => {
                 let short_tag = &tag_oid.to_string()[..7];
                 format!("tag {short_tag} -> commit {short_oid}")
             }
-            None => format!("commit {short_oid}"),
+            (None, None) => format!("commit {short_oid}"),
         };
+        let creator = format_did(&self.creator, &self.creator_alias, false);
         push_line(
             &mut s,
-            format!("ID {short_id} | {ref_label} | {date} {title_suffix}"),
+            format!("ID {short_id} | {ref_label} | by {creator} | {date} {title_suffix}"),
         );
         // Build a per-release artifact table: CID | name | author | locations.
         // The locations cell summarises counts by URL scheme (e.g.

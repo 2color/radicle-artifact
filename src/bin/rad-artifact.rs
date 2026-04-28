@@ -537,12 +537,16 @@ fn show_release(
         .tag()
         .and_then(|t| display::CommitTitle::title(repo, t))
         .or_else(|| display::CommitTitle::title(repo, release.oid()));
+    let tag_name = release
+        .tag()
+        .and_then(|t| display::TagName::tag_name(repo, t));
     let filters = display::Filters {
         delegates,
         redacted,
         all_authors,
     };
-    let show = radicle_artifact::display::Release::new(id, &release, aliases, filters, title);
+    let show =
+        display::Release::new(id, &release, aliases, filters, title, tag_name);
     if use_pretty(pretty, json) {
         println!("{}", show.pretty(verbose));
     } else {
@@ -591,7 +595,7 @@ fn list_releases(
         redacted,
         all_authors,
     };
-    let releases = display::Releases::new(iter, aliases, filters, empty, repo);
+    let releases = display::Releases::new(iter, aliases, filters, empty, repo, repo);
     if use_pretty(pretty, json) {
         println!("{}", releases.pretty(verbose));
     } else {
@@ -1512,7 +1516,7 @@ Examples:
         pub name: Option<String>,
     }
 
-    /// Add a discovery location for an artifact.
+    /// Add a download location URL for an artifact CID
     ///
     /// Announces where an artifact can be retrieved from.
     #[derive(Parser)]
@@ -1533,7 +1537,7 @@ Examples:
         pub url: Url,
     }
 
-    /// Attest that this node has independently verified an artifact.
+    /// Attest that you verified an artifact CID
     ///
     /// Records that the signing node built from the same commit and
     /// obtained the same CID. Idempotent — attesting twice is a no-op.
@@ -1558,7 +1562,7 @@ Examples:
         pub cid: Option<Cid>,
     }
 
-    /// Redact an artifact, indicating it should not be used.
+    /// Redact an artifact CID, indicating it should not be used.
     ///
     /// Records that the signing node believes this artifact is compromised
     /// or should be withdrawn. The reason is a free-form string (max 2048
@@ -1591,7 +1595,7 @@ Examples:
         pub reason: Option<String>,
     }
 
-    /// Remove a discovery location for an artifact.
+    /// Remove a download location for an artifact.
     ///
     /// Retracts a previously announced location.
     #[derive(Parser)]
