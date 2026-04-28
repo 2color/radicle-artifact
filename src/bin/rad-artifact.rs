@@ -266,14 +266,19 @@ where
         }
     };
 
-    // Find an existing release for this commit, preferring delegate-
-    // authored COBs; if the signer is a delegate, bootstrap a fresh COB
-    // rather than reusing a non-delegate's release. The optional tag
-    // OID is recorded only when this call creates a new COB.
+    // Look up the canonical release for this commit; create one if
+    // none exists. Ambiguity (multiple non-delegate releases and no
+    // delegate-authored COB to disambiguate) surfaces as an error.
     let delegates = repo_delegates(repo)?;
-    let mut release = releases
-        .find_or_create_by_oid(oid, resolved.tag, &delegates, signer)
-        .map_err(|err| error::Add::Create { oid, err })?;
+    let mut release = match releases.find_unique_by_commit(oid, &delegates) {
+        Ok(id) => releases
+            .get_mut(&id)
+            .map_err(|err| error::Add::Store { id, err })?,
+        Err(radicle_artifact::error::FindRelease::NoRelease(_)) => releases
+            .create(oid, resolved.tag, signer)
+            .map_err(|err| error::Add::Create { oid, err })?,
+        Err(err) => return Err(error::Add::Find(err.into())),
+    };
     let id = *release.id();
     release
         .add_artifact(cid, name.clone(), signer)
@@ -316,7 +321,7 @@ where
     let oid = resolve_ref(&revision, repo)?.commit;
     let delegates = repo_delegates(repo)?;
     let id = releases
-        .find_unique_by_oid(oid, &delegates)
+        .find_unique_by_commit(oid, &delegates)
         .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -353,7 +358,7 @@ where
     // canonical-release lookup.
     let delegates = repo_delegates(repo)?;
     let id = releases
-        .find_unique_by_oid(oid, &delegates)
+        .find_unique_by_commit(oid, &delegates)
         .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -404,7 +409,7 @@ where
     // canonical-release lookup.
     let delegates = repo_delegates(repo)?;
     let id = releases
-        .find_unique_by_oid(oid, &delegates)
+        .find_unique_by_commit(oid, &delegates)
         .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -430,7 +435,7 @@ where
     // announcer can remove a given location.
     let delegates = repo_delegates(repo)?;
     let id = releases
-        .find_unique_by_oid(oid, &delegates)
+        .find_unique_by_commit(oid, &delegates)
         .map_err(error::Find::from)?;
     let mut release = releases
         .get_mut(&id)
@@ -470,7 +475,7 @@ fn show_release(
 ) -> Result<(), error::Show> {
     let oid = resolve_ref(&revision, repo)?.commit;
     let id = releases
-        .find_unique_by_oid(oid, delegates)
+        .find_unique_by_commit(oid, delegates)
         .map_err(error::Find::from)?;
     let release = releases
         .get(&id)
@@ -1170,6 +1175,7 @@ fn resolve_ref(rev: &str, repo: &Repository) -> Result<ResolvedRef, error::Resol
         err,
     })?;
     if object.kind() == Some(ObjectType::Tag) {
+        // `rev` is an annotated tag
         let tag_oid: Oid = object.id().into();
         let peeled = object.peel(ObjectType::Commit).map_err(|err| error::Resolve {
             revision: rev.to_owned(),
@@ -1180,6 +1186,7 @@ fn resolve_ref(rev: &str, repo: &Repository) -> Result<ResolvedRef, error::Resol
             tag: Some(tag_oid),
         })
     } else {
+        // `rev` is either a commit or a lightweight tag
         Ok(ResolvedRef {
             commit: object.id().into(),
             tag: None,

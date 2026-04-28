@@ -35,18 +35,11 @@
 //! #     node: alice, repo, ..
 //! # } = test::setup::NodeWithRepo::default();
 //! # let oid = commit(&repo.backend, "Test Commit");
-//! # let delegates: std::collections::BTreeSet<radicle::identity::Did> =
-//! #     <radicle::storage::git::Repository as radicle::prelude::ReadRepository>::delegates(&*repo)
-//! #         .unwrap()
-//! #         .into_iter()
-//! #         .collect();
 //! # let repo = (&*repo).clone();
 //! let mut releases = Releases::open(repo).unwrap();
 //!
-//! // find_or_create_by_oid creates the release COB automatically if needed.
-//! let mut release = releases
-//!     .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
-//!     .unwrap();
+//! // Create a fresh release COB for this commit.
+//! let mut release = releases.create(oid, None, &alice.signer).unwrap();
 //!
 //! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse().unwrap();
 //! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
@@ -141,10 +134,9 @@ impl From<ObjectId> for ReleaseId {
 ///
 /// May record an annotated tag OID alongside the commit (the COB itself
 /// is always commit-keyed; the tag is metadata). The creator's DID is
-/// preserved so [`Releases::find_or_create_by_oid`] and
-/// [`Releases::find_unique_by_oid`] can prefer delegate-authored
-/// releases when duplicates exist. Per-artifact attribution lives on
-/// [`Artifact::author`].
+/// preserved so [`Releases::find_unique_by_commit`] can prefer
+/// delegate-authored releases when duplicates exist. Per-artifact
+/// attribution lives on [`Artifact::author`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
     oid: Oid,
@@ -359,8 +351,7 @@ impl Release {
     }
 
     /// [`Did`] of the user who created this release COB. Used by
-    /// [`Releases::find_or_create_by_oid`] and
-    /// [`Releases::find_unique_by_oid`] for delegate priority.
+    /// [`Releases::find_unique_by_commit`] for delegate priority.
     pub fn creator(&self) -> &Did {
         &self.creator
     }
@@ -514,7 +505,6 @@ impl<R: ReadRepository> Evaluate<R> for Release {
 ///
 ///   - [`Releases::create`]
 ///   - [`Releases::get_mut`]
-///   - [`Releases::find_or_create_by_oid`]
 pub struct Releases<'a, R> {
     raw: store::Store<'a, Release, R>,
 }
@@ -552,8 +542,17 @@ where
     }
 
     /// Find the [`Release`]s that are associated with the `wanted` commit.
-    pub fn find_by_oid(&self, wanted: Oid) -> Result<FindByOid<'a>, store::Error> {
-        FindByOid::new(self, wanted)
+    pub fn find_by_commit(&self, wanted: Oid) -> Result<FindByCommit<'a>, store::Error> {
+        FindByCommit::new(self, wanted)
+    }
+
+    /// Find a [`Release`] by its [`ReleaseId`]. Returns `Ok(None)` when
+    /// no release with that id exists.
+    pub fn find_by_release_id(
+        &self,
+        id: &ReleaseId,
+    ) -> Result<Option<Release>, store::Error> {
+        self.get(id)
     }
 
     /// Find the canonical release for a given commit OID.
@@ -569,7 +568,7 @@ where
     /// - [`error::FindRelease::NoRelease`] when no release exists.
     /// - [`error::FindRelease::Ambiguous`] when multiple non-delegate
     ///   releases exist and no delegate-authored release is present.
-    pub fn find_unique_by_oid(
+    pub fn find_unique_by_commit(
         &self,
         oid: Oid,
         delegates: &BTreeSet<Did>,
@@ -578,7 +577,7 @@ where
         let mut non_delegate_count = 0usize;
         let mut non_delegate_first: Option<ReleaseId> = None;
         for result in self
-            .find_by_oid(oid)
+            .find_by_commit(oid)
             .map_err(|err| error::FindRelease::Store { oid, err })?
         {
             let (id, release) = result.map_err(|err| error::FindRelease::Store { oid, err })?;
@@ -625,13 +624,13 @@ where
 }
 
 /// [`Iterator`] for finding each [`Release`] where the [`Release::oid`] matches
-/// the wanted commit. See [`Releases::find_by_oid`].
-pub struct FindByOid<'a> {
+/// the wanted commit. See [`Releases::find_by_commit`].
+pub struct FindByCommit<'a> {
     releases: Box<dyn Iterator<Item = Result<(ObjectId, Release), cob::store::Error>> + 'a>,
     needle: Oid,
 }
 
-impl<'a> FindByOid<'a> {
+impl<'a> FindByCommit<'a> {
     fn new<R>(releases: &Releases<'a, R>, needle: Oid) -> Result<Self, cob::store::Error>
     where
         R: ReadRepository + cob::Store<Namespace = NodeId>,
@@ -647,7 +646,7 @@ impl<'a> FindByOid<'a> {
     }
 }
 
-impl Iterator for FindByOid<'_> {
+impl Iterator for FindByCommit<'_> {
     type Item = Result<(ReleaseId, Release), cob::store::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -693,8 +692,10 @@ where
     ///
     /// The signer's DID confers no release-level privilege — it's the git
     /// committer of the wrapping COB op, not the "owner" of the release.
-    /// Prefer [`Releases::find_or_create_by_oid`] to avoid creating duplicate
-    /// releases for the same commit.
+    ///
+    /// Callers that want to add to an existing release for the same
+    /// commit should call [`Releases::find_unique_by_commit`] first and
+    /// fall back to `create` only when no release exists.
     pub fn create<'g, G>(
         &'g mut self,
         oid: Oid,
@@ -721,65 +722,6 @@ where
         })
     }
 
-    /// Find a [`Release`] for the given commit OID, or create one if no
-    /// suitable release exists.
-    ///
-    /// When duplicate release COBs exist for the same commit (concurrent
-    /// creation across unsynced nodes), the canonical COB is selected by:
-    ///
-    /// 1. Prefer releases authored by a repository delegate (see
-    ///    [`Release::creator`]); pick the smallest [`ReleaseId`] among
-    ///    them.
-    /// 2. Otherwise, if the signer is a delegate, create a fresh release
-    ///    so the delegate writes against a delegate-authored COB rather
-    ///    than inheriting a non-delegate's metadata.
-    /// 3. Otherwise, reuse the existing release with the smallest
-    ///    [`ReleaseId`].
-    /// 4. If no release exists, create one.
-    ///
-    /// `tag` is recorded only when this call creates a new release. If an
-    /// existing release is returned, the caller-supplied `tag` is
-    /// discarded — the original creator's tag wins (first-writer-wins).
-    pub fn find_or_create_by_oid<'g, G>(
-        &'g mut self,
-        oid: Oid,
-        tag: Option<Oid>,
-        delegates: &BTreeSet<Did>,
-        signer: &Device<G>,
-    ) -> Result<ReleaseMut<'a, 'g, R>, store::Error>
-    where
-        G: Signer<crypto::Signature>,
-    {
-        // Smallest ID wins inside each class — deterministic so all
-        // replicas converge on the same canonical COB.
-        let mut delegate_canonical: Option<ReleaseId> = None;
-        let mut any_canonical: Option<ReleaseId> = None;
-        for result in self.find_by_oid(oid)? {
-            let (id, release) = result?;
-            match any_canonical {
-                Some(current) if current <= id => {}
-                _ => any_canonical = Some(id),
-            }
-            if delegates.contains(release.creator()) {
-                match delegate_canonical {
-                    Some(current) if current <= id => {}
-                    _ => delegate_canonical = Some(id),
-                }
-            }
-        }
-
-        if let Some(id) = delegate_canonical {
-            return self.get_mut(&id);
-        }
-        let signer_is_delegate = delegates.contains(&Did::from(*signer.public_key()));
-        match (any_canonical, signer_is_delegate) {
-            // Delegate signer with no delegate-authored COB → bootstrap one.
-            (_, true) => self.create(oid, tag, signer),
-            // Non-delegate signer: reuse if anything exists, else create.
-            (Some(id), false) => self.get_mut(&id),
-            (None, false) => self.create(oid, tag, signer),
-        }
-    }
 }
 
 /// A `ReleaseMut` is a [`Release`] where the underlying `Release` can be
@@ -1038,7 +980,7 @@ mod test {
     }
 
     /// Collect the delegate set for a Radicle storage repository for use
-    /// with `find_or_create_by_oid` and `find_unique_by_oid`.
+    /// with `find_unique_by_commit`.
     fn delegates(
         repo: &radicle::storage::git::Repository,
     ) -> std::collections::BTreeSet<Did> {
@@ -1216,7 +1158,7 @@ mod test {
     }
 
     #[test]
-    fn find_by_oid_returns_matching_releases() {
+    fn find_by_commit_returns_matching_releases() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -1227,9 +1169,9 @@ mod test {
         let id1 = releases.create(oid1, None, &alice.signer).unwrap().id;
         let _id2 = releases.create(oid2, None, &alice.signer).unwrap().id;
 
-        // find_by_oid should return only the release matching oid1.
+        // find_by_commit should return only the release matching oid1.
         let results: Vec<_> = releases
-            .find_by_oid(oid1)
+            .find_by_commit(oid1)
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -1239,7 +1181,7 @@ mod test {
     }
 
     #[test]
-    fn find_by_oid_returns_empty_for_no_match() {
+    fn find_by_commit_returns_empty_for_no_match() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -1250,7 +1192,7 @@ mod test {
         releases.create(oid, None, &alice.signer).unwrap();
 
         let results: Vec<_> = releases
-            .find_by_oid(other_oid)
+            .find_by_commit(other_oid)
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -1893,179 +1835,6 @@ mod test {
     }
 
     #[test]
-    fn find_or_create_creates_when_missing() {
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Test Commit");
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        // No release exists yet — find_or_create_by_oid should create one.
-        let release = releases
-            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
-            .unwrap();
-        assert_eq!(release.oid(), &oid);
-    }
-
-    #[test]
-    fn find_or_create_finds_existing() {
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Test Commit");
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let id = {
-            let r = releases.create(oid, None, &alice.signer).unwrap();
-            *r.id()
-        };
-
-        // Release already exists — find_or_create_by_oid should return it.
-        let release = releases
-            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
-            .unwrap();
-        assert_eq!(*release.id(), id);
-    }
-
-    #[test]
-    fn find_or_create_prefers_delegate_release() {
-        // Two duplicate COBs for the same commit, one by a delegate
-        // (Alice) and one by a non-delegate (Bob). find_or_create_by_oid
-        // must return the delegate's COB regardless of which has the
-        // smaller ReleaseId, so that delegate-authored releases are
-        // canonical across replicas.
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Test Commit");
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let alice_id = *releases.create(oid, None, &alice.signer).unwrap().id();
-        let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
-
-        // Alice is a repo delegate, Bob is not. The selection must
-        // return Alice's COB irrespective of which side has the lower
-        // id and which signer is making the lookup.
-        let picked_alice = *releases
-            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
-            .unwrap()
-            .id();
-        let picked_bob = *releases
-            .find_or_create_by_oid(oid, None, &delegates, &bob.signer)
-            .unwrap()
-            .id();
-        assert_eq!(picked_alice, alice_id);
-        assert_eq!(picked_bob, alice_id);
-        assert_ne!(alice_id, bob_id);
-    }
-
-    #[test]
-    fn find_or_create_creates_new_when_only_non_delegate_exists() {
-        // A non-delegate (Bob) has created a release on a commit; a
-        // delegate (Alice) then calls find_or_create_by_oid. The
-        // delegate must bootstrap their own COB rather than reuse
-        // Bob's, so delegate-authored metadata (tag, timestamp,
-        // creator) lives on the canonical release.
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "v1.0");
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
-        let alice_id = *releases
-            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
-            .unwrap()
-            .id();
-        assert_ne!(alice_id, bob_id, "delegate should bootstrap a fresh COB");
-
-        // A second find_or_create_by_oid by Alice must converge on her
-        // freshly bootstrapped delegate COB rather than churn out
-        // another duplicate.
-        let again = *releases
-            .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
-            .unwrap()
-            .id();
-        assert_eq!(again, alice_id);
-    }
-
-    #[test]
-    fn find_or_create_non_delegate_reuses_non_delegate_release() {
-        // No delegate-authored release exists, so a non-delegate
-        // calling find_or_create_by_oid must reuse whatever
-        // non-delegate release is already there rather than create
-        // duplicates. The repo's only delegate is `_alice`; she never
-        // calls into the store herself in this test.
-        let test::setup::NodeWithRepo {
-            node: _alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: carol, .. } =
-            test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "v1.0");
-        // Bob and Carol are not delegates of repo.
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
-        let carol_id = *releases
-            .find_or_create_by_oid(oid, None, &delegates, &carol.signer)
-            .unwrap()
-            .id();
-        assert_eq!(carol_id, bob_id);
-        let all: Vec<_> = releases
-            .find_by_oid(oid)
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(all.len(), 1);
-    }
-
-    #[test]
-    fn find_or_create_reuses_release_across_signers() {
-        // Two delegates calling find_or_create_by_oid against the same
-        // commit must converge on a single release. (The first
-        // delegate creates it; the second finds it.)
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "v1.0");
-        // Spike the delegate set to include both Alice and Bob so that
-        // Bob's call doesn't bootstrap its own COB.
-        let mut delegates = delegates(&repo);
-        delegates.insert(Did::from(*bob.signer.public_key()));
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let alice_id = {
-            let r = releases
-                .find_or_create_by_oid(oid, None, &delegates, &alice.signer)
-                .unwrap();
-            *r.id()
-        };
-        let bob_id = {
-            let r = releases
-                .find_or_create_by_oid(oid, None, &delegates, &bob.signer)
-                .unwrap();
-            *r.id()
-        };
-
-        assert_eq!(alice_id, bob_id);
-        let all: Vec<_> = releases
-            .find_by_oid(oid)
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(all.len(), 1);
-    }
-
-    #[test]
     fn find_by_cid_aggregates_duplicate_oid_releases() {
         // Two releases exist for the same OID (legacy state from before the
         // refactor, or concurrent creation across unsynced nodes), and both
@@ -2157,34 +1926,6 @@ mod test {
     }
 
     #[test]
-    fn find_or_create_first_writer_wins_tag() {
-        // Once a release records a tag, a later find_or_create_by_oid
-        // call passing a different tag must not overwrite it. The
-        // canonical (first) creator's tag wins.
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Tagged release");
-        let tag_a = test::arbitrary::oid();
-        let tag_b = test::arbitrary::oid();
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let first_id = *releases
-            .find_or_create_by_oid(oid, Some(tag_a), &delegates, &alice.signer)
-            .unwrap()
-            .id();
-        let second_id = *releases
-            .find_or_create_by_oid(oid, Some(tag_b), &delegates, &alice.signer)
-            .unwrap()
-            .id();
-        assert_eq!(first_id, second_id);
-
-        let release = releases.get(&first_id).unwrap().unwrap();
-        assert_eq!(release.tag(), Some(&tag_a));
-    }
-
-    #[test]
     fn tag_persists_through_reload() {
         // Reopening the store from disk must still surface the tag
         // recorded at creation time.
@@ -2240,7 +1981,7 @@ mod test {
         let alice_id = *releases.create(oid, None, &alice.signer).unwrap().id();
         let _bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
 
-        let picked = releases.find_unique_by_oid(oid, &delegates).unwrap();
+        let picked = releases.find_unique_by_commit(oid, &delegates).unwrap();
         assert_eq!(picked, alice_id);
     }
 
@@ -2257,7 +1998,7 @@ mod test {
         let mut releases = Releases::open(&*repo).unwrap();
 
         let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
-        let picked = releases.find_unique_by_oid(oid, &delegates).unwrap();
+        let picked = releases.find_unique_by_commit(oid, &delegates).unwrap();
         assert_eq!(picked, bob_id);
     }
 
@@ -2279,7 +2020,7 @@ mod test {
         let _bob_id = releases.create(oid, None, &bob.signer).unwrap().id();
         let _carol_id = releases.create(oid, None, &carol.signer).unwrap().id();
 
-        let err = releases.find_unique_by_oid(oid, &delegates).unwrap_err();
+        let err = releases.find_unique_by_commit(oid, &delegates).unwrap_err();
         assert!(matches!(err, crate::error::FindRelease::Ambiguous(_)));
     }
 
