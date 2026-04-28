@@ -6,7 +6,6 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
 use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repository};
 use serde::Serialize;
 use url::Url;
@@ -376,9 +375,6 @@ impl Release {
             Some(t) => t,
             None => "",
         };
-        let date = DateTime::<Utc>::from_timestamp(self.created_at as i64, 0)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
-            .unwrap_or_else(|| self.created_at.to_string());
         // When a tag association is recorded, surface the tag name when
         // resolvable (falling back to its short OID) alongside the
         // commit; otherwise just the commit.
@@ -393,7 +389,7 @@ impl Release {
         let creator = format_did(&self.creator, &self.creator_alias, false);
         push_line(
             &mut s,
-            format!("ID {short_id} | {ref_label} | by {creator} | {date} {title_suffix}"),
+            format!("ID {short_id} | {ref_label} | by {creator} {title_suffix}"),
         );
         // Build a per-release artifact table: CID | name | author | locations.
         // The locations cell summarises counts by URL scheme (e.g.

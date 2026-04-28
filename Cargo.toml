@@ -37,7 +37,6 @@ share = [
 ]
 
 [dependencies]
-chrono = { version = "0.4", features = ["clock"] }
 cid = { version = "0.11", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "wrap_help"] }
 indexmap = { version = "2.7", features = ["serde"] }
