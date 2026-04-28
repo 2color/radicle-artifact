@@ -1,1 +1,1 @@
-{"AddArtifact":{"cid":[1,85,30,32,112,8,60,8,139,109,52,146,33,230,45,67,82,115,51,71,77,64,156,65,15,191,194,169,235,183,78,122,76,66,77,170],"name":"rad-artifact_0.11.0_aarch64-unknown-linux-musl"}}
+{"AddLocation":{"cid":[1,85,30,32,112,8,60,8,139,109,52,146,33,230,45,67,82,115,51,71,77,64,156,65,15,191,194,169,235,183,78,122,76,66,77,170],"location":"https://files.radicle.dev/releases/radicle-artifact/0.11.0/rad-artifact_0.11.0_aarch64-unknown-linux-musl"}}
