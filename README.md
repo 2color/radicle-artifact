@@ -6,11 +6,11 @@ Git was never built to distribute large file and binaries. Existing solutions li
 
 `radicle-artifact` makes artifact distribution:
 
-- **Verifiable and signed** — every artifact is hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) and content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`Add`, `Attest`, `AddLocation`) is signed by its author's Ed25519 key.
+- **Verifiable and signed** — every artifact is hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) and content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`AddArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
 - **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
 - **Transport-agnostic** — artifacts can have multiple _locations_ and shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The cli comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
 
-Trust is multi-party and follows from the repository **delegates**, the trusted maintianers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their matches, and can also **redact** artifacts if compromised or broken.
+Trust is multi-party and follows from the repository **delegates**, the trusted maintainers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their CIDs match, and can also **redact** artifacts if compromised or broken.
 
 radicle-artifact is useful for distributing any data related to code: binaries, static sites, model weights, and scientific datasets.
 
@@ -28,9 +28,23 @@ Or build from source via crates.io:
 cargo install radicle-artifact
 ```
 
+> **Note:** radicle-artifact requires radicle installed.
+
+## Workflow
+
+1. **Tag** — Create a release tag or commit — ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references).
+2. **Build** — Build your release artifacts.
+3. **Add** — Add artifacts to a release using the `rad-artifact add <PATH>` command, which creates the release if it doesn't exist and records the artifact CID.
+4. **Serve** — Upload artifacts to an HTTP server and register location with `rad-artifact location add`, or serve directly from the CLI using `rad-artifact serve <PATH>`.
+5. **Fetch** — Fetch artifacts using the `rad-artifact fetch` command.
+6. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
+7. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
+
 ## How it works
 
-A **Release** is associated with a Git OID (annotated tag or commit). A release contains one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help serve content by announcing location URLs for any artifact, enabling decentralized mirroring.
+A **Release** is a radicle [COB] (Collaborative Object) identified by a Release ID and associated with a Git commit and optionally an annotated tag.
+
+Releases contain one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help mirror artifacts by announcing location URLs for any artifact, enabling decentralized mirroring.
 
 Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
@@ -40,26 +54,13 @@ Each user is identified by a DID that is currently mapped 1:1 to the Radicle Nod
 
 This COB is **build-system agnostic**. It works with any toolchain or build process that produces addressable artifacts. Ideally your builds are deterministic (reproducible), which lets other delegates independently verify artifacts and record attestations. However, deterministic builds are not a requirement; you can use radicle-artifact purely for publishing and discovering release artifacts without attestation.
 
-## Workflow
-
-1. **Tag** — Create a [canonical reference](https://radicle.dev/2025/08/12/canonical-references) from an annotated tag or commit.
-2. **Build** — Build the release artifacts and derive their content identifiers (CIDs).
-3. **Compute CID** — Compute the CID of each artifact by hashing the contents. Folders are hashed as [iroh-blob collections](https://docs.iroh.computer/protocols/blobs#collections).
-4. **Add** — Add artifacts to a release using the `rad-artifact add` command, which creates the release if it doesn't exist and records the artifact CID.
-5. **Serve** — Upload artifacts to an HTTP server, or serve directly from the CLI using `rad-artifact serve` and register discovery locations per DID.
-6. **Fetch** — Fetch artifacts using the `rad-artifact fetch` command.
-7. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
-8. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
-
-## COB type
-
-`org.radworks.artifact`
-
 ## Data model
 
 ```
 Release
-├── oid: Oid                          # git commit or annotated tag (one release per OID)
+├── id: Oid                           # Release ID
+├── oid: Oid                          # git commit the release is linked to
+├── tag: Option<Oid>                  # optional annotated tag OID linked to the commit
 └── artifacts: Map<Cid, Artifact>
     └── Artifact
         ├── author: Did               # user that added this artifact
@@ -75,11 +76,9 @@ Release
 
 ## Collaboration model
 
-A release is identified by its commit OID, not by the person who created it. Any user can add artifacts, announce discovery locations, or attest and redact on any release. The first contributor's `add` creates the release COB; subsequent contributors reuse it. Artifact-level attribution is still recorded — only the DID that added an artifact can update its name, and attestations/redactions are attributed to their signer.
+A release is linked by the build commit `oid`, not by the person who created it. Any user can add artifacts, announce discovery locations, or attest and redact on any release. The first contributor's `add` creates the release COB; subsequent contributors reuse it. Artifact-level attribution is still recorded — only the DID that added an artifact can update its name, and attestations/redactions are attributed to their signer.
 
-Trust weighting happens at the artifact level: redactions and attestations from repository **delegates** are highlighted, and `list --delegates-only` filters to releases that contain at least one artifact from a delegate.
-
-Two unsynced nodes can independently create a release COB for the same commit. After they sync, retrieval (`fetch`, `serve`) unions artifacts and locations across every release COB for the given commit or CID, so duplicate COBs don't break discovery. A fully deterministic per-OID COB ID — so that both nodes produce the same COB identity before syncing — would require upstream changes to the `radicle-cob` crate and is not implemented here.
+Trust weighting happens at the artifact level: redactions and attestations from repository **delegates** are highlighted. By default, `list` and `show` only display artifacts authored by a delegate or the local user. Pass `--all-authors` to include artifacts added by non-delegates.
 
 ## Actions
 
@@ -92,21 +91,26 @@ Two unsynced nodes can independently create a release COB for the same commit. A
 | `Attest`         | Record independent verification of a CID                                     |
 | `Redact`         | Flag an artifact as compromised/withdrawn                                    |
 
+## COB type
+
+`org.radworks.artifact`
+
 ## CLI usage
 
-`<COMMIT>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**.
+`<REVISION>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**.
 
 ```
-rad-artifact add <COMMIT> --cid <CID> -n <NAME>              # add artifact (creates release if needed)
-rad-artifact location add <COMMIT> --cid <CID> <URL>         # add discovery URL
-rad-artifact location remove <COMMIT> --cid <CID> <URL>      # remove discovery URL
-rad-artifact attest <COMMIT> --cid <CID>                     # attest to an artifact
-rad-artifact redact <COMMIT> --cid <CID> -m <REASON>         # redact an artifact
-rad-artifact show <COMMIT> [--pretty]                        # show release
-rad-artifact list [--pretty] [--delegates-only]              # list releases (--delegates-only: with ≥1 delegate-authored artifact)
-rad-artifact cid <PATH>                                      # compute BLAKE3 CID
-rad-artifact fetch [<COMMIT> --cid <CID>]                    # fetch artifact (interactive without args)
-rad-artifact serve <PATH>                                    # serve artifact via iroh-blobs
+rad-artifact add <PATH> [--revision <REVISION>] [-n <NAME>]      # add artifact (creates release if needed)
+rad-artifact add --cid <CID> --revision <REVISION> -n <NAME>     # register a precomputed CID without local bytes
+rad-artifact location add --revision <REVISION> --cid <CID> <URL>    # add discovery URL
+rad-artifact location remove --revision <REVISION> --cid <CID> <URL> # remove discovery URL
+rad-artifact attest <REVISION> --cid <CID>                       # attest to an artifact
+rad-artifact redact <REVISION> --cid <CID> -m <REASON>           # redact an artifact
+rad-artifact show <REVISION> [--pretty] [--all-authors]          # show release
+rad-artifact list [--pretty] [--all-authors]                     # list releases (default: delegate-authored only)
+rad-artifact cid <PATH>                                          # compute BLAKE3 CID
+rad-artifact fetch [<REVISION> --cid <CID>]                      # fetch artifact (interactive without args)
+rad-artifact serve <PATH>                                        # serve artifact via iroh-blobs
 ```
 
 Use `--repository <RID>` to target a specific repo (defaults to cwd).
@@ -120,6 +124,7 @@ src/
 ├── lib.rs              # core types, COB traits, store layer
 ├── error.rs            # Build and Apply error types
 ├── display.rs          # JSON and pretty-print display forms
+├── share/              # iroh-blobs serve/fetch, CID utilities, key handling
 └── bin/
     └── rad-artifact.rs # CLI binary
 ```
@@ -154,4 +159,4 @@ cross-platform binaries alongside the install script.
 
 MIT OR Apache-2.0
 
-[cob]: https://radicle.dev/guides/protocol#collaborative-objects
+[COB]: https://radicle.dev/guides/protocol#collaborative-objects
