@@ -581,7 +581,8 @@ impl Release {
     /// Pretty print a release in compact form, suitable for `list`.
     ///
     /// Each artifact renders as one row: cid, name, author, locations
-    /// (scheme-summarised), and attestation/redaction badges.
+    /// (scheme-summarised), and attestation/redaction badges. CIDs render
+    /// in full so they can be copy-pasted without `--verbose`.
     pub fn pretty_compact(&self, style: Style) -> String {
         let mut s = String::new();
         push_line(&mut s, self.header(style));
@@ -593,15 +594,9 @@ impl Release {
 
         let mut rows: Vec<Vec<String>> = Vec::new();
         for artifact in self.artifacts.iter() {
-            let cid_cell = if style.verbose {
-                artifact.cid.clone()
-            } else {
-                format!(
-                    "{}…{}",
-                    &artifact.cid[..6],
-                    &artifact.cid[artifact.cid.len() - 6..]
-                )
-            };
+            // CIDs always render in full so they can be copy-pasted without
+            // re-running with --verbose; only DIDs are truncated.
+            let cid_cell = artifact.cid.clone();
             let author = format_did(&artifact.author, &artifact.author_alias, style.verbose);
 
             // Summarise location counts by URL scheme to keep the row compact.
@@ -700,18 +695,10 @@ impl Release {
             // whitespace isn't emitted.
             let label = |k: &str| pad_right(&style.dim(k), 14);
             let bare_label = |k: &str| style.dim(k);
-            let cid_str = if style.verbose {
-                artifact.cid.clone()
-            } else {
-                format!(
-                    "{}…{}",
-                    &artifact.cid[..6],
-                    &artifact.cid[artifact.cid.len() - 6..]
-                )
-            };
+            // Always show the full CID in detailed view too.
             push_line(
                 &mut s,
-                format!("    {}{}", label("cid"), style.magenta(&cid_str)),
+                format!("    {}{}", label("cid"), style.magenta(&artifact.cid)),
             );
             let author = format_did(&artifact.author, &artifact.author_alias, style.verbose);
             push_line(&mut s, format!("    {}{}", label("author"), author));
