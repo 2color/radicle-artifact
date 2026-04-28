@@ -578,6 +578,14 @@ fn use_pretty(pretty: bool, json: bool) -> bool {
     std::io::stdout().is_terminal()
 }
 
+/// Build a [`display::Style`]: color is on when stdout is a TTY and `NO_COLOR`
+/// is unset, off otherwise. `verbose` is forwarded to the style.
+fn pretty_style(verbose: bool) -> display::Style {
+    let color = std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    display::Style { verbose, color }
+}
+
 fn show_release(
     command::Show {
         pretty,
@@ -632,9 +640,7 @@ fn show_release(
     let shown =
         display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
     if use_pretty(pretty, json) {
-        // Expand per-location rows on `show -v`. List intentionally
-        // keeps the compact scheme summary even with -v to stay terse.
-        print!("{}", shown.pretty(verbose, verbose));
+        print!("{}", shown.pretty_detailed(pretty_style(verbose)));
     } else {
         println!(
             "{}",
@@ -685,7 +691,7 @@ fn list_releases(
     };
     let releases = display::Releases::new(iter, aliases, filters, empty, repo, repo);
     if use_pretty(pretty, json) {
-        println!("{}", releases.pretty(verbose, false));
+        print!("{}", releases.pretty(pretty_style(verbose)));
     } else {
         println!(
             "{}",
