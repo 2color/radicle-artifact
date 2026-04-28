@@ -6,7 +6,7 @@ Git was never built to distribute large file and binaries. Existing solutions li
 
 `radicle-artifact` makes artifact distribution:
 
-- **Verifiable and signed** — every artifact is hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) and content addressed with a [CID](https://dasl.ing/cid.html) and bound to the exact commit it was built from. Every [action](#actions) (`AddArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
+- **Verifiable and signed** — every artifact is hashed with [BLAKE3] and content addressed with a [CID] and bound to the exact commit it was built from. Every [action](#actions) (`AddArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
 - **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
 - **Transport-agnostic** — artifacts can have multiple _locations_ and shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The cli comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
 
@@ -61,7 +61,7 @@ Release
 ├── id: Oid                           # Release ID
 ├── oid: Oid                          # git commit the release is linked to
 ├── tag: Option<Oid>                  # optional annotated tag OID linked to the commit
-└── artifacts: Map<Cid, Artifact>
+└── artifacts: Map<CID, Artifact>
     └── Artifact
         ├── author: Did               # user that added this artifact
         ├── name: String              # human-readable description (only author can update)
@@ -73,6 +73,19 @@ Release
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
 - **Locations** — plain URLs (`https://`, `ipfs://`, `magnet://`, [`rasl://`](https://dasl.ing/rasl.html), `iroh://`, etc.)
 - Each user can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
+
+## Artifact types
+
+radicle-artifact supports two kinds of artifacts types: blobs and collections, and are encoded as a [CID].
+
+| Kind       | CID [multicodec]          | Hash              | Contents                           | Transports       |
+| ---------- | ------------------------- | ----------------- | ---------------------------------- | ---------------- |
+| Blob       | `raw` (`0x55`)            | `blake3` (`0x1e`) | a single file                      | HTTP, iroh-blobs |
+| Collection | `blake3-hashseq` (`0x80`) | `blake3` (`0x1e`) | a collection of files, i.e. folder | iroh-blobs only  |
+
+Blobs are the common case: one binary, archive, or model file. [Collections](https://docs.iroh.computer/protocols/blobs#collections) derive a hash from a collection of files, i.e. directory, and are useful when the collection represents a single artifact, e.g. static frontend builds.
+
+Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as locations and resolved by external tools, but the CLI itself only fetches HTTP and iroh.
 
 ## Collaboration model
 
@@ -160,3 +173,6 @@ cross-platform binaries alongside the install script.
 MIT OR Apache-2.0
 
 [COB]: https://radicle.dev/guides/protocol#collaborative-objects
+[CID]: https://dasl.ing/cid.html
+[multicodec]: https://github.com/multiformats/multicodec
+[BLAKE3]: https://github.com/BLAKE3-team/BLAKE3
