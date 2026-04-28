@@ -546,15 +546,6 @@ where
         FindByCommit::new(self, wanted)
     }
 
-    /// Find a [`Release`] by its [`ReleaseId`]. Returns `Ok(None)` when
-    /// no release with that id exists.
-    pub fn find_by_release_id(
-        &self,
-        id: &ReleaseId,
-    ) -> Result<Option<Release>, store::Error> {
-        self.get(id)
-    }
-
     /// Find the canonical release for a given commit OID.
     ///
     /// When duplicate release COBs exist for the same commit, releases

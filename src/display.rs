@@ -13,7 +13,7 @@ use url::Url;
 use crate::ReleaseId;
 
 /// Resolve a DID's alias via an [`AliasStore`], returning the string if found.
-fn resolve(did: &Did, aliases: &impl AliasStore) -> Option<String> {
+pub fn resolve(did: &Did, aliases: &impl AliasStore) -> Option<String> {
     aliases.alias(did.as_key()).map(|a| a.to_string())
 }
 
@@ -22,7 +22,7 @@ fn resolve(did: &Did, aliases: &impl AliasStore) -> Option<String> {
 /// When `full` is false: keys are shown as first 7 + `…` + last 7.
 /// When `full` is true the complete key is shown. In both cases an alias
 /// is prepended as `alice@<key>` when available.
-fn format_did(did: &Did, alias: &Option<String>, full: bool) -> String {
+pub fn format_did(did: &Did, alias: &Option<String>, full: bool) -> String {
     let key = did.to_string().replace("did:key:", "");
     let displayed = if full {
         key
@@ -221,6 +221,12 @@ impl Releases {
         }
 
         s
+    }
+
+    /// Consume self and return the inner [`Release`]s, e.g. for
+    /// callers that need a bare-array JSON shape.
+    pub fn into_inner(self) -> Vec<Release> {
+        self.releases
     }
 }
 
