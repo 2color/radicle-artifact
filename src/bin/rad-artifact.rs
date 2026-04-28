@@ -288,38 +288,41 @@ where
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|err| error::Add::FindByCommit { oid, err })?;
 
-            let release = match candidates.as_slice() {
-                [] => releases
+            // Disambiguate when multiple releases exist OR when a single
+            // existing release would silently inherit the wrong tag (e.g.
+            // an RC release on the same commit, the user supplies the
+            // final tag). When the user supplied no tag, silently reuse
+            // the existing release — they didn't assert anything to
+            // contradict.
+            let needs_disambiguation = candidates.len() > 1
+                || (candidates.len() == 1
+                    && resolved.tag.is_some()
+                    && candidates[0].1.tag().copied() != resolved.tag);
+
+            let release = if candidates.is_empty() {
+                releases
                     .create(oid, resolved.tag, signer)
-                    .map_err(|err| error::Add::Create { oid, err })?,
-                [(id, _)] => {
-                    let id = *id;
-                    releases
-                        .get_mut(&id)
-                        .map_err(|err| error::Add::Store { id, err })?
-                }
-                _ => {
-                    if no_input {
-                        return Err(error::Add::AmbiguousReleases {
-                            oid,
-                            candidates: candidates.iter().map(|(id, _)| *id).collect(),
-                        });
-                    }
-                    match prompt::pick_release_or_create(
-                        &candidates,
-                        resolved.tag,
-                        repo,
-                        profile,
-                    )
+                    .map_err(|err| error::Add::Create { oid, err })?
+            } else if !needs_disambiguation {
+                let id = candidates[0].0;
+                releases
+                    .get_mut(&id)
+                    .map_err(|err| error::Add::Store { id, err })?
+            } else if no_input {
+                return Err(error::Add::NeedsDisambiguation {
+                    oid,
+                    candidates: candidates.iter().map(|(id, _)| *id).collect(),
+                });
+            } else {
+                match prompt::pick_release_or_create(&candidates, resolved.tag, repo, profile)
                     .map_err(error::Add::Usage)?
-                    {
-                        prompt::ReleaseChoice::Existing(id) => releases
-                            .get_mut(&id)
-                            .map_err(|err| error::Add::Store { id, err })?,
-                        prompt::ReleaseChoice::CreateNew => releases
-                            .create(oid, resolved.tag, signer)
-                            .map_err(|err| error::Add::Create { oid, err })?,
-                    }
+                {
+                    prompt::ReleaseChoice::Existing(id) => releases
+                        .get_mut(&id)
+                        .map_err(|err| error::Add::Store { id, err })?,
+                    prompt::ReleaseChoice::CreateNew => releases
+                        .create(oid, resolved.tag, signer)
+                        .map_err(|err| error::Add::Create { oid, err })?,
                 }
             };
             (release, oid)
@@ -1736,8 +1739,8 @@ mod error {
         },
         #[error("no release found with id {0}")]
         ReleaseNotFound(ReleaseId),
-        #[error("multiple releases exist for commit {oid}; pass --release <id> to disambiguate (candidates: {})", display_ids(candidates))]
-        AmbiguousReleases {
+        #[error("commit {oid} has {} existing release(s) that need disambiguation; pass --release <id> to pick one (candidates: {})", candidates.len(), display_ids(candidates))]
+        NeedsDisambiguation {
             oid: Oid,
             candidates: Vec<ReleaseId>,
         },
