@@ -229,9 +229,13 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Show(cmd) => {
             let delegates = repo_delegates(&repo)?;
-            show_release(cmd, &releases, &repo, &delegates, &profile)?;
+            let local = Did::from(*profile.id());
+            show_release(cmd, &releases, &repo, &delegates, &local, &profile)?;
         }
-        Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
+        Command::List(cmd) => {
+            let local = Did::from(*profile.id());
+            list_releases(cmd, &releases, &repo, &local, &profile)?;
+        }
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
         Command::Serve(cmd) => run_serve(cmd, args.no_input, &profile, &mut releases)?,
     }
@@ -586,6 +590,7 @@ fn show_release(
     releases: &Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
+    local: &Did,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
     // --release narrows to one release; <revision> returns every
@@ -621,6 +626,7 @@ fn show_release(
         delegates,
         redacted,
         all_authors,
+        local: Some(local),
     };
     let shown =
         display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
@@ -646,6 +652,7 @@ fn list_releases(
     }: command::List,
     releases: &Releases<Repository>,
     repo: &Repository,
+    local: &Did,
     aliases: &impl AliasStore,
 ) -> Result<(), error::List> {
     // Delegates drive both the redaction and author filters, so always
@@ -671,6 +678,7 @@ fn list_releases(
         delegates: &delegates,
         redacted,
         all_authors,
+        local: Some(local),
     };
     let releases = display::Releases::new(iter, aliases, filters, empty, repo, repo);
     if use_pretty(pretty, json) {

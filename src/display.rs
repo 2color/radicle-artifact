@@ -158,6 +158,10 @@ pub struct Filters<'a> {
     pub redacted: bool,
     /// When true, include artifacts whose author is not a repository delegate.
     pub all_authors: bool,
+    /// Local user's DID. Artifacts authored by this user are always
+    /// visible, even when the user isn't a delegate and `all_authors`
+    /// is false — users should always see their own contributions.
+    pub local: Option<&'a Did>,
 }
 
 /// A set of [`Release`]s sorted by creation time.
@@ -210,8 +214,9 @@ impl Releases {
 
     /// Pretty print the set of [`Release`]s.
     ///
-    /// When `verbose` is true, CIDs and NodeIDs are rendered in full rather
-    /// than being truncated.
+    /// CIDs are always shown in full so they can be copied without
+    /// re-running with a verbose flag. When `verbose` is true, NodeIDs
+    /// are also rendered in full rather than being truncated.
     pub fn pretty(&self, verbose: bool) -> String {
         let mut s = String::new();
 
@@ -299,7 +304,12 @@ impl Release {
                 // Author filter: hide artifacts added by users who are not
                 // repository delegates. Delegates are the curated source of
                 // truth for a repo; non-delegate contributions are opt-in.
-                if !filters.all_authors && !filters.delegates.contains(artifact.author()) {
+                // The local user is always exempt so they can see their own
+                // contributions without `--all-authors`.
+                if !filters.all_authors
+                    && !filters.delegates.contains(artifact.author())
+                    && filters.local != Some(artifact.author())
+                {
                     return false;
                 }
                 true
@@ -370,8 +380,9 @@ impl Release {
 
     /// Pretty print a release.
     ///
-    /// When `verbose` is true, CIDs and NodeIDs are rendered in full rather
-    /// than being truncated.
+    /// CIDs are always shown in full so they can be copied without
+    /// re-running with a verbose flag. When `verbose` is true, NodeIDs
+    /// are also rendered in full rather than being truncated.
     pub fn pretty(&self, verbose: bool) -> String {
         let mut s = String::new();
 
@@ -404,16 +415,7 @@ impl Release {
         // Attestations and redactions follow as additional rows.
         let mut rows: Vec<Vec<String>> = Vec::new();
         for artifact in self.artifacts.iter() {
-            let cid_cell = if verbose {
-                artifact.cid.clone()
-            } else {
-                // Truncate CID to first 6 and last 6 visible chars for column width.
-                format!(
-                    "{}…{}",
-                    &artifact.cid[..6],
-                    &artifact.cid[artifact.cid.len() - 6..]
-                )
-            };
+            let cid_cell = artifact.cid.clone();
             let author = format_did(&artifact.author, &artifact.author_alias, verbose);
             // BTreeMap keeps the summary in a stable, scheme-sorted order.
             let mut scheme_counts: std::collections::BTreeMap<&str, usize> =
