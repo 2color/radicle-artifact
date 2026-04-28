@@ -359,7 +359,12 @@ fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::Add> {
 }
 
 fn location_add<G>(
-    command::LocationAdd { revision, cid, url }: command::LocationAdd,
+    command::LocationAdd {
+        revision,
+        release,
+        cid,
+        url,
+    }: command::LocationAdd,
     releases: &mut Releases<Repository>,
     repo: &Repository,
     signer: &Device<G>,
@@ -367,11 +372,8 @@ fn location_add<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_ref(&revision, repo)?.commit;
     let delegates = repo_delegates(repo)?;
-    let id = releases
-        .find_unique_by_commit(oid, &delegates)
-        .map_err(error::Find::from)?;
+    let id = resolve_target_release(release, revision.as_deref(), releases, repo, &delegates)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
@@ -380,13 +382,17 @@ where
         .map_err(|err| error::Locate::Store { id, err })?;
     eprintln!("Added location {url} for artifact {cid}");
     if std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact show --pretty {revision}` to verify the release");
+        eprintln!("Hint: use `rad-artifact show --pretty --release {id}` to verify the release");
     }
     Ok(())
 }
 
 fn attest_artifact<G>(
-    command::Attest { revision, cid }: command::Attest,
+    command::Attest {
+        revision,
+        release,
+        cid,
+    }: command::Attest,
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
@@ -395,20 +401,26 @@ fn attest_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let (oid, cid) = match (revision, cid) {
-        (Some(revision), Some(cid)) => (resolve_ref(&revision, repo)?.commit, cid),
-        (None, None) => {
-            prompt::pick_interactive(no_input, releases, repo).map_err(error::Attest::Usage)?
-        }
-        _ => unreachable!("clap enforces both-or-neither"),
-    };
-    // The COB state machine enforces per-signer ownership of the
-    // resulting attestation; the delegate set here only feeds the
-    // canonical-release lookup.
     let delegates = repo_delegates(repo)?;
-    let id = releases
-        .find_unique_by_commit(oid, &delegates)
-        .map_err(error::Find::from)?;
+    let (id, cid) = match (release, revision.as_deref(), cid) {
+        // --release <id> --cid <cid> takes the explicit-target path.
+        (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
+            let id =
+                resolve_target_release(release, revision.as_deref(), releases, repo, &delegates)?;
+            (id, cid)
+        }
+        // No targeting flags: fall back to the interactive picker, which
+        // returns (oid, cid). Then collapse oid -> canonical release.
+        (None, None, None) => {
+            let (oid, cid) =
+                prompt::pick_interactive(no_input, releases, repo).map_err(error::Attest::Usage)?;
+            let id = releases
+                .find_unique_by_commit(oid, &delegates)
+                .map_err(error::Find::from)?;
+            (id, cid)
+        }
+        _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
+    };
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Attest::Store { id, err })?;
@@ -422,6 +434,7 @@ where
 fn redact_artifact<G>(
     command::Redact {
         revision,
+        release,
         cid,
         reason,
     }: command::Redact,
@@ -433,33 +446,27 @@ fn redact_artifact<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let (oid, cid, reason) = match (revision, cid) {
-        (Some(revision), Some(cid)) => {
-            let oid = resolve_ref(&revision, repo)?.commit;
-            let reason = match reason {
-                Some(r) => r,
-                None => prompt::prompt_reason(no_input).map_err(error::Redact::Usage)?,
-            };
-            (oid, cid, reason)
+    let delegates = repo_delegates(repo)?;
+    let (id, cid) = match (release, revision.as_deref(), cid) {
+        (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
+            let id =
+                resolve_target_release(release, revision.as_deref(), releases, repo, &delegates)?;
+            (id, cid)
         }
-        (None, None) => {
+        (None, None, None) => {
             let (oid, cid) =
                 prompt::pick_interactive(no_input, releases, repo).map_err(error::Redact::Usage)?;
-            let reason = match reason {
-                Some(r) => r,
-                None => prompt::prompt_reason(no_input).map_err(error::Redact::Usage)?,
-            };
-            (oid, cid, reason)
+            let id = releases
+                .find_unique_by_commit(oid, &delegates)
+                .map_err(error::Find::from)?;
+            (id, cid)
         }
-        _ => unreachable!("clap enforces both-or-neither"),
+        _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
     };
-    // The COB state machine enforces per-signer ownership of the
-    // resulting redaction; the delegate set here only feeds the
-    // canonical-release lookup.
-    let delegates = repo_delegates(repo)?;
-    let id = releases
-        .find_unique_by_commit(oid, &delegates)
-        .map_err(error::Find::from)?;
+    let reason = match reason {
+        Some(r) => r,
+        None => prompt::prompt_reason(no_input).map_err(error::Redact::Usage)?,
+    };
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Redact::Store { id, err })?;
@@ -471,7 +478,12 @@ where
 }
 
 fn location_remove<G>(
-    command::LocationRemove { revision, cid, url }: command::LocationRemove,
+    command::LocationRemove {
+        revision,
+        release,
+        cid,
+        url,
+    }: command::LocationRemove,
     releases: &mut Releases<Repository>,
     repo: &Repository,
     signer: &Device<G>,
@@ -479,13 +491,10 @@ fn location_remove<G>(
 where
     G: Signer<crypto::Signature>,
 {
-    let oid = resolve_ref(&revision, repo)?.commit;
     // The COB state machine already enforces that only the original
     // announcer can remove a given location.
     let delegates = repo_delegates(repo)?;
-    let id = releases
-        .find_unique_by_commit(oid, &delegates)
-        .map_err(error::Find::from)?;
+    let id = resolve_target_release(release, revision.as_deref(), releases, repo, &delegates)?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
@@ -516,20 +525,18 @@ fn show_release(
         redacted,
         all_authors,
         revision,
+        release,
     }: command::Show,
     releases: &Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
-    let oid = resolve_ref(&revision, repo)?.commit;
-    let id = releases
-        .find_unique_by_commit(oid, delegates)
-        .map_err(error::Find::from)?;
+    let id = resolve_target_release(release, revision.as_deref(), releases, repo, delegates)?;
     let release = releases
         .get(&id)
-        .map_err(|err| error::Find::Lookup { oid, err })?
-        .ok_or(error::Find::NoRelease(oid))?;
+        .map_err(|err| error::Find::LookupId { release_id: id, err })?
+        .ok_or(error::Find::NoReleaseId(id))?;
     // Prefer the tag's title (the annotated tag's message line) when
     // the release records a tag; fall back to the commit summary if
     // the tag object isn't fetched locally.
@@ -1293,6 +1300,37 @@ struct ResolvedRef {
 /// Resolve a git reference (full OID, short OID, or tag name) to a
 /// commit OID, peeling annotated tags and reporting the tag's own OID
 /// when applicable.
+/// Resolve either `--release <id>` or a `<revision>` arg to a single
+/// [`ReleaseId`]. Clap enforces that exactly one is provided.
+///
+/// The `--release` path verifies the id exists; the revision path goes
+/// through [`Releases::find_unique_by_commit`] (delegate priority,
+/// errors on ambiguity — at which point the user is expected to pass
+/// `--release <id>`).
+fn resolve_target_release(
+    release: Option<ReleaseId>,
+    revision: Option<&str>,
+    releases: &Releases<Repository>,
+    repo: &Repository,
+    delegates: &BTreeSet<Did>,
+) -> Result<ReleaseId, error::ResolveTarget> {
+    match (release, revision) {
+        (Some(id), _) => match releases.find_by_release_id(&id) {
+            Ok(Some(_)) => Ok(id),
+            Ok(None) => Err(error::Find::NoReleaseId(id).into()),
+            Err(err) => Err(error::Find::LookupId { release_id: id, err }.into()),
+        },
+        (None, Some(rev)) => {
+            let oid = resolve_ref(rev, repo)?.commit;
+            releases
+                .find_unique_by_commit(oid, delegates)
+                .map_err(error::Find::from)
+                .map_err(Into::into)
+        }
+        (None, None) => unreachable!("clap requires one of --release or <revision>"),
+    }
+}
+
 fn resolve_ref(rev: &str, repo: &Repository) -> Result<ResolvedRef, error::Resolve> {
     use radicle::git::raw::ObjectType;
 
@@ -1520,16 +1558,28 @@ Examples:
     ///
     /// Announces where an artifact can be retrieved from.
     #[derive(Parser)]
-    #[clap(after_long_help = "\
+    #[clap(
+        group = clap::ArgGroup::new("target").required(true).args(["revision", "release"]),
+        after_long_help = "\
 Examples:
   Register an HTTPS download location:
-    $ rad-artifact location add v1.0 --cid baf...abc https://example.com/my-binary
+    $ rad-artifact location add --revision v1.0 --cid baf...abc https://example.com/my-binary
 
   Register an iroh-blobs endpoint:
-    $ rad-artifact location add v1.0 --cid baf...abc iroh://<endpoint-id>")]
+    $ rad-artifact location add --revision v1.0 --cid baf...abc iroh://<endpoint-id>
+
+  Target a specific release by id:
+    $ rad-artifact location add --release <release-id> --cid baf...abc https://example.com/my-binary"
+    )]
     pub struct LocationAdd {
         /// Git revision (commit, tag, or abbreviated OID) of the release.
-        pub revision: String,
+        /// Conflicts with --release.
+        #[clap(long)]
+        pub revision: Option<String>,
+        /// Existing release id. Skips commit/tag resolution.
+        /// Conflicts with --revision.
+        #[clap(long)]
+        pub release: Option<ReleaseId>,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -1552,13 +1602,19 @@ Examples:
 
   Attest a specific artifact:
     $ rad-artifact attest v1.0 --cid baf...abc")]
+    #[clap(group = clap::ArgGroup::new("target").args(["revision", "release"]))]
     pub struct Attest {
         /// Git revision (commit, tag, or abbreviated OID) of the release.
-        /// Required with --cid.
+        /// Required with --cid unless --release is given.
         #[clap(requires = "cid")]
         pub revision: Option<String>,
-        /// Content identifier for the artifact to attest. Required with <REVISION>.
-        #[clap(long, requires = "revision")]
+        /// Existing release id. Skips commit/tag resolution. Required
+        /// with --cid unless <revision> is given.
+        #[clap(long, requires = "cid")]
+        pub release: Option<ReleaseId>,
+        /// Content identifier for the artifact to attest. Required with
+        /// a target (<revision> or --release).
+        #[clap(long, requires = "target")]
         pub cid: Option<Cid>,
     }
 
@@ -1582,13 +1638,19 @@ Examples:
 
   Redact a specific artifact:
     $ rad-artifact redact v1.0 --cid baf...abc -m \"build compromised, see advisory\"")]
+    #[clap(group = clap::ArgGroup::new("target").args(["revision", "release"]))]
     pub struct Redact {
         /// Git revision (commit, tag, or abbreviated OID) of the release.
-        /// Required with --cid.
+        /// Required with --cid unless --release is given.
         #[clap(requires = "cid")]
         pub revision: Option<String>,
-        /// Content identifier for the artifact to redact. Required with <REVISION>.
-        #[clap(long, requires = "revision")]
+        /// Existing release id. Skips commit/tag resolution. Required
+        /// with --cid unless <revision> is given.
+        #[clap(long, requires = "cid")]
+        pub release: Option<ReleaseId>,
+        /// Content identifier for the artifact to redact. Required with
+        /// a target (<revision> or --release).
+        #[clap(long, requires = "target")]
         pub cid: Option<Cid>,
         /// Reason for the redaction.
         #[clap(short = 'm', long = "reason")]
@@ -1599,9 +1661,16 @@ Examples:
     ///
     /// Retracts a previously announced location.
     #[derive(Parser)]
+    #[clap(group = clap::ArgGroup::new("target").required(true).args(["revision", "release"]))]
     pub struct LocationRemove {
         /// Git revision (commit, tag, or abbreviated OID) of the release.
-        pub revision: String,
+        /// Conflicts with --release.
+        #[clap(long)]
+        pub revision: Option<String>,
+        /// Existing release id. Skips commit/tag resolution.
+        /// Conflicts with --revision.
+        #[clap(long)]
+        pub release: Option<ReleaseId>,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -1613,8 +1682,12 @@ Examples:
     ///
     /// By default only artifacts authored by a repository delegate are
     /// shown. Pass `--all-authors` to include artifacts added by other users.
+    /// Pass `--release <id>` to target a specific release directly when
+    /// multiple exist for the same commit.
     #[derive(Parser)]
-    #[clap(after_long_help = "\
+    #[clap(
+        group = clap::ArgGroup::new("target").required(true).args(["revision", "release"]),
+        after_long_help = "\
 Examples:
   Show a release as JSON (default):
     $ rad-artifact show v1.0
@@ -1622,8 +1695,12 @@ Examples:
   Show a release in human-readable format:
     $ rad-artifact show --pretty v1.0
 
+  Target a specific release by id (when multiple exist for the same commit):
+    $ rad-artifact show --pretty --release <release-id>
+
   Include redacted artifacts and artifacts from non-delegates:
-    $ rad-artifact show --pretty --redacted --all-authors v1.0")]
+    $ rad-artifact show --pretty --redacted --all-authors v1.0"
+    )]
     pub struct Show {
         /// Format output in a human-readable way.
         ///
@@ -1646,7 +1723,12 @@ Examples:
         #[clap(long)]
         pub all_authors: bool,
         /// Git revision (commit, tag, or abbreviated OID) of the release.
-        pub revision: String,
+        /// Conflicts with --release.
+        pub revision: Option<String>,
+        /// Existing release id. Skips commit/tag resolution and
+        /// disambiguation. Conflicts with <revision>.
+        #[clap(long)]
+        pub release: Option<ReleaseId>,
     }
 
     /// List all release COBs for a repository.
@@ -1704,7 +1786,7 @@ mod error {
     #[derive(Debug, Error)]
     pub enum Show {
         #[error(transparent)]
-        Resolve(#[from] Resolve),
+        ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to show release, could not serialize to JSON")]
@@ -1776,9 +1858,7 @@ mod error {
     #[derive(Debug, Error)]
     pub enum Locate {
         #[error(transparent)]
-        Resolve(#[from] Resolve),
-        #[error(transparent)]
-        Find(#[from] Find),
+        ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Delegates(#[from] Delegates),
         #[error("failed to add location to release {id}")]
@@ -1794,7 +1874,7 @@ mod error {
         #[error("{0}")]
         Usage(String),
         #[error(transparent)]
-        Resolve(#[from] Resolve),
+        ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
         #[error(transparent)]
@@ -1812,7 +1892,7 @@ mod error {
         #[error("{0}")]
         Usage(String),
         #[error(transparent)]
-        Resolve(#[from] Resolve),
+        ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
         #[error(transparent)]
@@ -1834,9 +1914,7 @@ mod error {
     #[derive(Debug, Error)]
     pub enum RemoveLocation {
         #[error(transparent)]
-        Resolve(#[from] Resolve),
-        #[error(transparent)]
-        Find(#[from] Find),
+        ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Delegates(#[from] Delegates),
         #[error("failed to remove location from release {id}")]
@@ -1851,7 +1929,7 @@ mod error {
     pub enum Find {
         #[error("no release was found for the commit {0}")]
         NoRelease(Oid),
-        #[error("multiple non-delegate releases found for the commit {0} and no delegate-authored release to disambiguate")]
+        #[error("multiple non-delegate releases found for the commit {0} pass --release <id>")]
         Ambiguous(Oid),
         #[error("failed to find a release for the commit {oid}")]
         Lookup {
@@ -1859,6 +1937,24 @@ mod error {
             #[source]
             err: cob::store::Error,
         },
+        #[error("no release found with id {0}")]
+        NoReleaseId(ReleaseId),
+        #[error("failed to look up release {release_id}")]
+        LookupId {
+            release_id: ReleaseId,
+            #[source]
+            err: cob::store::Error,
+        },
+    }
+
+    /// Combined error for the `--release | <revision>` resolution path,
+    /// shared by every subcommand that targets a single release.
+    #[derive(Debug, Error)]
+    pub enum ResolveTarget {
+        #[error(transparent)]
+        Resolve(#[from] Resolve),
+        #[error(transparent)]
+        Find(#[from] Find),
     }
 
     impl From<radicle_artifact::error::FindRelease> for Find {
