@@ -389,7 +389,7 @@ impl Release {
         let creator = format_did(&self.creator, &self.creator_alias, false);
         push_line(
             &mut s,
-            format!("ID {short_id} | {ref_label} | by {creator} {title_suffix}"),
+            format!("release {short_id} | {ref_label} | by {creator} {title_suffix}"),
         );
         // Build a per-release artifact table: CID | name | author | locations.
         // The locations cell summarises counts by URL scheme (e.g.
