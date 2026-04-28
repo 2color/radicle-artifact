@@ -229,7 +229,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Show(cmd) => {
             let delegates = repo_delegates(&repo)?;
-            show_release(cmd, args.no_input, &releases, &repo, &delegates, &profile)?;
+            show_release(cmd, &releases, &repo, &delegates, &profile)?;
         }
         Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
@@ -591,48 +591,69 @@ fn show_release(
         revision,
         release,
     }: command::Show,
-    no_input: bool,
     releases: &Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
-    let id = resolve_target_release(
-        release,
-        revision.as_deref(),
-        releases,
-        repo,
-        delegates,
-        no_input,
-        aliases,
-    )?;
-    let release = releases
-        .get(&id)
-        .map_err(|err| error::Find::LookupId { release_id: id, err })?
-        .ok_or(error::Find::NoReleaseId(id))?;
-    // Prefer the tag's title (the annotated tag's message line) when
-    // the release records a tag; fall back to the commit summary if
-    // the tag object isn't fetched locally.
-    let title = release
-        .tag()
-        .and_then(|t| display::CommitTitle::title(repo, t))
-        .or_else(|| display::CommitTitle::title(repo, release.oid()));
-    let tag_name = release
-        .tag()
-        .and_then(|t| display::TagName::tag_name(repo, t));
+    // --release narrows to one release; <revision> returns every
+    // release for the resolved commit (mirrors `list` scoped to a
+    // single revision). JSON always emits an array — single-element
+    // when --release — so consumers don't branch on input shape.
+    let candidates: Vec<(ReleaseId, radicle_artifact::Release)> =
+        match (release, revision.as_deref()) {
+            (Some(id), _) => {
+                let r = releases
+                    .find_by_release_id(&id)
+                    .map_err(|err| error::Find::LookupId { release_id: id, err })?
+                    .ok_or(error::Find::NoReleaseId(id))?;
+                vec![(id, r)]
+            }
+            (None, Some(rev)) => {
+                let oid = resolve_ref(rev, repo)?.commit;
+                let mut hits = releases
+                    .find_by_commit(oid)
+                    .map_err(|err| error::Find::Lookup { oid, err })?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|err| error::Find::Lookup { oid, err })?;
+                if hits.is_empty() {
+                    return Err(error::Find::NoRelease(oid).into());
+                }
+                // Newest first, matching the `list` ordering.
+                hits.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
+                hits
+            }
+            (None, None) => unreachable!("clap requires one of --release or <revision>"),
+        };
+
     let filters = display::Filters {
         delegates,
         redacted,
         all_authors,
     };
-    let show =
-        display::Release::new(id, &release, aliases, filters, title, tag_name);
+    let shown: Vec<display::Release> = candidates
+        .into_iter()
+        .map(|(id, release)| {
+            let title = release
+                .tag()
+                .and_then(|t| display::CommitTitle::title(repo, t))
+                .or_else(|| display::CommitTitle::title(repo, release.oid()));
+            let tag_name = release
+                .tag()
+                .and_then(|t| display::TagName::tag_name(repo, t));
+            display::Release::new(id, &release, aliases, filters, title, tag_name)
+        })
+        .collect();
+
     if use_pretty(pretty, json) {
-        println!("{}", show.pretty(verbose));
+        for s in &shown {
+            print!("{}", s.pretty(verbose));
+            println!();
+        }
     } else {
         println!(
             "{}",
-            serde_json::to_string_pretty(&show).map_err(error::Show::Json)?
+            serde_json::to_string_pretty(&shown).map_err(error::Show::Json)?
         );
     }
     Ok(())
@@ -1897,7 +1918,7 @@ mod error {
     #[derive(Debug, Error)]
     pub enum Show {
         #[error(transparent)]
-        ResolveTarget(#[from] ResolveTarget),
+        Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
         #[error("failed to show release, could not serialize to JSON")]
