@@ -292,8 +292,9 @@ where
     // Pick the target release. With --release, look it up directly.
     // Otherwise resolve a revision to (commit, optional tag) and choose
     // among existing releases for that commit (or create a new one).
-    let (mut release, oid) = match release {
-        Some(release_id) => {
+    let (mut release, oid) = match release.as_deref() {
+        Some(s) => {
+            let release_id = parse_release_id(s, repo)?;
             let release = releases
                 .find_by_release_id(&release_id)
                 .map_err(|err| error::Add::Lookup { release_id, err })?
@@ -404,7 +405,7 @@ where
 {
     let delegates = repo_delegates(repo)?;
     let id = resolve_target_release(
-        release,
+        release.as_deref(),
         revision.as_deref(),
         releases,
         repo,
@@ -441,12 +442,14 @@ where
     G: Signer<crypto::Signature>,
 {
     let delegates = repo_delegates(repo)?;
-    let (id, cid) = match (release, revision.as_deref(), cid) {
+    let release = release.as_deref();
+    let revision = revision.as_deref();
+    let (id, cid) = match (release, revision, cid) {
         // --release <id> --cid <cid> takes the explicit-target path.
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
             let id = resolve_target_release(
                 release,
-                revision.as_deref(),
+                revision,
                 releases,
                 repo,
                 &delegates,
@@ -494,11 +497,13 @@ where
     G: Signer<crypto::Signature>,
 {
     let delegates = repo_delegates(repo)?;
-    let (id, cid) = match (release, revision.as_deref(), cid) {
+    let release = release.as_deref();
+    let revision = revision.as_deref();
+    let (id, cid) = match (release, revision, cid) {
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
             let id = resolve_target_release(
                 release,
-                revision.as_deref(),
+                revision,
                 releases,
                 repo,
                 &delegates,
@@ -551,7 +556,7 @@ where
     // announcer can remove a given location.
     let delegates = repo_delegates(repo)?;
     let id = resolve_target_release(
-        release,
+        release.as_deref(),
         revision.as_deref(),
         releases,
         repo,
@@ -601,8 +606,9 @@ fn show_release(
     // single revision). JSON always emits an array — single-element
     // when --release — so consumers don't branch on input shape.
     let candidates: Vec<(ReleaseId, radicle_artifact::Release)> =
-        match (release, revision.as_deref()) {
-            (Some(id), _) => {
+        match (release.as_deref(), revision.as_deref()) {
+            (Some(s), _) => {
+                let id = parse_release_id(s, repo)?;
                 let r = releases
                     .find_by_release_id(&id)
                     .map_err(|err| error::Find::LookupId { release_id: id, err })?
@@ -1429,7 +1435,7 @@ struct ResolvedRef {
 /// candidates if interactive, or — when `no_input` or stdin isn't a
 /// TTY — gets the existing `--release <id>` hint as an error.
 fn resolve_target_release(
-    release: Option<ReleaseId>,
+    release: Option<&str>,
     revision: Option<&str>,
     releases: &Releases<Repository>,
     repo: &Repository,
@@ -1438,11 +1444,14 @@ fn resolve_target_release(
     aliases: &impl AliasStore,
 ) -> Result<ReleaseId, error::ResolveTarget> {
     match (release, revision) {
-        (Some(id), _) => match releases.find_by_release_id(&id) {
-            Ok(Some(_)) => Ok(id),
-            Ok(None) => Err(error::Find::NoReleaseId(id).into()),
-            Err(err) => Err(error::Find::LookupId { release_id: id, err }.into()),
-        },
+        (Some(s), _) => {
+            let id = parse_release_id(s, repo)?;
+            match releases.find_by_release_id(&id) {
+                Ok(Some(_)) => Ok(id),
+                Ok(None) => Err(error::Find::NoReleaseId(id).into()),
+                Err(err) => Err(error::Find::LookupId { release_id: id, err }.into()),
+            }
+        }
         (None, Some(rev)) => {
             let oid = resolve_ref(rev, repo)?.commit;
             match releases.find_unique_by_commit(oid, delegates) {
@@ -1461,6 +1470,18 @@ fn resolve_target_release(
         }
         (None, None) => unreachable!("clap requires one of --release or <revision>"),
     }
+}
+
+/// Resolve a (possibly abbreviated) release-id string to a full
+/// [`ReleaseId`]. The COB's first commit is a real git object, so
+/// `git revparse_single` accepts short OIDs, full OIDs, and any other
+/// ref name that points at the COB.
+fn parse_release_id(s: &str, repo: &Repository) -> Result<ReleaseId, error::Resolve> {
+    let object = repo.raw().revparse_single(s).map_err(|err| error::Resolve {
+        revision: s.to_owned(),
+        err,
+    })?;
+    Ok(cob::ObjectId::from(object.id()).into())
 }
 
 fn resolve_ref(rev: &str, repo: &Repository) -> Result<ResolvedRef, error::Resolve> {
@@ -1531,7 +1552,7 @@ mod command {
     use clap::Parser;
     use url::Url;
 
-    use radicle_artifact::{Cid, ReleaseId};
+    use radicle_artifact::Cid;
 
     #[derive(Parser)]
     pub enum Command {
@@ -1679,7 +1700,7 @@ Examples:
         /// Existing release id to add the artifact to. Skips commit/tag
         /// resolution and disambiguation; the release must already exist.
         #[clap(long)]
-        pub release: Option<ReleaseId>,
+        pub release: Option<String>,
         /// Human-readable name for the artifact. Prompts interactively
         /// when omitted (with the path basename as the default).
         #[clap(short, long)]
@@ -1711,7 +1732,7 @@ Examples:
         /// Existing release id. Skips commit/tag resolution.
         /// Conflicts with --revision.
         #[clap(long)]
-        pub release: Option<ReleaseId>,
+        pub release: Option<String>,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -1743,7 +1764,7 @@ Examples:
         /// Existing release id. Skips commit/tag resolution. Required
         /// with --cid unless <revision> is given.
         #[clap(long, requires = "cid")]
-        pub release: Option<ReleaseId>,
+        pub release: Option<String>,
         /// Content identifier for the artifact to attest. Required with
         /// a target (<revision> or --release).
         #[clap(long, requires = "target")]
@@ -1779,7 +1800,7 @@ Examples:
         /// Existing release id. Skips commit/tag resolution. Required
         /// with --cid unless <revision> is given.
         #[clap(long, requires = "cid")]
-        pub release: Option<ReleaseId>,
+        pub release: Option<String>,
         /// Content identifier for the artifact to redact. Required with
         /// a target (<revision> or --release).
         #[clap(long, requires = "target")]
@@ -1802,7 +1823,7 @@ Examples:
         /// Existing release id. Skips commit/tag resolution.
         /// Conflicts with --revision.
         #[clap(long)]
-        pub release: Option<ReleaseId>,
+        pub release: Option<String>,
         /// Content identifier for the artifact.
         #[clap(long)]
         pub cid: Cid,
@@ -1860,7 +1881,7 @@ Examples:
         /// Existing release id. Skips commit/tag resolution and
         /// disambiguation. Conflicts with <revision>.
         #[clap(long)]
-        pub release: Option<ReleaseId>,
+        pub release: Option<String>,
     }
 
     /// List all release COBs for a repository.
