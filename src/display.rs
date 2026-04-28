@@ -216,12 +216,14 @@ impl Releases {
     ///
     /// CIDs are always shown in full so they can be copied without
     /// re-running with a verbose flag. When `verbose` is true, NodeIDs
-    /// are also rendered in full rather than being truncated.
-    pub fn pretty(&self, verbose: bool) -> String {
+    /// are also rendered in full rather than being truncated. When
+    /// `expand_locations` is true, each artifact's location URLs are
+    /// listed individually instead of just summarised by scheme.
+    pub fn pretty(&self, verbose: bool, expand_locations: bool) -> String {
         let mut s = String::new();
 
         for shown in self.releases.iter() {
-            s.push_str(&shown.pretty(verbose));
+            s.push_str(&shown.pretty(verbose, expand_locations));
             s.push('\n');
         }
 
@@ -382,8 +384,10 @@ impl Release {
     ///
     /// CIDs are always shown in full so they can be copied without
     /// re-running with a verbose flag. When `verbose` is true, NodeIDs
-    /// are also rendered in full rather than being truncated.
-    pub fn pretty(&self, verbose: bool) -> String {
+    /// are also rendered in full rather than being truncated. When
+    /// `expand_locations` is true, each artifact's location URLs are
+    /// listed individually instead of just summarised by scheme.
+    pub fn pretty(&self, verbose: bool, expand_locations: bool) -> String {
         let mut s = String::new();
 
         let short_id = &self.release_id.to_string()[..7];
@@ -403,7 +407,7 @@ impl Release {
             }
             (None, None) => format!("commit {short_oid}"),
         };
-        let creator = format_did(&self.creator, &self.creator_alias, false);
+        let creator = format_did(&self.creator, &self.creator_alias, verbose);
         push_line(
             &mut s,
             format!("release {short_id} | {ref_label} | by {creator} {title_suffix}"),
@@ -413,6 +417,8 @@ impl Release {
         // "https: 2, iroh: 1") to keep the table compact even when an
         // artifact is seeded from many endpoints.
         // Attestations and redactions follow as additional rows.
+        // In verbose mode the full DID is too wide to sit between CID and
+        // name, so author moves to its own sub-line under each artifact.
         let mut rows: Vec<Vec<String>> = Vec::new();
         for artifact in self.artifacts.iter() {
             let cid_cell = artifact.cid.clone();
@@ -428,31 +434,34 @@ impl Release {
                 .map(|(scheme, count)| format!("{scheme}: {count}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            rows.push(vec![
-                cid_cell,
-                author,
-                artifact.name.clone(),
-                locations_cell,
-            ]);
+            if verbose {
+                rows.push(vec![cid_cell, artifact.name.clone(), locations_cell]);
+                rows.push(vec![format!("  by {author}")]);
+            } else {
+                rows.push(vec![cid_cell, author, artifact.name.clone(), locations_cell]);
+            }
 
+            // Extras (locations, attestations, redactions) render as
+            // single-cell rows so format_table doesn't pad them to the
+            // artifact table's wide CID/author columns. The leading
+            // spaces nest them visually under their artifact.
+            if expand_locations {
+                for loc in artifact.locations.iter() {
+                    let did = format_did(&loc.did, &loc.alias, verbose);
+                    rows.push(vec![format!("  location: {} (by {did})", loc.url)]);
+                }
+            }
             if !artifact.attestations.is_empty() {
                 let nodes: Vec<_> = artifact
                     .attestations
                     .iter()
                     .map(|a| format_did(&a.did, &a.alias, verbose))
                     .collect();
-                rows.push(vec![
-                    String::new(),
-                    format!("attestations: {}", nodes.join(", ")),
-                ]);
+                rows.push(vec![format!("  attestations: {}", nodes.join(", "))]);
             }
             for r in artifact.redactions.iter() {
                 let did = format_did(&r.did, &r.alias, verbose);
-                rows.push(vec![
-                    String::new(),
-                    format!("redacted: {did}"),
-                    r.reason.clone(),
-                ]);
+                rows.push(vec![format!("  redacted by {did} — {}", r.reason)]);
             }
         }
         s.push_str(&format_table(&rows, 2));

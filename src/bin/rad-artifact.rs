@@ -356,9 +356,10 @@ where
         .add_artifact(cid, name.clone(), signer)
         .map_err(|err| error::Add::Store { id, err })?;
     let short_oid = &oid.to_string()[..7];
-    eprintln!("Added artifact '{name}' to release {short_oid} ({id})");
+    let short_id = &id.to_string()[..7];
+    eprintln!("Added artifact '{name}' to release {short_id} (commit {short_oid})");
     if std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact location add {short_oid} --cid {cid} <url>` to register a download location");
+        eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {cid} <url>` to register a download location");
         if let Some(p) = path.as_deref() {
             eprintln!(
                 "      or `rad-artifact serve {}` to seed it yourself over iroh",
@@ -631,7 +632,9 @@ fn show_release(
     let shown =
         display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
     if use_pretty(pretty, json) {
-        print!("{}", shown.pretty(verbose));
+        // Expand per-location rows on `show -v`. List intentionally
+        // keeps the compact scheme summary even with -v to stay terse.
+        print!("{}", shown.pretty(verbose, verbose));
     } else {
         println!(
             "{}",
@@ -682,7 +685,7 @@ fn list_releases(
     };
     let releases = display::Releases::new(iter, aliases, filters, empty, repo, repo);
     if use_pretty(pretty, json) {
-        println!("{}", releases.pretty(verbose));
+        println!("{}", releases.pretty(verbose, false));
     } else {
         println!(
             "{}",
