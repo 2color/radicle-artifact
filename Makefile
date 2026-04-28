@@ -125,8 +125,8 @@ register-artifacts: check-bins
 	    echo "→ $$name"; \
 	    cid=$$($$RAD_ARTIFACT cid "$$bin") || exit 1; \
 	    echo "   cid: $$cid"; \
-	    $$RAD_ARTIFACT --no-input add --cid "$$cid" --commit "releases/$(VERSION)" --name "$$name" || exit 1; \
-	    $$RAD_ARTIFACT --no-input location add "releases/$(VERSION)" --cid "$$cid" "$$url" || exit 1; \
+	    $$RAD_ARTIFACT --no-input add --cid "$$cid" --revision "releases/$(VERSION)" --name "$$name" || exit 1; \
+	    $$RAD_ARTIFACT --no-input location add --cid "$$cid" --revision "releases/$(VERSION)" "$$url" || exit 1; \
 	done
 	@echo
 	@echo "✓ Registered $(words $(ALL_TARGETS)) artifacts under releases/$(VERSION)"
