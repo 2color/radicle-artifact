@@ -447,11 +447,12 @@ pub fn download_collection(
     let (iroh_ids, urls) = partition_locations(locations);
     if iroh_ids.is_empty() {
         // HTTP collection fetch is unsupported, so URL-only inputs cannot be
-        // served. Surface each URL as an UnsupportedScheme error so the
-        // caller sees *why* no attempt was made, not a generic "no locations".
+        // served. Surface each URL as HttpCollectionUnsupported so the caller
+        // sees *why* no attempt was made — not a misleading "unsupported
+        // scheme: https" or generic "no locations".
         let errors = urls
             .into_iter()
-            .map(|u| Error::UnsupportedScheme(u.scheme().to_string()))
+            .map(|u| Error::HttpCollectionUnsupported(u.to_string()))
             .collect();
         return Err(Error::AllFailed(errors));
     }
@@ -549,7 +550,8 @@ mod tests {
 
     // URL-only locations for a collection CID cannot be served (HTTP
     // collection fetch is unsupported). The caller should see each URL
-    // reported as UnsupportedScheme, not a generic NoLocations.
+    // reported as HttpCollectionUnsupported, not a misleading
+    // UnsupportedScheme(https) or a generic NoLocations.
     #[test]
     fn download_collection_url_only_reports_unsupported() {
         let cid = collection_cid(b"test");
@@ -560,9 +562,9 @@ mod tests {
         match result {
             Err(Error::AllFailed(errors)) => {
                 assert_eq!(errors.len(), 1);
-                assert!(matches!(errors[0], Error::UnsupportedScheme(_)));
+                assert!(matches!(errors[0], Error::HttpCollectionUnsupported(_)));
             }
-            other => panic!("expected AllFailed with UnsupportedScheme, got {other:?}"),
+            other => panic!("expected AllFailed with HttpCollectionUnsupported, got {other:?}"),
         }
     }
 }

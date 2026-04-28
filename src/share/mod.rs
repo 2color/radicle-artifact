@@ -47,6 +47,12 @@ pub enum Error {
     #[error("unsupported URL scheme: {0}")]
     UnsupportedScheme(String),
 
+    /// HTTP location given for a collection artifact. HTTP fetch is only
+    /// implemented for single-blob artifacts; multi-file collections require
+    /// an iroh provider.
+    #[error("HTTP fetch is not supported for collection artifacts (URL: {0}); an iroh provider is required")]
+    HttpCollectionUnsupported(String),
+
     /// HTTP fetch failed.
     #[error("HTTP fetch failed: {0}")]
     Http(String),
