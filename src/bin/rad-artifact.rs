@@ -175,10 +175,24 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             let signer = profile.signer().map_err(error::Signer)?;
             match loc.command {
                 LocationCommand::Add(cmd) => {
-                    location_add(cmd, &mut releases, &repo, &signer)?;
+                    location_add(
+                        cmd,
+                        args.no_input,
+                        &mut releases,
+                        &repo,
+                        &profile,
+                        &signer,
+                    )?;
                 }
                 LocationCommand::Remove(cmd) => {
-                    location_remove(cmd, &mut releases, &repo, &signer)?;
+                    location_remove(
+                        cmd,
+                        args.no_input,
+                        &mut releases,
+                        &repo,
+                        &profile,
+                        &signer,
+                    )?;
                 }
             }
             if !args.no_sync {
@@ -187,21 +201,35 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Attest(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            attest_artifact(cmd, args.no_input, &mut releases, &repo, &signer)?;
+            attest_artifact(
+                cmd,
+                args.no_input,
+                &mut releases,
+                &repo,
+                &profile,
+                &signer,
+            )?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Redact(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            redact_artifact(cmd, args.no_input, &mut releases, &repo, &signer)?;
+            redact_artifact(
+                cmd,
+                args.no_input,
+                &mut releases,
+                &repo,
+                &profile,
+                &signer,
+            )?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Show(cmd) => {
             let delegates = repo_delegates(&repo)?;
-            show_release(cmd, &releases, &repo, &delegates, &profile)?;
+            show_release(cmd, args.no_input, &releases, &repo, &delegates, &profile)?;
         }
         Command::List(cmd) => list_releases(cmd, &releases, &repo, &profile)?,
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
@@ -365,15 +393,25 @@ fn location_add<G>(
         cid,
         url,
     }: command::LocationAdd,
+    no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
+    aliases: &impl AliasStore,
     signer: &Device<G>,
 ) -> Result<(), error::Locate>
 where
     G: Signer<crypto::Signature>,
 {
     let delegates = repo_delegates(repo)?;
-    let id = resolve_target_release(release, revision.as_deref(), releases, repo, &delegates)?;
+    let id = resolve_target_release(
+        release,
+        revision.as_deref(),
+        releases,
+        repo,
+        &delegates,
+        no_input,
+        aliases,
+    )?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
@@ -396,6 +434,7 @@ fn attest_artifact<G>(
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
+    aliases: &impl AliasStore,
     signer: &Device<G>,
 ) -> Result<(), error::Attest>
 where
@@ -405,8 +444,15 @@ where
     let (id, cid) = match (release, revision.as_deref(), cid) {
         // --release <id> --cid <cid> takes the explicit-target path.
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
-            let id =
-                resolve_target_release(release, revision.as_deref(), releases, repo, &delegates)?;
+            let id = resolve_target_release(
+                release,
+                revision.as_deref(),
+                releases,
+                repo,
+                &delegates,
+                no_input,
+                aliases,
+            )?;
             (id, cid)
         }
         // No targeting flags: fall back to the interactive picker, which
@@ -441,6 +487,7 @@ fn redact_artifact<G>(
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
+    aliases: &impl AliasStore,
     signer: &Device<G>,
 ) -> Result<(), error::Redact>
 where
@@ -449,8 +496,15 @@ where
     let delegates = repo_delegates(repo)?;
     let (id, cid) = match (release, revision.as_deref(), cid) {
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
-            let id =
-                resolve_target_release(release, revision.as_deref(), releases, repo, &delegates)?;
+            let id = resolve_target_release(
+                release,
+                revision.as_deref(),
+                releases,
+                repo,
+                &delegates,
+                no_input,
+                aliases,
+            )?;
             (id, cid)
         }
         (None, None, None) => {
@@ -484,8 +538,10 @@ fn location_remove<G>(
         cid,
         url,
     }: command::LocationRemove,
+    no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
+    aliases: &impl AliasStore,
     signer: &Device<G>,
 ) -> Result<(), error::RemoveLocation>
 where
@@ -494,7 +550,15 @@ where
     // The COB state machine already enforces that only the original
     // announcer can remove a given location.
     let delegates = repo_delegates(repo)?;
-    let id = resolve_target_release(release, revision.as_deref(), releases, repo, &delegates)?;
+    let id = resolve_target_release(
+        release,
+        revision.as_deref(),
+        releases,
+        repo,
+        &delegates,
+        no_input,
+        aliases,
+    )?;
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
@@ -527,12 +591,21 @@ fn show_release(
         revision,
         release,
     }: command::Show,
+    no_input: bool,
     releases: &Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Show> {
-    let id = resolve_target_release(release, revision.as_deref(), releases, repo, delegates)?;
+    let id = resolve_target_release(
+        release,
+        revision.as_deref(),
+        releases,
+        repo,
+        delegates,
+        no_input,
+        aliases,
+    )?;
     let release = releases
         .get(&id)
         .map_err(|err| error::Find::LookupId { release_id: id, err })?
@@ -942,6 +1015,32 @@ mod prompt {
         }
     }
 
+    /// Prompt the user to pick one release among several that exist
+    /// for the same commit. Used by read/modify commands (show,
+    /// attest, redact, location) when a revision lookup is ambiguous;
+    /// no "create new" option since these commands act on existing
+    /// releases.
+    pub fn pick_existing_release(
+        candidates: &[(ReleaseId, Release)],
+        repo: &Repository,
+        aliases: &impl AliasStore,
+    ) -> Result<ReleaseId, String> {
+        if !std::io::stdin().is_terminal() {
+            return Err(
+                "multiple releases exist for this commit; pass --release <id> to disambiguate"
+                    .into(),
+            );
+        }
+        let labels: Vec<String> = candidates
+            .iter()
+            .map(|(id, release)| format_candidate(id, release, repo, aliases))
+            .collect();
+        let selection = inquire::Select::new("Select release:", labels)
+            .raw_prompt()
+            .map_err(|e| format!("selection cancelled: {e}"))?;
+        Ok(candidates[selection.index].0)
+    }
+
     fn format_candidate(
         id: &ReleaseId,
         release: &Release,
@@ -1303,16 +1402,19 @@ struct ResolvedRef {
 /// Resolve either `--release <id>` or a `<revision>` arg to a single
 /// [`ReleaseId`]. Clap enforces that exactly one is provided.
 ///
-/// The `--release` path verifies the id exists; the revision path goes
-/// through [`Releases::find_unique_by_commit`] (delegate priority,
-/// errors on ambiguity — at which point the user is expected to pass
-/// `--release <id>`).
+/// The `--release` path verifies the id exists. The revision path
+/// goes through [`Releases::find_unique_by_commit`] (delegate
+/// priority); on ambiguity, the user is prompted to pick from the
+/// candidates if interactive, or — when `no_input` or stdin isn't a
+/// TTY — gets the existing `--release <id>` hint as an error.
 fn resolve_target_release(
     release: Option<ReleaseId>,
     revision: Option<&str>,
     releases: &Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
+    no_input: bool,
+    aliases: &impl AliasStore,
 ) -> Result<ReleaseId, error::ResolveTarget> {
     match (release, revision) {
         (Some(id), _) => match releases.find_by_release_id(&id) {
@@ -1322,10 +1424,19 @@ fn resolve_target_release(
         },
         (None, Some(rev)) => {
             let oid = resolve_ref(rev, repo)?.commit;
-            releases
-                .find_unique_by_commit(oid, delegates)
-                .map_err(error::Find::from)
-                .map_err(Into::into)
+            match releases.find_unique_by_commit(oid, delegates) {
+                Ok(id) => Ok(id),
+                Err(radicle_artifact::error::FindRelease::Ambiguous(_)) if !no_input => {
+                    let candidates: Vec<_> = releases
+                        .find_by_commit(oid)
+                        .map_err(|err| error::Find::Lookup { oid, err })?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|err| error::Find::Lookup { oid, err })?;
+                    prompt::pick_existing_release(&candidates, repo, aliases)
+                        .map_err(error::ResolveTarget::Picker)
+                }
+                Err(e) => Err(error::Find::from(e).into()),
+            }
         }
         (None, None) => unreachable!("clap requires one of --release or <revision>"),
     }
@@ -1955,6 +2066,8 @@ mod error {
         Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
+        #[error("{0}")]
+        Picker(String),
     }
 
     impl From<radicle_artifact::error::FindRelease> for Find {
