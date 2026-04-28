@@ -166,7 +166,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Add(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            add_artifact(cmd, args.no_input, &mut releases, &repo, &signer)?;
+            add_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -216,11 +216,13 @@ fn add_artifact<G>(
         path,
         cid,
         revision,
+        release,
         name,
     }: command::Add,
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
+    profile: &Profile,
     signer: &Device<G>,
 ) -> Result<(), error::Add>
 where
@@ -246,13 +248,6 @@ where
         }
     };
 
-    // Resolve revision: use --revision if given, otherwise prompt.
-    let resolved = match revision.as_deref() {
-        Some(rev) => resolve_ref(rev, repo)?,
-        None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::Add::Usage)?,
-    };
-    let oid = resolved.commit;
-
     // Resolve name: use -n if given, otherwise prompt with the path basename
     // as default (no default available when --cid was used without a path).
     let name = match name {
@@ -266,18 +261,69 @@ where
         }
     };
 
-    // Look up the canonical release for this commit; create one if
-    // none exists. Ambiguity (multiple non-delegate releases and no
-    // delegate-authored COB to disambiguate) surfaces as an error.
-    let delegates = repo_delegates(repo)?;
-    let mut release = match releases.find_unique_by_commit(oid, &delegates) {
-        Ok(id) => releases
-            .get_mut(&id)
-            .map_err(|err| error::Add::Store { id, err })?,
-        Err(radicle_artifact::error::FindRelease::NoRelease(_)) => releases
-            .create(oid, resolved.tag, signer)
-            .map_err(|err| error::Add::Create { oid, err })?,
-        Err(err) => return Err(error::Add::Find(err.into())),
+    // Pick the target release. With --release, look it up directly.
+    // Otherwise resolve a revision to (commit, optional tag) and choose
+    // among existing releases for that commit (or create a new one).
+    let (mut release, oid) = match release {
+        Some(release_id) => {
+            let release = releases
+                .find_by_release_id(&release_id)
+                .map_err(|err| error::Add::Lookup { release_id, err })?
+                .ok_or(error::Add::ReleaseNotFound(release_id))?;
+            let oid = *release.oid();
+            let release = releases
+                .get_mut(&release_id)
+                .map_err(|err| error::Add::Store { id: release_id, err })?;
+            (release, oid)
+        }
+        None => {
+            let resolved = match revision.as_deref() {
+                Some(rev) => resolve_ref(rev, repo)?,
+                None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::Add::Usage)?,
+            };
+            let oid = resolved.commit;
+            let candidates: Vec<(ReleaseId, Release)> = releases
+                .find_by_commit(oid)
+                .map_err(|err| error::Add::FindByCommit { oid, err })?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| error::Add::FindByCommit { oid, err })?;
+
+            let release = match candidates.as_slice() {
+                [] => releases
+                    .create(oid, resolved.tag, signer)
+                    .map_err(|err| error::Add::Create { oid, err })?,
+                [(id, _)] => {
+                    let id = *id;
+                    releases
+                        .get_mut(&id)
+                        .map_err(|err| error::Add::Store { id, err })?
+                }
+                _ => {
+                    if no_input {
+                        return Err(error::Add::AmbiguousReleases {
+                            oid,
+                            candidates: candidates.iter().map(|(id, _)| *id).collect(),
+                        });
+                    }
+                    match prompt::pick_release_or_create(
+                        &candidates,
+                        resolved.tag,
+                        repo,
+                        profile,
+                    )
+                    .map_err(error::Add::Usage)?
+                    {
+                        prompt::ReleaseChoice::Existing(id) => releases
+                            .get_mut(&id)
+                            .map_err(|err| error::Add::Store { id, err })?,
+                        prompt::ReleaseChoice::CreateNew => releases
+                            .create(oid, resolved.tag, signer)
+                            .map_err(|err| error::Add::Create { oid, err })?,
+                    }
+                }
+            };
+            (release, oid)
+        }
     };
     let id = *release.id();
     release
@@ -824,12 +870,86 @@ mod prompt {
     use std::io::IsTerminal;
 
     use radicle::git::Oid;
+    use radicle::node::AliasStore;
     use radicle::prelude::WriteRepository;
     use radicle::storage::git::Repository;
 
     use radicle_artifact::*;
 
     use super::display;
+
+    /// User's choice from the multi-release picker: reuse one of the
+    /// existing releases, or create a brand-new release for the commit.
+    pub enum ReleaseChoice {
+        Existing(ReleaseId),
+        CreateNew,
+    }
+
+    /// Prompt the user to disambiguate among multiple releases for the
+    /// same commit, or to create a new one. Each candidate is shown
+    /// with its tag (if any), creator (alias when available), and short
+    /// release id so the user has enough to choose without leaving the
+    /// terminal. `new_tag` is the tag the user-supplied revision
+    /// resolved to; surfaced on the "create new" entry to make the
+    /// promotion case (RC tag → final tag on same commit) obvious.
+    pub fn pick_release_or_create(
+        candidates: &[(ReleaseId, Release)],
+        new_tag: Option<Oid>,
+        repo: &Repository,
+        aliases: &impl AliasStore,
+    ) -> Result<ReleaseChoice, String> {
+        if !std::io::stdin().is_terminal() {
+            return Err(
+                "multiple releases exist for this commit; pass --release <id> to disambiguate"
+                    .into(),
+            );
+        }
+
+        let mut labels: Vec<String> = candidates
+            .iter()
+            .map(|(id, release)| format_candidate(id, release, repo, aliases))
+            .collect();
+        let create_label = match new_tag {
+            Some(tag) => {
+                let short = &tag.to_string()[..7];
+                format!("Create new release (tag {short})")
+            }
+            None => "Create new release".to_string(),
+        };
+        labels.push(create_label);
+
+        let selection = inquire::Select::new("Select release:", labels)
+            .raw_prompt()
+            .map_err(|e| format!("selection cancelled: {e}"))?;
+        if selection.index == candidates.len() {
+            Ok(ReleaseChoice::CreateNew)
+        } else {
+            Ok(ReleaseChoice::Existing(candidates[selection.index].0))
+        }
+    }
+
+    fn format_candidate(
+        id: &ReleaseId,
+        release: &Release,
+        repo: &Repository,
+        aliases: &impl AliasStore,
+    ) -> String {
+        let id_str = id.to_string();
+        let short_id = &id_str[..id_str.len().min(7)];
+        let tag = match release.tag() {
+            Some(tag) => format!("tag {}", &tag.to_string()[..7]),
+            None => "no tag".to_string(),
+        };
+        let creator = aliases
+            .alias(release.creator().as_key())
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| {
+                let s = release.creator().to_string().replace("did:key:", "");
+                format!("{}…{}", &s[..7], &s[s.len() - 7..])
+            });
+        let title = display::CommitTitle::title(repo, release.oid()).unwrap_or_default();
+        format!("{short_id}  {tag}  by {creator}  {title}")
+    }
 
     /// Interactive mode: list commits with releases, pick one, list its
     /// artifacts, pick one.
@@ -1234,7 +1354,7 @@ mod command {
     use clap::Parser;
     use url::Url;
 
-    use radicle_artifact::Cid;
+    use radicle_artifact::{Cid, ReleaseId};
 
     #[derive(Parser)]
     pub enum Command {
@@ -1346,6 +1466,8 @@ Examples:
     /// The release revision and artifact name are prompted interactively
     /// when not given. Pass --revision and -n/--name to skip prompts (or
     /// use --no-input in scripts to fail instead of hanging on a prompt).
+    /// Use --release to target an existing release directly by its id
+    /// (skipping all commit/tag resolution).
     #[derive(Parser)]
     #[clap(
         group = clap::ArgGroup::new("source").required(true).args(["path", "cid"]),
@@ -1356,6 +1478,9 @@ Examples:
 
   Fully non-interactive:
     $ rad-artifact add ./my-binary --revision v1.0 --name \"my-binary v1.0\"
+
+  Target an existing release by id (no commit/tag resolution):
+    $ rad-artifact add ./my-binary --release <release-id> --name \"my-binary v1.0\"
 
   Register a precomputed CID without local bytes:
     $ rad-artifact add --cid baf...abc --revision v1.0 --name \"my-binary v1.0\""
@@ -1371,9 +1496,13 @@ Examples:
         #[clap(long)]
         pub cid: Option<Cid>,
         /// Git revision (commit, tag, or abbreviated OID) of the release.
-        /// Prompts interactively when omitted.
-        #[clap(long, alias = "commit")]
+        /// Prompts interactively when omitted. Conflicts with --release.
+        #[clap(long, alias = "commit", conflicts_with = "release")]
         pub revision: Option<String>,
+        /// Existing release id to add the artifact to. Skips commit/tag
+        /// resolution and disambiguation; the release must already exist.
+        #[clap(long)]
+        pub release: Option<ReleaseId>,
         /// Human-readable name for the artifact. Prompts interactively
         /// when omitted (with the path basename as the default).
         #[clap(short, long)]
@@ -1592,9 +1721,26 @@ mod error {
         #[error(transparent)]
         Resolve(#[from] Resolve),
         #[error(transparent)]
-        Find(#[from] Find),
-        #[error(transparent)]
         Delegates(#[from] Delegates),
+        #[error("failed to look up releases for commit {oid}")]
+        FindByCommit {
+            oid: Oid,
+            #[source]
+            err: cob::store::Error,
+        },
+        #[error("failed to look up release {release_id}")]
+        Lookup {
+            release_id: ReleaseId,
+            #[source]
+            err: cob::store::Error,
+        },
+        #[error("no release found with id {0}")]
+        ReleaseNotFound(ReleaseId),
+        #[error("multiple releases exist for commit {oid}; pass --release <id> to disambiguate (candidates: {})", display_ids(candidates))]
+        AmbiguousReleases {
+            oid: Oid,
+            candidates: Vec<ReleaseId>,
+        },
         #[error("failed to create release for commit {oid}")]
         Create {
             oid: Oid,
@@ -1611,6 +1757,13 @@ mod error {
         Io(#[source] std::io::Error),
         #[error(transparent)]
         Protocol(radicle_artifact::share::Error),
+    }
+
+    fn display_ids(ids: &[ReleaseId]) -> String {
+        ids.iter()
+            .map(ReleaseId::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     #[derive(Debug, Error)]
