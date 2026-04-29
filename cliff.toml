@@ -24,14 +24,14 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
     ### {{ group | striptags | trim | upper_first }}
     {% for commit in commits %}
-        * `{{ commit.id | truncate(length=7, end="") }}` {{ commit.message | split(pat="\n") | first | trim }} *<{{ commit.author.email }}>*\
+        * `{{ commit.id | truncate(length=7, end="") }}` {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | split(pat="\n") | first | trim }}{% if commit.breaking %} [**breaking**]{% endif %} *<{{ commit.author.email }}>*\
     {% endfor %}
 {% endfor %}\n
 """
 trim = true
 
 [git]
-conventional_commits = false
+conventional_commits = true
 filter_unconventional = false
 split_commits = false
 protect_breaking_commits = false
@@ -39,20 +39,16 @@ filter_commits = false
 tag_pattern = "releases/[0-9].*"
 sort_commits = "oldest"
 
+# Map Conventional Commit types to Keep a Changelog sections.
+# HTML comment prefixes order the sections; the body template strips them.
+# Non-conventional commits (e.g. older history) fall through to "Other".
 commit_parsers = [
-    { message = "^[Aa]dd", group = "Added" },
-    { message = "^[Ss]upport", group = "Added" },
-    { message = "^[Ii]mplement", group = "Added" },
-    { message = "^[Ii]ntroduce", group = "Added" },
-    { message = "^[Ii]nitial", group = "Added" },
-    { message = "^[Ff]ix", group = "Fixed" },
-    { message = "^[Rr]epair", group = "Fixed" },
-    { message = "^[Cc]hange", group = "Changed" },
-    { message = "^[Rr]e(factor|name|place|work)", group = "Changed" },
-    { message = "^[Uu]pdate", group = "Changed" },
-    { message = "^[Mm]ove", group = "Changed" },
-    { message = "^[Rr]emove", group = "Removed" },
-    { message = "^[Dd]elete", group = "Removed" },
-    { message = "^[Dd]rop", group = "Removed" },
-    { message = ".*", group = "Other" },
+    { message = "^feat", group = "<!-- 0 -->Added" },
+    { message = "^refactor", group = "<!-- 1 -->Changed" },
+    { message = "^perf", group = "<!-- 1 -->Changed" },
+    { message = "^fix", group = "<!-- 2 -->Fixed" },
+    { message = "^revert", group = "<!-- 3 -->Removed" },
+    { message = "^chore", skip = true },
+    { message = "^style", skip = true },
+    { message = ".*", group = "<!-- 9 -->Other" },
 ]
