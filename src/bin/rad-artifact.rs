@@ -22,6 +22,7 @@ use radicle::{
 };
 use radicle_artifact::share;
 use radicle_artifact::*;
+use url::Url;
 
 const TIMEOUT: Duration = Duration::from_millis(5000);
 
@@ -392,22 +393,38 @@ fn location_add<G>(
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    aliases: &impl AliasStore,
+    profile: &Profile,
     signer: &Device<G>,
 ) -> Result<(), error::Locate>
 where
     G: Signer<crypto::Signature>,
 {
     let delegates = repo_delegates(repo)?;
-    let id = resolve_target_release(
-        release.as_deref(),
-        revision.as_deref(),
-        releases,
-        repo,
-        &delegates,
-        no_input,
-        aliases,
-    )?;
+    let release_arg = release.as_deref();
+    let revision_arg = revision.as_deref();
+    let (id, cid) = match (release_arg, revision_arg, cid) {
+        (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
+            let id = resolve_target_release(
+                release_arg,
+                revision_arg,
+                releases,
+                repo,
+                &delegates,
+                no_input,
+                profile,
+            )?;
+            (id, cid)
+        }
+        (None, None, None) => {
+            let (oid, cid) =
+                prompt::pick_interactive(no_input, releases, repo).map_err(error::Locate::Usage)?;
+            let id = releases
+                .find_unique_by_commit(oid, &delegates)
+                .map_err(error::Find::from)?;
+            (id, cid)
+        }
+        _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
+    };
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
@@ -538,24 +555,70 @@ fn location_remove<G>(
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    aliases: &impl AliasStore,
+    profile: &Profile,
     signer: &Device<G>,
 ) -> Result<(), error::RemoveLocation>
 where
     G: Signer<crypto::Signature>,
 {
-    // The COB state machine already enforces that only the original
-    // announcer can remove a given location.
     let delegates = repo_delegates(repo)?;
-    let id = resolve_target_release(
-        release.as_deref(),
-        revision.as_deref(),
-        releases,
-        repo,
-        &delegates,
-        no_input,
-        aliases,
-    )?;
+    let release_arg = release.as_deref();
+    let revision_arg = revision.as_deref();
+    let (id, cid) = match (release_arg, revision_arg, cid) {
+        (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
+            let id = resolve_target_release(
+                release_arg,
+                revision_arg,
+                releases,
+                repo,
+                &delegates,
+                no_input,
+                profile,
+            )?;
+            (id, cid)
+        }
+        (None, None, None) => {
+            let (oid, cid) = prompt::pick_interactive(no_input, releases, repo)
+                .map_err(error::RemoveLocation::Usage)?;
+            let id = releases
+                .find_unique_by_commit(oid, &delegates)
+                .map_err(error::Find::from)?;
+            (id, cid)
+        }
+        _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
+    };
+
+    // Look up the user's own registered locations for this artifact so we
+    // can either pick from them (when URL is omitted) or verify the URL the
+    // user supplied. Without this check `remove_location` silently no-ops
+    // for unknown URLs / wrong-DID retractions (see lib.rs test
+    // `remove_location_for_node_that_never_added_is_noop`).
+    let local = Did::from(*profile.id());
+    let urls: Vec<Url> = {
+        let r = releases
+            .get(&id)
+            .map_err(|err| error::RemoveLocation::Store { id, err })?
+            .ok_or_else(|| error::RemoveLocation::Usage(format!("release {id} not found")))?;
+        let a = r.artifact(&cid).ok_or_else(|| {
+            error::RemoveLocation::Usage(format!("no artifact {cid} in release {id}"))
+        })?;
+        a.locations()
+            .get(&local)
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
+    };
+    let url = match url {
+        Some(url) => {
+            if !urls.contains(&url) {
+                return Err(error::RemoveLocation::Usage(format!(
+                    "you have not registered location {url} for artifact {cid}"
+                )));
+            }
+            url
+        }
+        None => prompt::pick_location(no_input, urls).map_err(error::RemoveLocation::Usage)?,
+    };
+
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::RemoveLocation::Store { id, err })?;
@@ -976,6 +1039,7 @@ mod prompt {
     use radicle::storage::git::Repository;
 
     use radicle_artifact::*;
+    use url::Url;
 
     use super::display;
 
@@ -1178,6 +1242,27 @@ mod prompt {
         oid: Oid,
         timestamp: u64,
         artifacts: Vec<(radicle_artifact::Cid, Artifact)>,
+    }
+
+    /// Pick a previously-announced location URL from a list.
+    ///
+    /// Used by `location remove` to let the user choose which of their
+    /// own registered locations to retract. Errors if `no_input` is set,
+    /// stdin is not a TTY, or the list is empty.
+    pub fn pick_location(no_input: bool, urls: Vec<Url>) -> Result<Url, String> {
+        if no_input || !std::io::stdin().is_terminal() {
+            return Err(
+                "interactive mode requires a terminal; pass <URL>, or use --no-input to disable".into(),
+            );
+        }
+        if urls.is_empty() {
+            return Err("no locations registered by you for this artifact".into());
+        }
+        let labels: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+        let selection = inquire::Select::new("Select location to remove:", labels)
+            .raw_prompt()
+            .map_err(|e| format!("selection cancelled: {e}"))?;
+        Ok(urls[selection.index].clone())
     }
 
     /// Prompt for a redaction reason at the terminal.
@@ -1690,11 +1775,17 @@ Examples:
     /// Add a download location URL for an artifact CID
     ///
     /// Announces where an artifact can be retrieved from.
+    ///
+    /// Without --revision/--release and --cid, interactively lists
+    /// releases and artifacts to pick from. The URL is always required.
     #[derive(Parser)]
     #[clap(
-        group = clap::ArgGroup::new("target").required(true).args(["revision", "release"]),
+        group = clap::ArgGroup::new("target").args(["revision", "release"]),
         after_long_help = "\
 Examples:
+  Interactive mode (pick from available releases):
+    $ rad-artifact location add https://example.com/my-binary
+
   Register an HTTPS download location:
     $ rad-artifact location add --revision v1.0 --cid baf...abc https://example.com/my-binary
 
@@ -1706,16 +1797,17 @@ Examples:
     )]
     pub struct LocationAdd {
         /// Git revision (commit, tag, or abbreviated OID) of the release.
-        /// Conflicts with --release.
-        #[clap(long)]
+        /// Required with --cid unless --release is given.
+        #[clap(long, requires = "cid")]
         pub revision: Option<String>,
-        /// Existing release id. Skips commit/tag resolution.
-        /// Conflicts with --revision.
-        #[clap(long)]
+        /// Existing release id. Skips commit/tag resolution. Required
+        /// with --cid unless --revision is given.
+        #[clap(long, requires = "cid")]
         pub release: Option<String>,
-        /// Content identifier for the artifact.
-        #[clap(long)]
-        pub cid: Cid,
+        /// Content identifier for the artifact. Required with a target
+        /// (--revision or --release).
+        #[clap(long, requires = "target")]
+        pub cid: Option<Cid>,
         /// URL where the artifact can be retrieved.
         pub url: Url,
     }
@@ -1793,22 +1885,38 @@ Examples:
     /// Remove a download location for an artifact.
     ///
     /// Retracts a previously announced location.
+    ///
+    /// Without arguments, interactively lists releases and artifacts to
+    /// pick from, then prompts for the URL to remove from the locations
+    /// you previously announced. Pass --revision/--release and --cid
+    /// (and optionally <URL>) to skip the prompts.
     #[derive(Parser)]
-    #[clap(group = clap::ArgGroup::new("target").required(true).args(["revision", "release"]))]
+    #[clap(
+        group = clap::ArgGroup::new("target").args(["revision", "release"]),
+        after_long_help = "\
+Examples:
+  Interactive mode (pick from your registered locations):
+    $ rad-artifact location remove
+
+  Remove a specific URL:
+    $ rad-artifact location remove --revision v1.0 --cid baf...abc https://example.com/my-binary"
+    )]
     pub struct LocationRemove {
         /// Git revision (commit, tag, or abbreviated OID) of the release.
-        /// Conflicts with --release.
-        #[clap(long)]
+        /// Required with --cid unless --release is given.
+        #[clap(long, requires = "cid")]
         pub revision: Option<String>,
-        /// Existing release id. Skips commit/tag resolution.
-        /// Conflicts with --revision.
-        #[clap(long)]
+        /// Existing release id. Skips commit/tag resolution. Required
+        /// with --cid unless --revision is given.
+        #[clap(long, requires = "cid")]
         pub release: Option<String>,
-        /// Content identifier for the artifact.
-        #[clap(long)]
-        pub cid: Cid,
-        /// URL to remove.
-        pub url: Url,
+        /// Content identifier for the artifact. Required with a target
+        /// (--revision or --release).
+        #[clap(long, requires = "target")]
+        pub cid: Option<Cid>,
+        /// URL to remove. Picked interactively from your registered
+        /// locations when omitted.
+        pub url: Option<Url>,
     }
 
     /// Show the release COB for a Git commit or annotated tag.
@@ -1978,8 +2086,12 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum Locate {
+        #[error("{0}")]
+        Usage(String),
         #[error(transparent)]
         ResolveTarget(#[from] ResolveTarget),
+        #[error(transparent)]
+        Find(#[from] Find),
         #[error(transparent)]
         Delegates(#[from] Delegates),
         #[error("failed to add location to release {id}")]
@@ -2034,8 +2146,12 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum RemoveLocation {
+        #[error("{0}")]
+        Usage(String),
         #[error(transparent)]
         ResolveTarget(#[from] ResolveTarget),
+        #[error(transparent)]
+        Find(#[from] Find),
         #[error(transparent)]
         Delegates(#[from] Delegates),
         #[error("failed to remove location from release {id}")]
