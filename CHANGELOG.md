@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### ⭐️ Highlights
+
+#### Restructured, colorized output
+
+`list` and `show` have been redesigned to be easier to scan. List output now uses a bullet header per release with badges for attestations (✓) and redactions (⊘).
+
+Color is enabled automatically when stdout is a TTY and respects `NO_COLOR`. CIDs always render in full so they can be copied without re-running with `--verbose`.
+
+![cli-output](public/cli-output.png)
+
+#### Less typing for `attest`, `redact`, and `location`
+
+These commands now drop into a release/artifact picker when called without flags, so you don't have to look up release IDs or CIDs up front. Pass `--revision`/`--release` and `--cid` to skip the prompts in scripts.
+
+![attest and redact demo](./public/attest-and-redact.gif)
+
+#### One commit, many releases
+
+With radicle-artifact, _artifacts_ are grouped into a _release_ linked to a commit. For example, when this crate is released, we pre-compile `rad-artifact` for 4 targets (x86_64, ARM64, Linux, macOS) resulting in a release with 4 artifacts. Releases, like commits, are identified by a Git object ID (like commit hashes).
+
+Previously, releases were linked to commits and _seemingly_ had a one-to-one relationship. This design embraced a simple mental model: users didn't need to think about releases, only commits. However, the reality was more complex: two users concurrently creating a release for the same commit would end up with a different release ID. To avoid surfacing this to the user, we'd transparently union artifacts from all releases tied to a commit.
+
+What started as a simple design ended up achieving the opposite, pushing the complexity from the data model to the implementation, e.g. a tie-breaker function was introduced to deterministically pick when the same commit had multiple releases.
+
+From now on, commits have an explicit `1:n` relationship to releases, and releases can be additionally linked to an annotated tag OID. This means that a single commit can have more than one release, and that releases can be explicitly linked to a [canonical reference](https://radicle.xyz/2025/08/12/canonical-references), inheriting their multi-delegate trust properties.
+
+Another aspect of this change is that the author (the radicle `did:key`) of a release is explicit and visible.
+
+To illustrate what this looks like, consider a release process whereby a release candidate `1.1.0-rc1` is promoted to release `1.1.0`. The commit is the same, but a new tag is created, and the resulting artifacts hash changes. In such cases, it's useful to distinguish between the two releases, because even though they are from the same commit, their artifacts are different:
+
+![diagram](public/diagram.svg)
+
+For a smooth UX, CLI commands that interact with releases, e.g. `add`, have a new interactive prompt to select the release (or create a new one) when TTY is available. There's also a new `--release` flag to target a specific release ID for scripts and environments without stdin.
+
+### Added
+
+* `6796786` add optional tag OID to Release schema *<daniel@norman.life>*
+* `b04d6be` record COB creator on Release *<daniel@norman.life>*
+* `c0e2958` delegate-priority canonical COB selection *<daniel@norman.life>*
+* `acf7cc8` delegate-priority lookup in find_unique_by_oid *<daniel@norman.life>*
+* `479cd44` resolve refs to (commit, optional tag) pair *<daniel@norman.life>*
+* `58dd5a7` surface tag association in release display *<daniel@norman.life>*
+* `55899e0` add --release flag and disambiguation picker *<daniel@norman.life>*
+* `88e573e` prompt on single-release tag mismatch *<daniel@norman.life>*
+* `b98035f` surface tag name and creator in display *<daniel@norman.life>*
+* `98e9c91` extend --release flag to show/attest/redact/location *<daniel@norman.life>*
+* `b9ed5ae` prompt to pick release on ambiguous revision lookup *<daniel@norman.life>*
+* `b6c4673` show every release for a revision *<daniel@norman.life>*
+* `1e72006` show local user's artifacts and full CIDs *<daniel@norman.life>*
+* `2f0e6b5` expand artifact location URLs in show -v *<daniel@norman.life>*
+* `7158e0e` register artifacts in release COB *<daniel@norman.life>*
+* `3259742` **display:** colorize and restructure list/show output *<daniel@norman.life>*
+* `bf3b140` interactive add/remove [**breaking**] *<daniel@norman.life>*
+
+### Changed
+
+* `09680ca` rename CLI commit args to revision *<daniel@norman.life>*
+* `9876154` drop find_or_create_by_oid; rename to by_commit *<daniel@norman.life>*
+* `4e7289f` drop creation date from list/show output *<daniel@norman.life>*
+* `c86237d` simplify *<daniel@norman.life>*
+* `9567a43` drop redundant build in register-artifacts *<daniel@norman.life>*
+* `feecc88` DRY up the Makefile *<daniel@norman.life>*
+
+### Fixed
+
+* `41ab3b0` prefix release IDs with release *<daniel@norman.life>*
+* `e2e9e72` accept short release ids on --release flag *<daniel@norman.life>*
+* `d33a513` improve HTTP collection fetch error *<daniel@norman.life>*
+* `c555a60` rad-artifact add commands in Makefile *<daniel@norman.life>*
+* `368c482` **display:** always render full CIDs *<daniel@norman.life>*
+
+### Other
+
+* `1af9b4f` add installation instructions *<daniel@norman.life>*
+* `35a619c` cover tag field, creator, and delegate priority *<daniel@norman.life>*
+* `d8d7319` tighten comments and remove stale notes *<daniel@norman.life>*
+* `5ecab5f` refine README *<daniel@norman.life>*
+* `da0b597` document artifact types *<daniel@norman.life>*
+* `a4a11d1` **display:** add render snapshot for compact and detailed output *<daniel@norman.life>*
+* `285df6c` parse conventional commits in cliff.toml *<daniel@norman.life>*
+* `699a6e2` use conventional commits for releases *<daniel@norman.life>*
+* `f7589bb` update changelog *<daniel@norman.life>*
+
+
 ## [0.11.0] - 2026-04-24
 
 Small release fixing a regression introduced in `0.10.0` causing the the `serve` and `fetch` commands to fail creating an endpoint.
