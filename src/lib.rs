@@ -80,6 +80,7 @@ pub use cid::Cid;
 
 pub mod display;
 pub mod error;
+pub mod remote;
 
 /// Type name of an artifact release.
 pub static TYPENAME: LazyLock<TypeName> =
