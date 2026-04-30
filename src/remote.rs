@@ -7,7 +7,6 @@
 //! re-fetched so the caller sees the seed's current state.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use radicle::git::raw;
 use radicle::prelude::RepoId;
@@ -31,7 +30,7 @@ pub enum Error {
         err: std::io::Error,
     },
     /// Could not init or open the bare cache repository.
-    #[error("failed to initialize cache repository at {path}")]
+    #[error("failed to open cache repository at {path}")]
     Init {
         /// Cache path.
         path: PathBuf,
@@ -39,16 +38,14 @@ pub enum Error {
         #[source]
         err: raw::Error,
     },
-    /// Could not spawn the `git` binary.
-    #[error("failed to spawn `git`; is it installed and on PATH?")]
-    GitSpawn(#[source] std::io::Error),
-    /// `git fetch` against the seed exited with an error.
-    #[error("`git fetch {url}` failed: {stderr}")]
+    /// Fetch from the seed failed.
+    #[error("failed to fetch from {url}")]
     Fetch {
         /// Remote URL.
         url: String,
-        /// Captured stderr from the git invocation.
-        stderr: String,
+        /// Underlying libgit2 error.
+        #[source]
+        err: raw::Error,
     },
     /// Opening the cache repo as a `radicle::storage::git::Repository` failed.
     #[error("failed to open cached repository at {path}")]
@@ -91,46 +88,46 @@ pub fn open(seed: &Url, rid: RepoId) -> Result<Repository, Error> {
         })?;
     }
 
-    if !dir.exists() {
-        raw::Repository::init_bare(&dir).map_err(|err| Error::Init {
-            path: dir.clone(),
-            err,
-        })?;
+    let cache = if dir.exists() {
+        raw::Repository::open_bare(&dir)
+    } else {
+        raw::Repository::init_bare(&dir)
     }
+    .map_err(|err| Error::Init {
+        path: dir.clone(),
+        err,
+    })?;
 
     // String-concat the URL: `Url::join` would replace the last path
     // segment when the seed lacks a trailing slash, which is the common
     // form users will pass.
     let url = format!("{}/{}.git", seed.as_str().trim_end_matches('/'), rid);
-    fetch(&dir, &url)?;
+    fetch(&cache, &url)?;
 
     Repository::open(&dir, rid).map_err(|err| Error::Open { path: dir, err })
 }
 
-fn fetch(dir: &std::path::Path, url: &str) -> Result<(), Error> {
-    // Shelling out to `git` avoids depending on libgit2 being built with
-    // TLS support (the bundled libgit2-sys often isn't), and `git` is
-    // already a hard requirement for any Radicle workflow. Explicit
-    // refspecs cover everything `Releases::open` reads: branches/tags for
-    // revspec resolution, `refs/namespaces/*` for COBs (release ops live
-    // there), and `refs/rad/*` for canonical identity / delegate refs.
-    let output = Command::new("git")
-        .arg("--git-dir")
-        .arg(dir)
-        .arg("fetch")
-        .arg("--quiet")
-        .arg(url)
-        .arg("+refs/heads/*:refs/heads/*")
-        .arg("+refs/tags/*:refs/tags/*")
-        .arg("+refs/namespaces/*:refs/namespaces/*")
-        .arg("+refs/rad/*:refs/rad/*")
-        .output()
-        .map_err(Error::GitSpawn)?;
-    if !output.status.success() {
-        return Err(Error::Fetch {
+fn fetch(repo: &raw::Repository, url: &str) -> Result<(), Error> {
+    // `+` prefix forces non-fast-forward updates. Refspecs cover everything
+    // `Releases::open` reads: branches/tags for revspec resolution,
+    // `refs/namespaces/*` for COBs (release ops live there), and
+    // `refs/rad/*` for canonical identity / delegate refs.
+    let refspecs = [
+        "+refs/heads/*:refs/heads/*",
+        "+refs/tags/*:refs/tags/*",
+        "+refs/namespaces/*:refs/namespaces/*",
+        "+refs/rad/*:refs/rad/*",
+    ];
+
+    let mut remote = repo.remote_anonymous(url).map_err(|err| Error::Fetch {
+        url: url.to_owned(),
+        err,
+    })?;
+    remote
+        .fetch(&refspecs, None, None)
+        .map_err(|err| Error::Fetch {
             url: url.to_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
+            err,
+        })?;
     Ok(())
 }
