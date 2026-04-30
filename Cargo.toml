@@ -39,6 +39,8 @@ share = [
 [dependencies]
 cid = { version = "0.11", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "wrap_help"] }
+# libgit2 is vendored, and `https` dynamically links against the system's OpenSSL.
+git2 = { version = "0.20", default-features = false, features = ["https", "vendored-libgit2"] }
 indexmap = { version = "2.7", features = ["serde"] }
 nonempty = "0.11.0"
 radicle = { version = "0.23.0" }
