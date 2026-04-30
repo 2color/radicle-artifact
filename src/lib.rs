@@ -712,7 +712,6 @@ where
             store: self,
         })
     }
-
 }
 
 /// A `ReleaseMut` is a [`Release`] where the underlying `Release` can be
@@ -972,9 +971,7 @@ mod test {
 
     /// Collect the delegate set for a Radicle storage repository for use
     /// with `find_unique_by_commit`.
-    fn delegates(
-        repo: &radicle::storage::git::Repository,
-    ) -> std::collections::BTreeSet<Did> {
+    fn delegates(repo: &radicle::storage::git::Repository) -> std::collections::BTreeSet<Did> {
         use radicle::prelude::ReadRepository;
         repo.delegates().unwrap().into_iter().collect()
     }
@@ -2002,8 +1999,7 @@ mod test {
             node: _alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: carol, .. } =
-            test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: carol, .. } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Test Commit");
         let delegates = delegates(&repo);
         let mut releases = Releases::open(&*repo).unwrap();

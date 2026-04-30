@@ -646,10 +646,7 @@ impl Release {
 
         if style.verbose {
             let label = |k: &str| pad_right(&style.dim(k), 14);
-            push_line(
-                &mut s,
-                format!("  {}{}", label("release"), self.release_id),
-            );
+            push_line(&mut s, format!("  {}{}", label("release"), self.release_id));
             push_line(&mut s, format!("  {}{}", label("commit"), self.oid));
             if let Some(tag_oid) = self.tag {
                 push_line(&mut s, format!("  {}{}", label("tag"), tag_oid));

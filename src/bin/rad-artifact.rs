@@ -176,24 +176,10 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             let signer = profile.signer().map_err(error::Signer)?;
             match loc.command {
                 LocationCommand::Add(cmd) => {
-                    location_add(
-                        cmd,
-                        args.no_input,
-                        &mut releases,
-                        &repo,
-                        &profile,
-                        &signer,
-                    )?;
+                    location_add(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
                 }
                 LocationCommand::Remove(cmd) => {
-                    location_remove(
-                        cmd,
-                        args.no_input,
-                        &mut releases,
-                        &repo,
-                        &profile,
-                        &signer,
-                    )?;
+                    location_remove(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
                 }
             }
             if !args.no_sync {
@@ -202,28 +188,14 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Attest(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            attest_artifact(
-                cmd,
-                args.no_input,
-                &mut releases,
-                &repo,
-                &profile,
-                &signer,
-            )?;
+            attest_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Redact(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            redact_artifact(
-                cmd,
-                args.no_input,
-                &mut releases,
-                &repo,
-                &profile,
-                &signer,
-            )?;
+            redact_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -459,13 +431,7 @@ where
     let (id, cid) = match (release, revision, cid) {
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
             let id = resolve_target_release(
-                release,
-                revision,
-                releases,
-                repo,
-                &delegates,
-                no_input,
-                aliases,
+                release, revision, releases, repo, &delegates, no_input, aliases,
             )?;
             (id, cid)
         }
@@ -511,13 +477,7 @@ where
     let (id, cid) = match (release, revision, cid) {
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
             let id = resolve_target_release(
-                release,
-                revision,
-                releases,
-                repo,
-                &delegates,
-                no_input,
-                aliases,
+                release, revision, releases, repo, &delegates, no_input, aliases,
             )?;
             (id, cid)
         }
@@ -675,7 +635,10 @@ fn show_release(
                 let id = parse_release_id(s, repo)?;
                 let r = releases
                     .get(&id)
-                    .map_err(|err| error::Find::LookupId { release_id: id, err })?
+                    .map_err(|err| error::Find::LookupId {
+                        release_id: id,
+                        err,
+                    })?
                     .ok_or(error::Find::NoReleaseId(id))?;
                 vec![(id, r)]
             }
@@ -700,8 +663,7 @@ fn show_release(
         all_authors,
         local: Some(local),
     };
-    let shown =
-        display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
+    let shown = display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
     if use_pretty(pretty, json) {
         print!("{}", shown.pretty_detailed(pretty_style(verbose)));
     } else {
@@ -1080,8 +1042,7 @@ mod prompt {
         repo: &Repository,
         aliases: &impl AliasStore,
     ) -> Result<ReleaseId, String> {
-        select_release(candidates, None, repo, aliases)?
-            .ok_or_else(|| "no release selected".into())
+        select_release(candidates, None, repo, aliases)?.ok_or_else(|| "no release selected".into())
     }
 
     /// Show a multi-release picker. Returns `Some(id)` when the user
@@ -1252,7 +1213,8 @@ mod prompt {
     pub fn pick_location(no_input: bool, urls: Vec<Url>) -> Result<Url, String> {
         if no_input || !std::io::stdin().is_terminal() {
             return Err(
-                "interactive mode requires a terminal; pass <URL>, or use --no-input to disable".into(),
+                "interactive mode requires a terminal; pass <URL>, or use --no-input to disable"
+                    .into(),
             );
         }
         if urls.is_empty() {
@@ -1389,8 +1351,7 @@ mod prompt {
                     name, commit_oid, ..
                 } => {
                     let short = &commit_oid.to_string()[..7];
-                    let title =
-                        display::CommitTitle::title(repo, commit_oid).unwrap_or_default();
+                    let title = display::CommitTitle::title(repo, commit_oid).unwrap_or_default();
                     format!("{name} -> {short}  {title}")
                 }
                 Entry::Commit { oid } => {
@@ -1516,7 +1477,11 @@ fn resolve_target_release(
             match releases.get(&id) {
                 Ok(Some(_)) => Ok(id),
                 Ok(None) => Err(error::Find::NoReleaseId(id).into()),
-                Err(err) => Err(error::Find::LookupId { release_id: id, err }.into()),
+                Err(err) => Err(error::Find::LookupId {
+                    release_id: id,
+                    err,
+                }
+                .into()),
             }
         }
         (None, Some(rev)) => {
@@ -1544,10 +1509,13 @@ fn resolve_target_release(
 /// `git revparse_single` accepts short OIDs, full OIDs, and any other
 /// ref name that points at the COB.
 fn parse_release_id(s: &str, repo: &Repository) -> Result<ReleaseId, error::Resolve> {
-    let object = repo.raw().revparse_single(s).map_err(|err| error::Resolve {
-        revision: s.to_owned(),
-        err,
-    })?;
+    let object = repo
+        .raw()
+        .revparse_single(s)
+        .map_err(|err| error::Resolve {
+            revision: s.to_owned(),
+            err,
+        })?;
     Ok(cob::ObjectId::from(object.id()).into())
 }
 
@@ -1561,10 +1529,12 @@ fn resolve_ref(rev: &str, repo: &Repository) -> Result<ResolvedRef, error::Resol
     })?;
     if object.kind() == Some(ObjectType::Tag) {
         let tag_oid: Oid = object.id().into();
-        let peeled = object.peel(ObjectType::Commit).map_err(|err| error::Resolve {
-            revision: rev.to_owned(),
-            err,
-        })?;
+        let peeled = object
+            .peel(ObjectType::Commit)
+            .map_err(|err| error::Resolve {
+                revision: rev.to_owned(),
+                err,
+            })?;
         Ok(ResolvedRef {
             commit: peeled.id().into(),
             tag: Some(tag_oid),
