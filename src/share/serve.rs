@@ -97,8 +97,10 @@ pub async fn add_blob(
     path: &Path,
     expected: &Cid,
 ) -> Result<(), Error> {
+    // iroh-blobs requires an absolute path for in-place reference imports.
+    let abs = dunce::canonicalize(path).map_err(|e| Error::Serve(format!("canonicalize: {e}")))?;
     let tag = store
-        .add_path_with_opts(try_reference_opts(path))
+        .add_path_with_opts(try_reference_opts(&abs))
         .with_tag()
         .await
         .map_err(|e| Error::Serve(format!("add blob: {e}")))?;
