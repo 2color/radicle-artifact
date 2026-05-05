@@ -490,6 +490,15 @@ impl Release {
                 // Sort by DID for deterministic output.
                 redactions.sort_by(|a, b| a.did.cmp(&b.did));
                 let artifact_author = *artifact.author();
+                let mut metadata: Vec<MetadataItem> = artifact
+                    .metadata()
+                    .iter()
+                    .map(|(key, value)| MetadataItem {
+                        key: key.clone(),
+                        value: value.clone(),
+                    })
+                    .collect();
+                metadata.sort_by(|a, b| a.key.cmp(&b.key));
                 Artifact {
                     cid: cid.to_string(),
                     author_alias: resolve(&artifact_author, aliases),
@@ -498,6 +507,7 @@ impl Release {
                     locations,
                     attestations,
                     redactions,
+                    metadata,
                 }
             })
             .collect();
@@ -745,6 +755,15 @@ impl Release {
                     push_line(&mut s, format!("      {} {did}{reason}", style.red("⊘")));
                 }
             }
+            if !artifact.metadata.is_empty() {
+                push_line(&mut s, format!("    {}", bare_label("metadata")));
+                for entry in artifact.metadata.iter() {
+                    push_line(
+                        &mut s,
+                        format!("      {} = {}", style.cyan(&entry.key), entry.value),
+                    );
+                }
+            }
         }
         s
     }
@@ -760,6 +779,8 @@ struct Artifact {
     locations: Vec<Location>,
     attestations: Vec<Attestation>,
     redactions: Vec<Redaction>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    metadata: Vec<MetadataItem>,
 }
 
 #[derive(Serialize)]
@@ -783,4 +804,10 @@ struct Redaction {
     alias: Option<String>,
     did: Did,
     reason: String,
+}
+
+#[derive(Serialize)]
+struct MetadataItem {
+    key: String,
+    value: String,
 }

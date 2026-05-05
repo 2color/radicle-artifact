@@ -200,6 +200,20 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
+        Command::Metadata(meta) => {
+            let signer = profile.signer().map_err(error::Signer)?;
+            match meta.command {
+                MetadataCommand::Set(cmd) => {
+                    metadata_set(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
+                }
+                MetadataCommand::Unset(cmd) => {
+                    metadata_unset(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
+                }
+            }
+            if !args.no_sync {
+                announce(&profile, repo.id)?;
+            }
+        }
         Command::Show(cmd) => {
             let delegates = repo_delegates(&repo)?;
             let local = Did::from(*profile.id());
@@ -502,6 +516,136 @@ where
         .redact(cid, reason, signer)
         .map_err(|err| error::Redact::Artifact { id, err })?;
     eprintln!("Redacted artifact {cid}");
+    Ok(())
+}
+
+/// Resolve the (release, cid) target and check that the local DID is
+/// authorized to mutate metadata on the targeted artifact — i.e. is the
+/// artifact's author or a current repo delegate.
+#[allow(clippy::too_many_arguments)]
+fn resolve_metadata_target(
+    release: Option<&str>,
+    revision: Option<&str>,
+    cid: Option<Cid>,
+    no_input: bool,
+    releases: &Releases<Repository>,
+    repo: &Repository,
+    profile: &Profile,
+    delegates: &BTreeSet<Did>,
+) -> Result<(ReleaseId, Cid), error::Metadata> {
+    let (id, cid) = match (release, revision, cid) {
+        (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
+            let id = resolve_target_release(
+                release, revision, releases, repo, delegates, no_input, profile,
+            )?;
+            (id, cid)
+        }
+        (None, None, None) => {
+            let (oid, cid) = prompt::pick_interactive(no_input, releases, repo)
+                .map_err(error::Metadata::Usage)?;
+            let id = releases
+                .find_unique_by_commit(oid, delegates)
+                .map_err(error::Find::from)?;
+            (id, cid)
+        }
+        _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
+    };
+
+    // Look up the artifact to find its author. The lookup also doubles
+    // as a "release/cid exists" precondition with a clear error.
+    let r = releases
+        .get(&id)
+        .map_err(|err| error::Metadata::Store { id, err })?
+        .ok_or(error::Metadata::Find(error::Find::NoReleaseId(id)))?;
+    let artifact_author = *r
+        .artifact(&cid)
+        .ok_or(error::Metadata::UnknownCid { id, cid })?
+        .author();
+
+    let local = Did::from(*profile.id());
+    let authorized = local == artifact_author || delegates.contains(&local);
+    if !authorized {
+        return Err(error::Metadata::NotAuthorized {
+            local,
+            artifact_author,
+            cid,
+        });
+    }
+    Ok((id, cid))
+}
+
+fn metadata_set<G>(
+    command::MetadataSet {
+        revision,
+        release,
+        cid,
+        key,
+        value,
+    }: command::MetadataSet,
+    no_input: bool,
+    releases: &mut Releases<Repository>,
+    repo: &Repository,
+    profile: &Profile,
+    signer: &Device<G>,
+) -> Result<(), error::Metadata>
+where
+    G: Signer<crypto::Signature>,
+{
+    let delegates = repo_delegates(repo)?;
+    let (id, cid) = resolve_metadata_target(
+        release.as_deref(),
+        revision.as_deref(),
+        cid,
+        no_input,
+        releases,
+        repo,
+        profile,
+        &delegates,
+    )?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::Metadata::Store { id, err })?;
+    release
+        .set_metadata(cid, key.clone(), value, signer)
+        .map_err(|err| error::Metadata::Store { id, err })?;
+    eprintln!("Set metadata {key} on artifact {cid}");
+    Ok(())
+}
+
+fn metadata_unset<G>(
+    command::MetadataUnset {
+        revision,
+        release,
+        cid,
+        key,
+    }: command::MetadataUnset,
+    no_input: bool,
+    releases: &mut Releases<Repository>,
+    repo: &Repository,
+    profile: &Profile,
+    signer: &Device<G>,
+) -> Result<(), error::Metadata>
+where
+    G: Signer<crypto::Signature>,
+{
+    let delegates = repo_delegates(repo)?;
+    let (id, cid) = resolve_metadata_target(
+        release.as_deref(),
+        revision.as_deref(),
+        cid,
+        no_input,
+        releases,
+        repo,
+        profile,
+        &delegates,
+    )?;
+    let mut release = releases
+        .get_mut(&id)
+        .map_err(|err| error::Metadata::Store { id, err })?;
+    release
+        .remove_metadata(cid, key.clone(), signer)
+        .map_err(|err| error::Metadata::Store { id, err })?;
+    eprintln!("Removed metadata {key} from artifact {cid}");
     Ok(())
 }
 
@@ -1574,6 +1718,8 @@ enum RadArtifactError {
     #[error(transparent)]
     Redact(#[from] error::Redact),
     #[error(transparent)]
+    Metadata(#[from] error::Metadata),
+    #[error(transparent)]
     Find(#[from] error::Find),
     #[error(transparent)]
     Resolve(#[from] error::Resolve),
@@ -1596,6 +1742,8 @@ mod command {
         Location(Location),
         Attest(Attest),
         Redact(Redact),
+        /// Manage free-form metadata entries on artifacts.
+        Metadata(Metadata),
         Show(Show),
         List(List),
         /// Compute the BLAKE3 CID of a file or directory
@@ -1620,6 +1768,23 @@ mod command {
     pub enum LocationCommand {
         Add(LocationAdd),
         Remove(LocationRemove),
+    }
+
+    /// Manage free-form metadata entries on artifacts.
+    ///
+    /// Only the artifact's author or a current repository delegate may
+    /// set or remove metadata. Values are opaque strings; the keyspace is
+    /// shared (last-writer-wins).
+    #[derive(Parser)]
+    pub struct Metadata {
+        #[clap(subcommand)]
+        pub command: MetadataCommand,
+    }
+
+    #[derive(Parser)]
+    pub enum MetadataCommand {
+        Set(MetadataSet),
+        Unset(MetadataUnset),
     }
 
     /// Compute the BLAKE3 CID of a file or directory.
@@ -1850,6 +2015,75 @@ Examples:
         /// Reason for the redaction.
         #[clap(short = 'm', long = "reason")]
         pub reason: Option<String>,
+    }
+
+    /// Set or overwrite a metadata entry on an artifact.
+    ///
+    /// Only the artifact's author or a current repository delegate can
+    /// set metadata. Values are opaque strings. The keyspace is shared
+    /// across contributors (last-writer-wins).
+    ///
+    /// Without --revision/--release and --cid, interactively lists
+    /// releases and artifacts to pick from.
+    #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Interactive mode (pick from available releases):
+    $ rad-artifact metadata set build-env \"nix --pure\"
+
+  Set metadata on a specific artifact:
+    $ rad-artifact metadata set --revision v1.0 --cid baf...abc build-env \"nix --pure\"")]
+    #[clap(group = clap::ArgGroup::new("target").args(["revision", "release"]))]
+    pub struct MetadataSet {
+        /// Git revision (commit, tag, or abbreviated OID) of the release.
+        /// Required with --cid unless --release is given.
+        #[clap(long, requires = "cid")]
+        pub revision: Option<String>,
+        /// Existing release id. Skips commit/tag resolution. Required
+        /// with --cid unless --revision is given.
+        #[clap(long, requires = "cid")]
+        pub release: Option<String>,
+        /// Content identifier for the artifact. Required with a target
+        /// (--revision or --release).
+        #[clap(long, requires = "target")]
+        pub cid: Option<Cid>,
+        /// Metadata key.
+        pub key: String,
+        /// Opaque string value.
+        pub value: String,
+    }
+
+    /// Remove a metadata entry from an artifact.
+    ///
+    /// Only the artifact's author or a current repository delegate can
+    /// remove metadata. Any authorized contributor may remove any key.
+    ///
+    /// Without --revision/--release and --cid, interactively lists
+    /// releases and artifacts to pick from.
+    #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Interactive mode:
+    $ rad-artifact metadata unset build-env
+
+  Remove a specific entry:
+    $ rad-artifact metadata unset --revision v1.0 --cid baf...abc build-env")]
+    #[clap(group = clap::ArgGroup::new("target").args(["revision", "release"]))]
+    pub struct MetadataUnset {
+        /// Git revision (commit, tag, or abbreviated OID) of the release.
+        /// Required with --cid unless --release is given.
+        #[clap(long, requires = "cid")]
+        pub revision: Option<String>,
+        /// Existing release id. Skips commit/tag resolution. Required
+        /// with --cid unless --revision is given.
+        #[clap(long, requires = "cid")]
+        pub release: Option<String>,
+        /// Content identifier for the artifact. Required with a target
+        /// (--revision or --release).
+        #[clap(long, requires = "target")]
+        pub cid: Option<Cid>,
+        /// Metadata key to remove.
+        pub key: String,
     }
 
     /// Remove a download location for an artifact.
@@ -2107,6 +2341,32 @@ mod error {
             err: radicle_artifact::error::Redact,
         },
         #[error("failed to redact artifact in release {id}")]
+        Store {
+            id: ReleaseId,
+            #[source]
+            err: cob::store::Error,
+        },
+    }
+
+    #[derive(Debug, Error)]
+    pub enum Metadata {
+        #[error("{0}")]
+        Usage(String),
+        #[error(transparent)]
+        ResolveTarget(#[from] ResolveTarget),
+        #[error(transparent)]
+        Find(#[from] Find),
+        #[error(transparent)]
+        Delegates(#[from] Delegates),
+        #[error("artifact {cid} not found in release {id}")]
+        UnknownCid { id: ReleaseId, cid: Cid },
+        #[error("not authorized to manage metadata on artifact {cid}: only the artifact author ({artifact_author}) or a repository delegate may. local DID is {local}")]
+        NotAuthorized {
+            local: Did,
+            artifact_author: Did,
+            cid: Cid,
+        },
+        #[error("failed to update metadata on release {id}")]
         Store {
             id: ReleaseId,
             #[source]
