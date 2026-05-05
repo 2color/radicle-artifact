@@ -48,6 +48,8 @@ Releases contain one or more **Artifacts**, each identified by a content identif
 
 Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
+The artifact author and repository delegates can attach free-form **metadata** entries (opaque key/value strings) to an artifact, e.g. a build-environment note or an SBOM URL. The keyspace is shared (last-writer-wins); per-entry attribution is not stored, but the COB entry log retains signatures for audit.
+
 Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
 
 > **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
@@ -67,7 +69,8 @@ Release
         ├── name: String              # human-readable description (only author can update)
         ├── locations: Map<Did, Set<Url>>
         ├── attestations: Set<Did>      # users that verified the CID
-        └── redactions: Map<Did, String> # users that flagged the artifact, with reason
+        ├── redactions: Map<Did, String> # users that flagged the artifact, with reason
+        └── metadata: Map<String, String> # free-form annotations (author/delegate writes)
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
@@ -103,6 +106,8 @@ Trust weighting happens at the artifact level: redactions and attestations from 
 | `RemoveLocation` | Retract a previously announced URL                                           |
 | `Attest`         | Record independent verification of a CID                                     |
 | `Redact`         | Flag an artifact as compromised/withdrawn                                    |
+| `SetMetadata`    | Attach a free-form key/value entry (author/delegate only)                    |
+| `RemoveMetadata` | Remove a metadata entry (author/delegate only)                               |
 
 ## COB type
 
@@ -119,6 +124,8 @@ rad-artifact location add --revision <REVISION> --cid <CID> <URL>    # add disco
 rad-artifact location remove --revision <REVISION> --cid <CID> <URL> # remove discovery URL
 rad-artifact attest <REVISION> --cid <CID>                       # attest to an artifact
 rad-artifact redact <REVISION> --cid <CID> -m <REASON>           # redact an artifact
+rad-artifact metadata set --revision <REVISION> --cid <CID> <KEY> <VALUE>  # attach metadata
+rad-artifact metadata unset --revision <REVISION> --cid <CID> <KEY>        # remove metadata
 rad-artifact show <REVISION> [--pretty] [--all-authors]          # show release
 rad-artifact list [--pretty] [--all-authors]                     # list releases (default: delegate-authored only)
 rad-artifact cid <PATH>                                          # compute BLAKE3 CID

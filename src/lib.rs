@@ -169,6 +169,13 @@ pub struct Artifact {
     /// Users that have redacted this artifact, with their stated reason.
     #[serde(default)]
     redactions: BTreeMap<Did, String>,
+    /// Free-form key/value annotations contributed by the artifact's
+    /// author or repository delegates. Shared keyspace, last-writer-wins.
+    /// Authorization is enforced at the CLI layer; the COB itself accepts
+    /// any signed action for replay determinism. Per-entry attribution is
+    /// not stored — the COB entry log retains signatures for audit.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<String, String>,
 }
 
 impl Artifact {
@@ -228,6 +235,11 @@ impl Artifact {
     /// Check whether any DID has redacted this artifact.
     pub fn is_redacted(&self) -> bool {
         !self.redactions.is_empty()
+    }
+
+    /// Get all metadata entries.
+    pub fn metadata(&self) -> &BTreeMap<String, String> {
+        &self.metadata
     }
 
     /// Get locations filtered by URL scheme, with the contributing DID.
@@ -314,6 +326,32 @@ pub enum Action {
         /// A human-readable reason for the redaction.
         reason: String,
     },
+    /// Set or overwrite a metadata entry on an artifact.
+    ///
+    /// The keyspace is shared across all contributors; last-writer wins.
+    /// The signer is recorded as the entry's author so display filtering
+    /// can hide entries from contributors who are no longer authorized.
+    /// Authorization (artifact author or current repo delegate) is
+    /// enforced at the CLI layer, not here, so replay stays deterministic.
+    /// Silent no-op if the CID does not exist in the release.
+    SetMetadata {
+        /// The content identifier of the artifact.
+        cid: Cid,
+        /// Metadata key.
+        key: String,
+        /// Opaque string value.
+        value: String,
+    },
+    /// Remove a metadata entry from an artifact.
+    ///
+    /// Any authorized contributor can remove any key. Silent no-op if the
+    /// CID or the key is not found.
+    RemoveMetadata {
+        /// The content identifier of the artifact.
+        cid: Cid,
+        /// Metadata key to remove.
+        key: String,
+    },
 }
 
 impl CobAction for Action {
@@ -391,6 +429,7 @@ impl Release {
                             locations: BTreeMap::new(),
                             attestations: BTreeSet::new(),
                             redactions: BTreeMap::new(),
+                            metadata: BTreeMap::new(),
                         });
                     }
                 }
@@ -425,6 +464,16 @@ impl Release {
                     artifact.redactions.insert(user, reason);
                     // A redaction supersedes any prior attestation from the same user.
                     artifact.attestations.remove(&user);
+                }
+            }
+            Action::SetMetadata { cid, key, value } => {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                    artifact.metadata.insert(key, value);
+                }
+            }
+            Action::RemoveMetadata { cid, key } => {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
+                    artifact.metadata.remove(&key);
                 }
             }
         }
@@ -800,6 +849,41 @@ where
         self.transaction("Attest artifact", signer, |tx| tx.attest(cid))
     }
 
+    /// Set or overwrite a metadata entry on an artifact.
+    ///
+    /// Authorization (artifact author or current repo delegate) must be
+    /// enforced by the caller; the COB layer is permissive so replay stays
+    /// deterministic across nodes that may disagree on the delegate set.
+    pub fn set_metadata<G>(
+        &mut self,
+        cid: Cid,
+        key: String,
+        value: String,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Set metadata", signer, |tx| {
+            tx.set_metadata(cid, key, value)
+        })
+    }
+
+    /// Remove a metadata entry from an artifact.
+    ///
+    /// Authorization is the caller's responsibility (see [`Self::set_metadata`]).
+    pub fn remove_metadata<G>(
+        &mut self,
+        cid: Cid,
+        key: String,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Remove metadata", signer, |tx| tx.remove_metadata(cid, key))
+    }
+
     /// Redact an artifact, indicating it should not be used.
     ///
     /// Returns an error if the CID does not exist in the release or if the
@@ -930,6 +1014,16 @@ where
     /// Redact an artifact with a reason.
     fn redact(&mut self, cid: Cid, reason: String) -> Result<(), store::Error> {
         self.0.push(Action::Redact { cid, reason })
+    }
+
+    /// Set or overwrite a metadata entry.
+    fn set_metadata(&mut self, cid: Cid, key: String, value: String) -> Result<(), store::Error> {
+        self.0.push(Action::SetMetadata { cid, key, value })
+    }
+
+    /// Remove a metadata entry.
+    fn remove_metadata(&mut self, cid: Cid, key: String) -> Result<(), store::Error> {
+        self.0.push(Action::RemoveMetadata { cid, key })
     }
 }
 
@@ -2098,5 +2192,197 @@ mod test {
         assert!(detailed.contains("locations"));
         assert!(detailed.contains("attestations"));
         assert!(detailed.contains("alice.example.com/linux-amd64.tar.gz"));
+    }
+
+    #[test]
+    fn set_metadata_basic() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "build-env".into(), "nix --pure".into(), &alice.signer)
+            .unwrap();
+
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(
+            artifact.metadata().get("build-env").map(String::as_str),
+            Some("nix --pure"),
+        );
+    }
+
+    #[test]
+    fn set_metadata_last_writer_wins() {
+        // The COB layer is permissive: any signer may overwrite any key.
+        // CLI-level authorization is what gates real-world contributions.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "key".into(), "first".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "key".into(), "second".into(), &bob.signer)
+            .unwrap();
+
+        assert_eq!(
+            release
+                .artifact(&cid)
+                .unwrap()
+                .metadata()
+                .get("key")
+                .map(String::as_str),
+            Some("second"),
+        );
+    }
+
+    #[test]
+    fn remove_metadata_drops_key() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "a".into(), "1".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "b".into(), "2".into(), &alice.signer)
+            .unwrap();
+        release
+            .remove_metadata(cid, "a".into(), &alice.signer)
+            .unwrap();
+
+        let metadata = release.artifact(&cid).unwrap().metadata();
+        assert!(metadata.get("a").is_none());
+        assert_eq!(metadata.get("b").map(String::as_str), Some("2"));
+    }
+
+    #[test]
+    fn set_metadata_for_missing_cid_is_noop() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(99);
+        release
+            .set_metadata(cid, "k".into(), "v".into(), &alice.signer)
+            .unwrap();
+
+        assert!(release.artifact(&cid).is_none());
+    }
+
+    #[test]
+    fn remove_metadata_for_missing_key_is_noop() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .remove_metadata(cid, "missing".into(), &alice.signer)
+            .unwrap();
+
+        assert!(release.artifact(&cid).unwrap().metadata().is_empty());
+    }
+
+    #[test]
+    fn metadata_persists_through_reload() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "build".into(), "ok".into(), &alice.signer)
+            .unwrap();
+
+        let id = *release.id();
+        drop(release);
+        let release = releases.get(&id).unwrap().unwrap();
+        assert_eq!(
+            release
+                .artifact(&cid)
+                .unwrap()
+                .metadata()
+                .get("build")
+                .map(String::as_str),
+            Some("ok"),
+        );
+    }
+
+    #[test]
+    fn display_renders_metadata() {
+        use std::collections::HashMap;
+
+        use crate::display;
+
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "build".into(), "ok".into(), &alice.signer)
+            .unwrap();
+        let id = *release.id();
+        drop(release);
+
+        let release = releases.get(&id).unwrap().unwrap();
+        let delegates: BTreeSet<Did> = BTreeSet::new();
+        let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
+        let filters = display::Filters {
+            delegates: &delegates,
+            redacted: false,
+            all_authors: true,
+            local: None,
+        };
+        let shown = display::Release::new(id, &release, &aliases, filters, None, None);
+        let detailed = shown.pretty(display::Style::plain(false));
+        assert!(detailed.contains("build"));
+        assert!(detailed.contains("ok"));
     }
 }
