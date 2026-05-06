@@ -679,7 +679,10 @@ where
     /// Create a new [`Release`] in the repository.
     ///
     /// `tag` is an optional annotated tag OID to record alongside the
-    /// commit; see [`Release::tag`].
+    /// commit; see [`Release::tag`]. When `Some`, the OID must identify
+    /// an annotated tag object whose target peels to `oid`; otherwise
+    /// [`error::Create::MissingTag`] or [`error::Create::TagMismatch`]
+    /// is returned.
     ///
     /// The signer's DID confers no release-level privilege — it's the git
     /// committer of the wrapping COB op, not the "owner" of the release.
@@ -692,10 +695,32 @@ where
         oid: Oid,
         tag: Option<Oid>,
         signer: &Device<G>,
-    ) -> Result<ReleaseMut<'a, 'g, R>, store::Error>
+    ) -> Result<ReleaseMut<'a, 'g, R>, error::Create>
     where
         G: Signer<crypto::Signature>,
+        R: WriteRepository,
     {
+        if let Some(tag_oid) = tag {
+            // Reject anything but an annotated tag whose target peels
+            // to oid.
+            use radicle::git::raw::ObjectType;
+            let raw = self.raw.as_ref().raw();
+            let object = raw
+                .find_object(tag_oid.into(), Some(ObjectType::Tag))
+                .map_err(|err| error::Create::MissingTag { tag: tag_oid, err })?;
+            let peeled = object
+                .peel(ObjectType::Commit)
+                .map_err(|err| error::Create::PeelFailed { tag: tag_oid, err })?;
+            let actual: Oid = peeled.id().into();
+            if actual != oid {
+                return Err(error::Create::TagMismatch {
+                    tag: tag_oid,
+                    expected: oid,
+                    actual,
+                });
+            }
+        }
+
         let (id, release) = store::Transaction::initial::<_, _, Transaction<R>>(
             "Create release",
             &mut self.raw,
@@ -965,6 +990,15 @@ mod test {
 
         let author = repo.signature().unwrap();
         repo.commit(None, &author, &author, message, &tree, &[])
+            .unwrap()
+            .into()
+    }
+
+    /// Create an annotated tag object pointing at `target` and return its OID.
+    fn annotate_tag(repo: &Repository, name: &str, target: Oid, message: &str) -> Oid {
+        let object = repo.find_object(target.into(), None).unwrap();
+        let tagger = repo.signature().unwrap();
+        repo.tag(name, &object, &tagger, message, false)
             .unwrap()
             .into()
     }
@@ -1888,7 +1922,7 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Tagged release");
-        let tag_oid = test::arbitrary::oid();
+        let tag_oid = annotate_tag(&repo.backend, "v1", oid, "release v1");
         let mut releases = Releases::open(&*repo).unwrap();
 
         let id = *releases
@@ -1898,6 +1932,72 @@ mod test {
         let release = releases.get(&id).unwrap().unwrap();
         assert_eq!(release.tag(), Some(&tag_oid));
         assert_eq!(release.oid(), &oid);
+    }
+
+    #[test]
+    fn create_rejects_tag_pointing_at_other_commit() {
+        // Recording a tag whose target is a different commit would leave
+        // the COB permanently inconsistent, so create must refuse it.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let other = commit(&repo.backend, "unrelated commit");
+        let tag_oid = annotate_tag(&repo.backend, "v1", other, "tag points elsewhere");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let result = releases.create(oid, Some(tag_oid), &alice.signer);
+        match result {
+            Err(crate::error::Create::TagMismatch {
+                tag,
+                expected,
+                actual,
+            }) => {
+                assert_eq!(tag, tag_oid);
+                assert_eq!(expected, oid);
+                assert_eq!(actual, other);
+            }
+            Err(other) => panic!("expected TagMismatch, got {other:?}"),
+            Ok(_) => panic!("expected TagMismatch, got Ok"),
+        }
+    }
+
+    #[test]
+    fn create_rejects_unknown_tag_oid() {
+        // An OID that isn't actually a tag object in the repo must be
+        // rejected rather than silently stored as opaque bytes.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let bogus = test::arbitrary::oid();
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let result = releases.create(oid, Some(bogus), &alice.signer);
+        match result {
+            Err(crate::error::Create::MissingTag { tag, .. }) => assert_eq!(tag, bogus),
+            Err(other) => panic!("expected MissingTag, got {other:?}"),
+            Ok(_) => panic!("expected MissingTag, got Ok"),
+        }
+    }
+
+    #[test]
+    fn create_rejects_commit_oid_as_tag() {
+        // A commit OID supplied where an annotated tag is expected
+        // (e.g. lightweight tag confusion) must error rather than be
+        // recorded as a tag.
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        let result = releases.create(oid, Some(oid), &alice.signer);
+        match result {
+            Err(crate::error::Create::MissingTag { tag, .. }) => assert_eq!(tag, oid),
+            Err(other) => panic!("expected MissingTag, got {other:?}"),
+            Ok(_) => panic!("expected MissingTag, got Ok"),
+        }
     }
 
     #[test]
@@ -1921,7 +2021,7 @@ mod test {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let oid = commit(&repo.backend, "Tagged release");
-        let tag_oid = test::arbitrary::oid();
+        let tag_oid = annotate_tag(&repo.backend, "v1", oid, "release v1");
 
         let id = {
             let mut releases = Releases::open(&*repo).unwrap();

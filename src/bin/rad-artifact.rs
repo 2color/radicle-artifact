@@ -2033,7 +2033,7 @@ mod error {
         Create {
             oid: Oid,
             #[source]
-            err: cob::store::Error,
+            err: radicle_artifact::error::Create,
         },
         #[error("failed to add artifact to release {id}")]
         Store {

@@ -49,6 +49,50 @@ pub enum Redact {
     Store(#[from] cob::store::Error),
 }
 
+/// Errors that can occur when creating a [`Release`][release] via
+/// [`Releases::create`][create].
+///
+/// [release]: super::Release
+/// [create]: super::Releases::create
+#[derive(Debug, Error)]
+pub enum Create {
+    /// No annotated tag object with the given OID exists in the
+    /// repository (e.g. a commit OID was supplied, or the tag has not
+    /// been fetched).
+    #[error("annotated tag {tag} not found in repository")]
+    MissingTag {
+        /// The OID that was supposed to identify an annotated tag.
+        tag: git::Oid,
+        /// The underlying error from Git that occurred.
+        #[source]
+        err: git::raw::Error,
+    },
+    /// The tag object exists but could not be resolved to a commit
+    /// (e.g. it points at a tree/blob, or the tag chain is broken).
+    #[error("annotated tag {tag} could not be resolved to a commit")]
+    PeelFailed {
+        /// The annotated tag OID.
+        tag: git::Oid,
+        /// The underlying error from Git that occurred while peeling.
+        #[source]
+        err: git::raw::Error,
+    },
+    /// The annotated tag's target peels to a different commit than the
+    /// release commit OID.
+    #[error("annotated tag {tag} peels to commit {actual}, expected {expected}")]
+    TagMismatch {
+        /// The annotated tag OID.
+        tag: git::Oid,
+        /// The release commit OID.
+        expected: git::Oid,
+        /// The commit the tag actually peels to.
+        actual: git::Oid,
+    },
+    /// An error occurred in the underlying COB store.
+    #[error(transparent)]
+    Store(#[from] cob::store::Error),
+}
+
 /// Errors that can occur when building a [`Release`][release].
 ///
 /// [release]: super::Release
