@@ -4,7 +4,7 @@
 //! `rad-artifact` CLI tool.
 
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repository};
 use serde::Serialize;
@@ -490,15 +490,6 @@ impl Release {
                 // Sort by DID for deterministic output.
                 redactions.sort_by(|a, b| a.did.cmp(&b.did));
                 let artifact_author = *artifact.author();
-                let mut metadata: Vec<MetadataItem> = artifact
-                    .metadata()
-                    .iter()
-                    .map(|(key, value)| MetadataItem {
-                        key: key.clone(),
-                        value: value.clone(),
-                    })
-                    .collect();
-                metadata.sort_by(|a, b| a.key.cmp(&b.key));
                 Artifact {
                     cid: cid.to_string(),
                     author_alias: resolve(&artifact_author, aliases),
@@ -507,7 +498,7 @@ impl Release {
                     locations,
                     attestations,
                     redactions,
-                    metadata,
+                    metadata: artifact.metadata().clone(),
                 }
             })
             .collect();
@@ -757,17 +748,14 @@ impl Release {
             }
             if !artifact.metadata.is_empty() {
                 push_line(&mut s, format!("    {}", bare_label("metadata")));
-                for entry in artifact.metadata.iter() {
+                for (key, value) in artifact.metadata.iter() {
                     // Strings render unquoted to keep simple notes readable;
                     // other JSON shapes render as compact JSON.
-                    let rendered = match &entry.value {
+                    let rendered = match value {
                         serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),
                     };
-                    push_line(
-                        &mut s,
-                        format!("      {} = {}", style.cyan(&entry.key), rendered),
-                    );
+                    push_line(&mut s, format!("      {} = {}", style.cyan(key), rendered));
                 }
             }
         }
@@ -785,8 +773,8 @@ struct Artifact {
     locations: Vec<Location>,
     attestations: Vec<Attestation>,
     redactions: Vec<Redaction>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    metadata: Vec<MetadataItem>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -810,10 +798,4 @@ struct Redaction {
     alias: Option<String>,
     did: Did,
     reason: String,
-}
-
-#[derive(Serialize)]
-struct MetadataItem {
-    key: String,
-    value: serde_json::Value,
 }
