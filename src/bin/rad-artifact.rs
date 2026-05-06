@@ -579,6 +579,7 @@ fn metadata_set<G>(
         revision,
         release,
         cid,
+        json,
         key,
         value,
     }: command::MetadataSet,
@@ -602,11 +603,18 @@ where
         profile,
         &delegates,
     )?;
+    // With --json, parse the value as JSON; otherwise store it verbatim
+    // as a JSON string so simple `key=value` invocations don't need quoting.
+    let value = if json {
+        serde_json::from_str(&value).map_err(|err| error::Metadata::InvalidJson { err })?
+    } else {
+        serde_json::Value::String(value)
+    };
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Metadata::Store { id, err })?;
     release
-        .set_metadata(cid, key.clone(), serde_json::Value::String(value), signer)
+        .set_metadata(cid, key.clone(), value, signer)
         .map_err(|err| error::Metadata::Store { id, err })?;
     eprintln!("Set metadata {key} on artifact {cid}");
     Ok(())
@@ -2020,8 +2028,9 @@ Examples:
     /// Set or overwrite a metadata entry on an artifact.
     ///
     /// Only the artifact's author or a current repository delegate can
-    /// set metadata. Values are opaque strings. The keyspace is shared
-    /// across contributors (last-writer-wins).
+    /// set metadata. By default the value is stored as a JSON string;
+    /// pass --json to parse <VALUE> as JSON instead. The keyspace is
+    /// shared across contributors (last-writer-wins).
     ///
     /// Without --revision/--release and --cid, interactively lists
     /// releases and artifacts to pick from.
@@ -2032,7 +2041,11 @@ Examples:
     $ rad-artifact metadata set build-env \"nix --pure\"
 
   Set metadata on a specific artifact:
-    $ rad-artifact metadata set --revision v1.0 --cid baf...abc build-env \"nix --pure\"")]
+    $ rad-artifact metadata set --revision v1.0 --cid baf...abc build-env \"nix --pure\"
+
+  Store a structured JSON value:
+    $ rad-artifact metadata set --json reproducible true
+    $ rad-artifact metadata set --json sbom '{\"format\":\"cyclonedx\",\"url\":\"https://...\"}'")]
     #[clap(group = clap::ArgGroup::new("target").args(["revision", "release"]))]
     pub struct MetadataSet {
         /// Git revision (commit, tag, or abbreviated OID) of the release.
@@ -2047,9 +2060,13 @@ Examples:
         /// (--revision or --release).
         #[clap(long, requires = "target")]
         pub cid: Option<Cid>,
+        /// Parse <VALUE> as JSON. Without this flag the value is stored
+        /// as a JSON string.
+        #[clap(long)]
+        pub json: bool,
         /// Metadata key.
         pub key: String,
-        /// Opaque string value.
+        /// Value to store. Treated as a string unless --json is set.
         pub value: String,
     }
 
@@ -2365,6 +2382,11 @@ mod error {
             local: Did,
             artifact_author: Did,
             cid: Cid,
+        },
+        #[error("--json was set but value is not valid JSON: {err}")]
+        InvalidJson {
+            #[source]
+            err: serde_json::Error,
         },
         #[error("failed to update metadata on release {id}")]
         Store {
