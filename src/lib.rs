@@ -170,12 +170,13 @@ pub struct Artifact {
     #[serde(default)]
     redactions: BTreeMap<Did, String>,
     /// Free-form key/value annotations contributed by the artifact's
-    /// author or repository delegates. Shared keyspace, last-writer-wins.
+    /// author or repository delegates. Keys are strings; values are
+    /// arbitrary JSON. Shared keyspace, last-writer-wins.
     /// Authorization is enforced at the CLI layer; the COB itself accepts
     /// any signed action for replay determinism. Per-entry attribution is
     /// not stored — the COB entry log retains signatures for audit.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    metadata: BTreeMap<String, String>,
+    metadata: BTreeMap<String, serde_json::Value>,
 }
 
 impl Artifact {
@@ -238,7 +239,7 @@ impl Artifact {
     }
 
     /// Get all metadata entries.
-    pub fn metadata(&self) -> &BTreeMap<String, String> {
+    pub fn metadata(&self) -> &BTreeMap<String, serde_json::Value> {
         &self.metadata
     }
 
@@ -339,8 +340,8 @@ pub enum Action {
         cid: Cid,
         /// Metadata key.
         key: String,
-        /// Opaque string value.
-        value: String,
+        /// JSON value (any shape).
+        value: serde_json::Value,
     },
     /// Remove a metadata entry from an artifact.
     ///
@@ -883,7 +884,7 @@ where
         &mut self,
         cid: Cid,
         key: String,
-        value: String,
+        value: serde_json::Value,
         signer: &Device<G>,
     ) -> Result<EntryId, store::Error>
     where
@@ -1042,7 +1043,12 @@ where
     }
 
     /// Set or overwrite a metadata entry.
-    fn set_metadata(&mut self, cid: Cid, key: String, value: String) -> Result<(), store::Error> {
+    fn set_metadata(
+        &mut self,
+        cid: Cid,
+        key: String,
+        value: serde_json::Value,
+    ) -> Result<(), store::Error> {
         self.0.push(Action::SetMetadata { cid, key, value })
     }
 
@@ -2313,8 +2319,35 @@ mod test {
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(
-            artifact.metadata().get("build-env").map(String::as_str),
-            Some("nix --pure"),
+            artifact.metadata().get("build-env"),
+            Some(&serde_json::json!("nix --pure")),
+        );
+    }
+
+    #[test]
+    fn set_metadata_accepts_json_object() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        let value = serde_json::json!({
+            "format": "cyclonedx",
+            "url": "https://example.com/sbom.json",
+        });
+        release
+            .set_metadata(cid, "sbom".into(), value.clone(), &alice.signer)
+            .unwrap();
+
+        assert_eq!(
+            release.artifact(&cid).unwrap().metadata().get("sbom"),
+            Some(&value),
         );
     }
 
@@ -2342,13 +2375,8 @@ mod test {
             .unwrap();
 
         assert_eq!(
-            release
-                .artifact(&cid)
-                .unwrap()
-                .metadata()
-                .get("key")
-                .map(String::as_str),
-            Some("second"),
+            release.artifact(&cid).unwrap().metadata().get("key"),
+            Some(&serde_json::json!("second")),
         );
     }
 
@@ -2377,7 +2405,7 @@ mod test {
 
         let metadata = release.artifact(&cid).unwrap().metadata();
         assert!(metadata.get("a").is_none());
-        assert_eq!(metadata.get("b").map(String::as_str), Some("2"));
+        assert_eq!(metadata.get("b"), Some(&serde_json::json!("2")));
     }
 
     #[test]
@@ -2438,13 +2466,8 @@ mod test {
         drop(release);
         let release = releases.get(&id).unwrap().unwrap();
         assert_eq!(
-            release
-                .artifact(&cid)
-                .unwrap()
-                .metadata()
-                .get("build")
-                .map(String::as_str),
-            Some("ok"),
+            release.artifact(&cid).unwrap().metadata().get("build"),
+            Some(&serde_json::json!("ok")),
         );
     }
 

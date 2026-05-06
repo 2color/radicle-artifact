@@ -758,9 +758,15 @@ impl Release {
             if !artifact.metadata.is_empty() {
                 push_line(&mut s, format!("    {}", bare_label("metadata")));
                 for entry in artifact.metadata.iter() {
+                    // Strings render unquoted to keep simple notes readable;
+                    // other JSON shapes render as compact JSON.
+                    let rendered = match &entry.value {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
                     push_line(
                         &mut s,
-                        format!("      {} = {}", style.cyan(&entry.key), entry.value),
+                        format!("      {} = {}", style.cyan(&entry.key), rendered),
                     );
                 }
             }
@@ -809,5 +815,5 @@ struct Redaction {
 #[derive(Serialize)]
 struct MetadataItem {
     key: String,
-    value: String,
+    value: serde_json::Value,
 }

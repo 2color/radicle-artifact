@@ -606,7 +606,7 @@ where
         .get_mut(&id)
         .map_err(|err| error::Metadata::Store { id, err })?;
     release
-        .set_metadata(cid, key.clone(), value, signer)
+        .set_metadata(cid, key.clone(), serde_json::Value::String(value), signer)
         .map_err(|err| error::Metadata::Store { id, err })?;
     eprintln!("Set metadata {key} on artifact {cid}");
     Ok(())
