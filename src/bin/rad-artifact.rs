@@ -292,11 +292,7 @@ where
                 None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::Add::Usage)?,
             };
             let oid = resolved.commit;
-            let candidates: Vec<(ReleaseId, Release)> = releases
-                .find_by_commit(oid)
-                .map_err(|err| error::Find::Lookup { oid, err })?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|err| error::Find::Lookup { oid, err })?;
+            let candidates = collect_candidates(releases, oid)?;
 
             // Disambiguate when multiple releases exist OR when a single
             // existing release would silently inherit the wrong tag (e.g.
@@ -786,11 +782,7 @@ fn show_release(
             }
             (None, Some(rev)) => {
                 let oid = resolve_ref(rev, repo)?.commit;
-                let hits: Vec<_> = releases
-                    .find_by_commit(oid)
-                    .map_err(|err| error::Find::Lookup { oid, err })?
-                    .collect::<Result<_, _>>()
-                    .map_err(|err| error::Find::Lookup { oid, err })?;
+                let hits = collect_candidates(releases, oid)?;
                 if hits.is_empty() {
                     return Err(error::Find::NoRelease(oid).into());
                 }
@@ -1219,7 +1211,7 @@ mod prompt {
         }
     }
 
-    pub(super) fn format_candidate(
+    fn format_candidate(
         id: &ReleaseId,
         release: &Release,
         repo: &Repository,
@@ -1238,6 +1230,22 @@ mod prompt {
         );
         let title = display::CommitTitle::title(repo, release.oid()).unwrap_or_default();
         format!("{short_id}  {tag}  by {creator}  {title}")
+    }
+
+    /// Render candidates as a leading-newline-indented list for
+    /// embedding after "pass --release <id>" in the ambiguous-release
+    /// error. Rows reuse the interactive picker's row format.
+    pub(super) fn format_candidate_list(
+        candidates: &[(ReleaseId, Release)],
+        repo: &Repository,
+        aliases: &impl AliasStore,
+    ) -> String {
+        let mut out = String::from(":");
+        for (id, release) in candidates {
+            out.push_str("\n  ");
+            out.push_str(&format_candidate(id, release, repo, aliases));
+        }
+        out
     }
 
     /// Interactive mode: list commits with releases, pick one, list its
@@ -1632,7 +1640,7 @@ fn resolve_target_release(
                     if no_input {
                         Err(error::Find::Ambiguous {
                             oid,
-                            candidates: format_candidate_list(&candidates, repo, aliases),
+                            candidates: prompt::format_candidate_list(&candidates, repo, aliases),
                         }
                         .into())
                     } else {
@@ -1669,9 +1677,9 @@ fn resolve_release_after_pick(
                 .into_iter()
                 .filter(|(_, r)| r.artifact(cid).is_some())
                 .collect();
-            match with_cid.len() {
-                0 => Err(error::Find::NoRelease(oid)),
-                1 => Ok(with_cid[0].0),
+            match with_cid.as_slice() {
+                [] => Err(error::Find::NoRelease(oid)),
+                [(id, _)] => Ok(*id),
                 _ => prompt::pick_existing_release(&with_cid, repo, aliases)
                     .map_err(error::Find::Picker),
             }
@@ -1691,26 +1699,6 @@ fn collect_candidates(
         .map_err(|err| error::Find::Lookup { oid, err })?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| error::Find::Lookup { oid, err })
-}
-
-/// Format candidate releases as a leading-newline-indented list,
-/// suitable for embedding in an error message after "pass --release
-/// <id>". Empty input yields an empty string so the caller's message
-/// remains clean. Rows reuse the interactive picker's formatting.
-fn format_candidate_list(
-    candidates: &[(ReleaseId, Release)],
-    repo: &Repository,
-    aliases: &impl AliasStore,
-) -> String {
-    if candidates.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from(":");
-    for (id, release) in candidates {
-        out.push_str("\n  ");
-        out.push_str(&prompt::format_candidate(id, release, repo, aliases));
-    }
-    out
 }
 
 /// Resolve a (possibly abbreviated) release-id string to a full
@@ -2475,10 +2463,6 @@ mod error {
     pub enum Find {
         #[error("no release was found for the commit {0}")]
         NoRelease(Oid),
-        // `candidates` is empty for the bare conversion from
-        // `FindRelease::Ambiguous`, or a leading-newline-indented list
-        // (see `format_candidate_list`) when produced by a CLI helper
-        // that has the picker context available.
         #[error("multiple non-delegate releases found for the commit {oid}, pass --release <id>{candidates}")]
         Ambiguous { oid: Oid, candidates: String },
         #[error("failed to find a release for the commit {oid}")]
