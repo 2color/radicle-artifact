@@ -1,1 +1,1 @@
-{"base":"63151780dc79375fc066628f4b47089c10f7dd5f","description":"Allow users to attach arbitrary JSON key-value pairs to artifacts,\nscoped per DID.\nKeys follow reverse-DNS convention (e.g. xyz.example.build-env).\nThe CLI validates that the target CID exists before issuing metadata\nactions, providing clear error messages.","oid":"0a9230b71edc5a796003f7454c89d289a302b73e","type":"revision"}
+{"state":{"status":"archived"},"type":"lifecycle"}
