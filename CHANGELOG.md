@@ -31,7 +31,6 @@ $ rad-artifact metadata set --json reproducible true
 
 Without `--revision`/`--release` and `--cid`, the command will drop into an interactive release artifact picker.
 
-
 Remove an entry with `rad-artifact metadata unset <key>`.
 
 In `--json` output from `list`/`show`, metadata renders as a flat object (`"metadata": {"size_bytes": 1048576, ...}`).
@@ -43,9 +42,18 @@ In `--json` output from `list`/`show`, metadata renders as a flat object (`"meta
 * `30e971d` store metadata values as JSON *<daniel@norman.life>*
 * `91d6a91` **cli:** add --json flag to metadata set *<daniel@norman.life>*
 
+### Changed
+
+* `cbfed1b` **cli:** tighten duplicate-release UX helpers *<daniel@norman.life>*
+
 ### Fixed
 
 * `00b90d8` **display:** emit metadata as flat JSON object *<daniel@norman.life>*
+* `99a148f` **cli:** improve duplicate-release UX *<daniel@norman.life>*
+
+### Other
+
+* `d858587` update CHANGELOG *<daniel@norman.life>*
 
 ## [0.12.1] - 2026-05-04
 
