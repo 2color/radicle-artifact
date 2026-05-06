@@ -404,9 +404,7 @@ where
         (None, None, None) => {
             let (oid, cid) =
                 prompt::pick_interactive(no_input, releases, repo).map_err(error::Locate::Usage)?;
-            let id = releases
-                .find_unique_by_commit(oid, &delegates)
-                .map_err(error::Find::from)?;
+            let id = resolve_release_after_pick(oid, &cid, releases, repo, profile, &delegates)?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -452,9 +450,7 @@ where
         (None, None, None) => {
             let (oid, cid) =
                 prompt::pick_interactive(no_input, releases, repo).map_err(error::Attest::Usage)?;
-            let id = releases
-                .find_unique_by_commit(oid, &delegates)
-                .map_err(error::Find::from)?;
+            let id = resolve_release_after_pick(oid, &cid, releases, repo, aliases, &delegates)?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -498,9 +494,7 @@ where
         (None, None, None) => {
             let (oid, cid) =
                 prompt::pick_interactive(no_input, releases, repo).map_err(error::Redact::Usage)?;
-            let id = releases
-                .find_unique_by_commit(oid, &delegates)
-                .map_err(error::Find::from)?;
+            let id = resolve_release_after_pick(oid, &cid, releases, repo, aliases, &delegates)?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -543,9 +537,7 @@ fn resolve_metadata_target(
         (None, None, None) => {
             let (oid, cid) = prompt::pick_interactive(no_input, releases, repo)
                 .map_err(error::Metadata::Usage)?;
-            let id = releases
-                .find_unique_by_commit(oid, delegates)
-                .map_err(error::Find::from)?;
+            let id = resolve_release_after_pick(oid, &cid, releases, repo, profile, delegates)?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -692,9 +684,7 @@ where
         (None, None, None) => {
             let (oid, cid) = prompt::pick_interactive(no_input, releases, repo)
                 .map_err(error::RemoveLocation::Usage)?;
-            let id = releases
-                .find_unique_by_commit(oid, &delegates)
-                .map_err(error::Find::from)?;
+            let id = resolve_release_after_pick(oid, &cid, releases, repo, profile, &delegates)?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -1229,7 +1219,7 @@ mod prompt {
         }
     }
 
-    fn format_candidate(
+    pub(super) fn format_candidate(
         id: &ReleaseId,
         release: &Release,
         repo: &Repository,
@@ -1603,9 +1593,6 @@ struct ResolvedRef {
     tag: Option<Oid>,
 }
 
-/// Resolve a git reference (full OID, short OID, or tag name) to a
-/// commit OID, peeling annotated tags and reporting the tag's own OID
-/// when applicable.
 /// Resolve either `--release <id>` or a `<revision>` arg to a single
 /// [`ReleaseId`]. Clap enforces that exactly one is provided.
 ///
@@ -1613,7 +1600,7 @@ struct ResolvedRef {
 /// goes through [`Releases::find_unique_by_commit`] (delegate
 /// priority); on ambiguity, the user is prompted to pick from the
 /// candidates if interactive, or — when `no_input` or stdin isn't a
-/// TTY — gets the existing `--release <id>` hint as an error.
+/// TTY — gets a rich error listing the candidate releases.
 fn resolve_target_release(
     release: Option<&str>,
     revision: Option<&str>,
@@ -1640,20 +1627,90 @@ fn resolve_target_release(
             let oid = resolve_ref(rev, repo)?.commit;
             match releases.find_unique_by_commit(oid, delegates) {
                 Ok(id) => Ok(id),
-                Err(radicle_artifact::error::FindRelease::Ambiguous(_)) if !no_input => {
-                    let candidates: Vec<_> = releases
-                        .find_by_commit(oid)
-                        .map_err(|err| error::Find::Lookup { oid, err })?
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|err| error::Find::Lookup { oid, err })?;
-                    prompt::pick_existing_release(&candidates, repo, aliases)
-                        .map_err(error::ResolveTarget::Picker)
+                Err(radicle_artifact::error::FindRelease::Ambiguous(oid)) => {
+                    let candidates = collect_candidates(releases, oid)?;
+                    if no_input {
+                        Err(error::Find::Ambiguous {
+                            oid,
+                            candidates: format_candidate_list(&candidates, repo, aliases),
+                        }
+                        .into())
+                    } else {
+                        prompt::pick_existing_release(&candidates, repo, aliases)
+                            .map_err(error::ResolveTarget::Picker)
+                    }
                 }
                 Err(e) => Err(error::Find::from(e).into()),
             }
         }
         (None, None) => unreachable!("clap requires one of --release or <revision>"),
     }
+}
+
+/// Resolve `(oid, cid)` from `prompt::pick_interactive` to a single
+/// [`ReleaseId`]. The picker merges artifacts across release COBs that
+/// share `oid`; on ambiguity we filter to the candidates that actually
+/// contain the picked CID and either succeed (one candidate) or
+/// re-prompt at the release level. `pick_interactive` already requires
+/// a TTY, so this helper assumes interactive mode.
+fn resolve_release_after_pick(
+    oid: Oid,
+    cid: &Cid,
+    releases: &Releases<Repository>,
+    repo: &Repository,
+    aliases: &impl AliasStore,
+    delegates: &BTreeSet<Did>,
+) -> Result<ReleaseId, error::Find> {
+    use radicle_artifact::error::FindRelease;
+    match releases.find_unique_by_commit(oid, delegates) {
+        Ok(id) => Ok(id),
+        Err(FindRelease::Ambiguous(oid)) => {
+            let with_cid: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
+                .into_iter()
+                .filter(|(_, r)| r.artifact(cid).is_some())
+                .collect();
+            match with_cid.len() {
+                0 => Err(error::Find::NoRelease(oid)),
+                1 => Ok(with_cid[0].0),
+                _ => prompt::pick_existing_release(&with_cid, repo, aliases)
+                    .map_err(error::Find::Picker),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Fetch all releases keyed by `oid`. Used by the ambiguous-resolution
+/// paths to populate either an interactive picker or a rich error.
+fn collect_candidates(
+    releases: &Releases<Repository>,
+    oid: Oid,
+) -> Result<Vec<(ReleaseId, Release)>, error::Find> {
+    releases
+        .find_by_commit(oid)
+        .map_err(|err| error::Find::Lookup { oid, err })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| error::Find::Lookup { oid, err })
+}
+
+/// Format candidate releases as a leading-newline-indented list,
+/// suitable for embedding in an error message after "pass --release
+/// <id>". Empty input yields an empty string so the caller's message
+/// remains clean. Rows reuse the interactive picker's formatting.
+fn format_candidate_list(
+    candidates: &[(ReleaseId, Release)],
+    repo: &Repository,
+    aliases: &impl AliasStore,
+) -> String {
+    if candidates.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(":");
+    for (id, release) in candidates {
+        out.push_str("\n  ");
+        out.push_str(&prompt::format_candidate(id, release, repo, aliases));
+    }
+    out
 }
 
 /// Resolve a (possibly abbreviated) release-id string to a full
@@ -2418,8 +2475,12 @@ mod error {
     pub enum Find {
         #[error("no release was found for the commit {0}")]
         NoRelease(Oid),
-        #[error("multiple non-delegate releases found for the commit {0} pass --release <id>")]
-        Ambiguous(Oid),
+        // `candidates` is empty for the bare conversion from
+        // `FindRelease::Ambiguous`, or a leading-newline-indented list
+        // (see `format_candidate_list`) when produced by a CLI helper
+        // that has the picker context available.
+        #[error("multiple non-delegate releases found for the commit {oid}, pass --release <id>{candidates}")]
+        Ambiguous { oid: Oid, candidates: String },
         #[error("failed to find a release for the commit {oid}")]
         Lookup {
             oid: Oid,
@@ -2434,6 +2495,8 @@ mod error {
             #[source]
             err: cob::store::Error,
         },
+        #[error("{0}")]
+        Picker(String),
     }
 
     /// Combined error for the `--release | <revision>` resolution path,
@@ -2452,7 +2515,10 @@ mod error {
         fn from(e: radicle_artifact::error::FindRelease) -> Self {
             match e {
                 radicle_artifact::error::FindRelease::NoRelease(oid) => Self::NoRelease(oid),
-                radicle_artifact::error::FindRelease::Ambiguous(oid) => Self::Ambiguous(oid),
+                radicle_artifact::error::FindRelease::Ambiguous(oid) => Self::Ambiguous {
+                    oid,
+                    candidates: String::new(),
+                },
                 radicle_artifact::error::FindRelease::Store { oid, err } => {
                     Self::Lookup { oid, err }
                 }
