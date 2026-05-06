@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### ⭐️ Highlights
+
+#### Metadata for artifacts
+
+Artifacts can now carry arbitrary key/value metadata, useful for recording the build environment, reproducibility flags, or anything else downstream tooling cares about. Only the artifact's author or a current repository delegate can write. The metadata keyspace is shared and last-writer-wins.
+
+Set a string value:
+
+```sh
+$ rad-artifact metadata set build-env "nix --pure"
+```
+
+Pass `--json` to parse the value as JSON instead of storing it as a string:
+
+```sh
+$ rad-artifact metadata set --json size_bytes 1048576
+```
+
+```sh
+$ rad-artifact metadata set --json reproducible true
+```
+
+Without `--revision`/`--release` and `--cid`, the command will drop into an interactive release artifact picker.
+
+
+Remove an entry with `rad-artifact metadata unset <key>`.
+
+In `--json` output from `list`/`show`, metadata renders as a flat object (`"metadata": {"size_bytes": 1048576, ...}`).
+
+### Added
+
+* `14d78b1` **release:** validate tag OID on create *<daniel@norman.life>*
+* `ee55697` add free-form metadata to artifacts *<daniel@norman.life>*
+* `30e971d` store metadata values as JSON *<daniel@norman.life>*
+* `91d6a91` **cli:** add --json flag to metadata set *<daniel@norman.life>*
+
+### Fixed
+
+* `00b90d8` **display:** emit metadata as flat JSON object *<daniel@norman.life>*
+
 ## [0.12.1] - 2026-05-04
 
 Small patch release which fixes a bug with the serve command.
