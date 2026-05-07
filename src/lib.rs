@@ -134,9 +134,9 @@ impl From<ObjectId> for ReleaseId {
 ///
 /// May record an annotated tag OID alongside the commit (the COB itself
 /// is always commit-keyed; the tag is metadata). The creator's DID is
-/// preserved so [`Releases::find_unique_by_commit`] can prefer
-/// delegate-authored releases when duplicates exist. Per-artifact
-/// attribution lives on [`Artifact::author`].
+/// preserved so callers can apply visibility and trust policies (e.g.
+/// preferring delegate-authored releases when duplicates exist).
+/// Per-artifact attribution lives on [`Artifact::author`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
     oid: Oid,
@@ -389,8 +389,9 @@ impl Release {
         self.tag.as_ref()
     }
 
-    /// [`Did`] of the user who created this release COB. Used by
-    /// [`Releases::find_unique_by_commit`] for delegate priority.
+    /// [`Did`] of the user who created this release COB. Callers use
+    /// this to apply trust policies (e.g. preferring delegate-authored
+    /// releases when multiple exist for the same commit).
     pub fn creator(&self) -> &Did {
         &self.creator
     }
@@ -596,55 +597,6 @@ where
         FindByCommit::new(self, wanted)
     }
 
-    /// Find the canonical release for a given commit OID.
-    ///
-    /// When duplicate release COBs exist for the same commit, releases
-    /// authored by a repository delegate are preferred (smallest
-    /// [`ReleaseId`] wins among them). If no delegate-authored release
-    /// exists, the call returns `Ambiguous` only when there are multiple
-    /// non-delegate releases — a single non-delegate release is still
-    /// returned unambiguously.
-    ///
-    /// Errors:
-    /// - [`error::FindRelease::NoRelease`] when no release exists.
-    /// - [`error::FindRelease::Ambiguous`] when multiple non-delegate
-    ///   releases exist and no delegate-authored release is present.
-    pub fn find_unique_by_commit(
-        &self,
-        oid: Oid,
-        delegates: &BTreeSet<Did>,
-    ) -> Result<ReleaseId, error::FindRelease> {
-        let mut delegate_canonical: Option<ReleaseId> = None;
-        let mut non_delegate_count = 0usize;
-        let mut non_delegate_first: Option<ReleaseId> = None;
-        for result in self
-            .find_by_commit(oid)
-            .map_err(|err| error::FindRelease::Store { oid, err })?
-        {
-            let (id, release) = result.map_err(|err| error::FindRelease::Store { oid, err })?;
-            if delegates.contains(release.creator()) {
-                match delegate_canonical {
-                    Some(current) if current <= id => {}
-                    _ => delegate_canonical = Some(id),
-                }
-            } else {
-                non_delegate_count += 1;
-                if non_delegate_first.is_none() {
-                    non_delegate_first = Some(id);
-                }
-            }
-        }
-
-        if let Some(id) = delegate_canonical {
-            return Ok(id);
-        }
-        match non_delegate_count {
-            0 => Err(error::FindRelease::NoRelease(oid)),
-            1 => Ok(non_delegate_first.expect("count == 1")),
-            _ => Err(error::FindRelease::Ambiguous(oid)),
-        }
-    }
-
     /// Return every release containing an artifact with the given CID.
     ///
     /// The same CID may appear in multiple releases — either across different
@@ -738,8 +690,8 @@ where
     /// committer of the wrapping COB op, not the "owner" of the release.
     ///
     /// Callers that want to add to an existing release for the same
-    /// commit should call [`Releases::find_unique_by_commit`] first and
-    /// fall back to `create` only when no release exists.
+    /// commit should look it up via [`Releases::find_by_commit`] first
+    /// and fall back to `create` only when no release exists.
     pub fn create<'g, G>(
         &'g mut self,
         oid: Oid,
@@ -1101,13 +1053,6 @@ mod test {
         repo.tag(name, &object, &tagger, message, false)
             .unwrap()
             .into()
-    }
-
-    /// Collect the delegate set for a Radicle storage repository for use
-    /// with `find_unique_by_commit`.
-    fn delegates(repo: &radicle::storage::git::Repository) -> std::collections::BTreeSet<Did> {
-        use radicle::prelude::ReadRepository;
-        repo.delegates().unwrap().into_iter().collect()
     }
 
     #[test]
@@ -2152,63 +2097,6 @@ mod test {
         let releases = Releases::open(&*repo).unwrap();
         let release = releases.get(&id).unwrap().unwrap();
         assert_eq!(release.creator(), &alice_did);
-    }
-
-    #[test]
-    fn find_unique_prefers_delegate_release() {
-        // Same fixture as find_or_create_prefers_delegate_release but
-        // exercising the read path.
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Test Commit");
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let alice_id = *releases.create(oid, None, &alice.signer).unwrap().id();
-        let _bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
-
-        let picked = releases.find_unique_by_commit(oid, &delegates).unwrap();
-        assert_eq!(picked, alice_id);
-    }
-
-    #[test]
-    fn find_unique_returns_single_non_delegate() {
-        // A single non-delegate release with no delegate counterpart
-        // is unambiguous and must be returned without error.
-        let test::setup::NodeWithRepo {
-            node: _alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Test Commit");
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let bob_id = *releases.create(oid, None, &bob.signer).unwrap().id();
-        let picked = releases.find_unique_by_commit(oid, &delegates).unwrap();
-        assert_eq!(picked, bob_id);
-    }
-
-    #[test]
-    fn find_unique_ambiguous_only_among_non_delegates() {
-        // Two non-delegate releases and no delegate counterpart: the
-        // result must be Ambiguous (we have no rule to pick between
-        // peers neither of whom is privileged).
-        let test::setup::NodeWithRepo {
-            node: _alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: carol, .. } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Test Commit");
-        let delegates = delegates(&repo);
-        let mut releases = Releases::open(&*repo).unwrap();
-
-        let _bob_id = releases.create(oid, None, &bob.signer).unwrap().id();
-        let _carol_id = releases.create(oid, None, &carol.signer).unwrap().id();
-
-        let err = releases.find_unique_by_commit(oid, &delegates).unwrap_err();
-        assert!(matches!(err, crate::error::FindRelease::Ambiguous(_)));
     }
 
     #[test]

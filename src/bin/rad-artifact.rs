@@ -114,6 +114,17 @@ fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> 
         .collect())
 }
 
+/// Visibility rule for a release: by default show delegate-authored or
+/// local-authored releases. `--all-authors` opens it up to everyone.
+fn release_visible(
+    release: &radicle_artifact::Release,
+    delegates: &BTreeSet<Did>,
+    local: &Did,
+    all_authors: bool,
+) -> bool {
+    all_authors || delegates.contains(release.creator()) || release.creator() == local
+}
+
 fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
     let mut node = Node::new(profile.home.socket());
 
@@ -237,16 +248,20 @@ fn add_artifact<G>(
         revision,
         release,
         name,
+        all_authors,
     }: command::Add,
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    aliases: &impl AliasStore,
+    profile: &Profile,
     signer: &Device<G>,
 ) -> Result<(), error::Add>
 where
     G: Signer<crypto::Signature>,
 {
+    let delegates = repo_delegates(repo)?;
+    let local = Did::from(*profile.id());
+    let aliases = profile;
     // ArgGroup guarantees exactly one of path/cid, but surface a usage
     // error rather than panic if clap ever changes its mind.
     let cid = match (path.as_deref(), cid) {
@@ -292,7 +307,10 @@ where
                 None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::Add::Usage)?,
             };
             let oid = resolved.commit;
-            let candidates = collect_candidates(releases, oid)?;
+            let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
+                .into_iter()
+                .filter(|(_, r)| release_visible(r, &delegates, &local, all_authors))
+                .collect();
 
             // Disambiguate when multiple releases exist OR when a single
             // existing release would silently inherit the wrong tag (e.g.
@@ -371,6 +389,7 @@ fn location_add<G>(
         release,
         cid,
         url,
+        all_authors,
     }: command::LocationAdd,
     no_input: bool,
     releases: &mut Releases<Repository>,
@@ -382,6 +401,7 @@ where
     G: Signer<crypto::Signature>,
 {
     let delegates = repo_delegates(repo)?;
+    let local = Did::from(*profile.id());
     let release_arg = release.as_deref();
     let revision_arg = revision.as_deref();
     let (id, cid) = match (release_arg, revision_arg, cid) {
@@ -392,6 +412,8 @@ where
                 releases,
                 repo,
                 &delegates,
+                &local,
+                all_authors,
                 no_input,
                 profile,
             )?;
@@ -400,7 +422,16 @@ where
         (None, None, None) => {
             let (oid, cid) =
                 prompt::pick_interactive(no_input, releases, repo).map_err(error::Locate::Usage)?;
-            let id = resolve_release_after_pick(oid, &cid, releases, repo, profile, &delegates)?;
+            let id = resolve_release_after_pick(
+                oid,
+                &cid,
+                releases,
+                repo,
+                profile,
+                &delegates,
+                &local,
+                all_authors,
+            )?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -423,30 +454,49 @@ fn attest_artifact<G>(
         revision,
         release,
         cid,
+        all_authors,
     }: command::Attest,
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    aliases: &impl AliasStore,
+    profile: &Profile,
     signer: &Device<G>,
 ) -> Result<(), error::Attest>
 where
     G: Signer<crypto::Signature>,
 {
     let delegates = repo_delegates(repo)?;
+    let local = Did::from(*profile.id());
     let release = release.as_deref();
     let revision = revision.as_deref();
     let (id, cid) = match (release, revision, cid) {
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
             let id = resolve_target_release(
-                release, revision, releases, repo, &delegates, no_input, aliases,
+                release,
+                revision,
+                releases,
+                repo,
+                &delegates,
+                &local,
+                all_authors,
+                no_input,
+                profile,
             )?;
             (id, cid)
         }
         (None, None, None) => {
             let (oid, cid) =
                 prompt::pick_interactive(no_input, releases, repo).map_err(error::Attest::Usage)?;
-            let id = resolve_release_after_pick(oid, &cid, releases, repo, aliases, &delegates)?;
+            let id = resolve_release_after_pick(
+                oid,
+                &cid,
+                releases,
+                repo,
+                profile,
+                &delegates,
+                &local,
+                all_authors,
+            )?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -467,30 +517,49 @@ fn redact_artifact<G>(
         release,
         cid,
         reason,
+        all_authors,
     }: command::Redact,
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
-    aliases: &impl AliasStore,
+    profile: &Profile,
     signer: &Device<G>,
 ) -> Result<(), error::Redact>
 where
     G: Signer<crypto::Signature>,
 {
     let delegates = repo_delegates(repo)?;
+    let local = Did::from(*profile.id());
     let release = release.as_deref();
     let revision = revision.as_deref();
     let (id, cid) = match (release, revision, cid) {
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
             let id = resolve_target_release(
-                release, revision, releases, repo, &delegates, no_input, aliases,
+                release,
+                revision,
+                releases,
+                repo,
+                &delegates,
+                &local,
+                all_authors,
+                no_input,
+                profile,
             )?;
             (id, cid)
         }
         (None, None, None) => {
             let (oid, cid) =
                 prompt::pick_interactive(no_input, releases, repo).map_err(error::Redact::Usage)?;
-            let id = resolve_release_after_pick(oid, &cid, releases, repo, aliases, &delegates)?;
+            let id = resolve_release_after_pick(
+                oid,
+                &cid,
+                releases,
+                repo,
+                profile,
+                &delegates,
+                &local,
+                all_authors,
+            )?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -517,23 +586,42 @@ fn resolve_metadata_target(
     release: Option<&str>,
     revision: Option<&str>,
     cid: Option<Cid>,
+    all_authors: bool,
     no_input: bool,
     releases: &Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
     delegates: &BTreeSet<Did>,
 ) -> Result<(ReleaseId, Cid), error::Metadata> {
+    let local = Did::from(*profile.id());
     let (id, cid) = match (release, revision, cid) {
         (Some(_), _, Some(cid)) | (_, Some(_), Some(cid)) => {
             let id = resolve_target_release(
-                release, revision, releases, repo, delegates, no_input, profile,
+                release,
+                revision,
+                releases,
+                repo,
+                delegates,
+                &local,
+                all_authors,
+                no_input,
+                profile,
             )?;
             (id, cid)
         }
         (None, None, None) => {
             let (oid, cid) = prompt::pick_interactive(no_input, releases, repo)
                 .map_err(error::Metadata::Usage)?;
-            let id = resolve_release_after_pick(oid, &cid, releases, repo, profile, delegates)?;
+            let id = resolve_release_after_pick(
+                oid,
+                &cid,
+                releases,
+                repo,
+                profile,
+                delegates,
+                &local,
+                all_authors,
+            )?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -550,7 +638,6 @@ fn resolve_metadata_target(
         .ok_or(error::Metadata::UnknownCid { id, cid })?
         .author();
 
-    let local = Did::from(*profile.id());
     let authorized = local == artifact_author || delegates.contains(&local);
     if !authorized {
         return Err(error::Metadata::NotAuthorized {
@@ -570,6 +657,7 @@ fn metadata_set<G>(
         json,
         key,
         value,
+        all_authors,
     }: command::MetadataSet,
     no_input: bool,
     releases: &mut Releases<Repository>,
@@ -585,6 +673,7 @@ where
         release.as_deref(),
         revision.as_deref(),
         cid,
+        all_authors,
         no_input,
         releases,
         repo,
@@ -614,6 +703,7 @@ fn metadata_unset<G>(
         release,
         cid,
         key,
+        all_authors,
     }: command::MetadataUnset,
     no_input: bool,
     releases: &mut Releases<Repository>,
@@ -629,6 +719,7 @@ where
         release.as_deref(),
         revision.as_deref(),
         cid,
+        all_authors,
         no_input,
         releases,
         repo,
@@ -651,6 +742,7 @@ fn location_remove<G>(
         release,
         cid,
         url,
+        all_authors,
     }: command::LocationRemove,
     no_input: bool,
     releases: &mut Releases<Repository>,
@@ -662,6 +754,7 @@ where
     G: Signer<crypto::Signature>,
 {
     let delegates = repo_delegates(repo)?;
+    let local = Did::from(*profile.id());
     let release_arg = release.as_deref();
     let revision_arg = revision.as_deref();
     let (id, cid) = match (release_arg, revision_arg, cid) {
@@ -672,6 +765,8 @@ where
                 releases,
                 repo,
                 &delegates,
+                &local,
+                all_authors,
                 no_input,
                 profile,
             )?;
@@ -680,7 +775,16 @@ where
         (None, None, None) => {
             let (oid, cid) = prompt::pick_interactive(no_input, releases, repo)
                 .map_err(error::RemoveLocation::Usage)?;
-            let id = resolve_release_after_pick(oid, &cid, releases, repo, profile, &delegates)?;
+            let id = resolve_release_after_pick(
+                oid,
+                &cid,
+                releases,
+                repo,
+                profile,
+                &delegates,
+                &local,
+                all_authors,
+            )?;
             (id, cid)
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
@@ -782,7 +886,10 @@ fn show_release(
             }
             (None, Some(rev)) => {
                 let oid = resolve_ref(rev, repo)?.commit;
-                let hits = collect_candidates(releases, oid)?;
+                let hits: Vec<_> = collect_candidates(releases, oid)?
+                    .into_iter()
+                    .filter(|(_, r)| release_visible(r, delegates, local, all_authors))
+                    .collect();
                 if hits.is_empty() {
                     return Err(error::Find::NoRelease(oid).into());
                 }
@@ -841,7 +948,8 @@ fn list_releases(
                 }
                 None
             }
-        });
+        })
+        .filter(|(_, release)| release_visible(release, &delegates, local, all_authors));
     let filters = display::Filters {
         delegates: &delegates,
         redacted,
@@ -1604,17 +1712,21 @@ struct ResolvedRef {
 /// Resolve either `--release <id>` or a `<revision>` arg to a single
 /// [`ReleaseId`]. Clap enforces that exactly one is provided.
 ///
-/// The `--release` path verifies the id exists. The revision path
-/// goes through [`Releases::find_unique_by_commit`] (delegate
-/// priority); on ambiguity, the user is prompted to pick from the
-/// candidates if interactive, or — when `no_input` or stdin isn't a
-/// TTY — gets a rich error listing the candidate releases.
+/// `--release <id>` always returns the named release if it exists,
+/// regardless of who created it. `<revision>` narrows candidates to
+/// releases authored by a delegate or by the local user; pass
+/// `all_authors = true` to open the set up to everyone. After
+/// filtering: zero candidates → `NoRelease`, one → auto-picked,
+/// multiple → prompt (interactive) or `Ambiguous` error.
+#[allow(clippy::too_many_arguments)]
 fn resolve_target_release(
     release: Option<&str>,
     revision: Option<&str>,
     releases: &Releases<Repository>,
     repo: &Repository,
     delegates: &BTreeSet<Did>,
+    local: &Did,
+    all_authors: bool,
     no_input: bool,
     aliases: &impl AliasStore,
 ) -> Result<ReleaseId, error::ResolveTarget> {
@@ -1633,10 +1745,14 @@ fn resolve_target_release(
         }
         (None, Some(rev)) => {
             let oid = resolve_ref(rev, repo)?.commit;
-            match releases.find_unique_by_commit(oid, delegates) {
-                Ok(id) => Ok(id),
-                Err(radicle_artifact::error::FindRelease::Ambiguous(oid)) => {
-                    let candidates = collect_candidates(releases, oid)?;
+            let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
+                .into_iter()
+                .filter(|(_, r)| release_visible(r, delegates, local, all_authors))
+                .collect();
+            match candidates.as_slice() {
+                [] => Err(error::Find::NoRelease(oid).into()),
+                [(id, _)] => Ok(*id),
+                _ => {
                     if no_input {
                         Err(error::Find::Ambiguous {
                             oid,
@@ -1648,7 +1764,6 @@ fn resolve_target_release(
                             .map_err(error::ResolveTarget::Picker)
                     }
                 }
-                Err(e) => Err(error::Find::from(e).into()),
             }
         }
         (None, None) => unreachable!("clap requires one of --release or <revision>"),
@@ -1657,10 +1772,12 @@ fn resolve_target_release(
 
 /// Resolve `(oid, cid)` from `prompt::pick_interactive` to a single
 /// [`ReleaseId`]. The picker merges artifacts across release COBs that
-/// share `oid`; on ambiguity we filter to the candidates that actually
-/// contain the picked CID and either succeed (one candidate) or
-/// re-prompt at the release level. `pick_interactive` already requires
-/// a TTY, so this helper assumes interactive mode.
+/// share `oid`; here we narrow to releases that pass the visibility
+/// rule and contain the picked CID, then auto-pick if exactly one
+/// remains, otherwise re-prompt at the release level.
+/// `pick_interactive` already requires a TTY, so this helper assumes
+/// interactive mode.
+#[allow(clippy::too_many_arguments)]
 fn resolve_release_after_pick(
     oid: Oid,
     cid: &Cid,
@@ -1668,23 +1785,18 @@ fn resolve_release_after_pick(
     repo: &Repository,
     aliases: &impl AliasStore,
     delegates: &BTreeSet<Did>,
+    local: &Did,
+    all_authors: bool,
 ) -> Result<ReleaseId, error::Find> {
-    use radicle_artifact::error::FindRelease;
-    match releases.find_unique_by_commit(oid, delegates) {
-        Ok(id) => Ok(id),
-        Err(FindRelease::Ambiguous(oid)) => {
-            let with_cid: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
-                .into_iter()
-                .filter(|(_, r)| r.artifact(cid).is_some())
-                .collect();
-            match with_cid.as_slice() {
-                [] => Err(error::Find::NoRelease(oid)),
-                [(id, _)] => Ok(*id),
-                _ => prompt::pick_existing_release(&with_cid, repo, aliases)
-                    .map_err(error::Find::Picker),
-            }
-        }
-        Err(e) => Err(e.into()),
+    let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
+        .into_iter()
+        .filter(|(_, r)| release_visible(r, delegates, local, all_authors))
+        .filter(|(_, r)| r.artifact(cid).is_some())
+        .collect();
+    match candidates.as_slice() {
+        [] => Err(error::Find::NoRelease(oid)),
+        [(id, _)] => Ok(*id),
+        _ => prompt::pick_existing_release(&candidates, repo, aliases).map_err(error::Find::Picker),
     }
 }
 
@@ -1958,6 +2070,12 @@ Examples:
         /// when omitted (with the path basename as the default).
         #[clap(short, long)]
         pub name: Option<String>,
+        /// Also consider releases authored by users who are not
+        /// repository delegates (and not the local user) when matching
+        /// a `<revision>`. By default only delegate-authored or
+        /// local-authored releases are eligible to attach to.
+        #[clap(long)]
+        pub all_authors: bool,
     }
 
     /// Add a download location URL for an artifact CID
@@ -1998,6 +2116,11 @@ Examples:
         pub cid: Option<Cid>,
         /// URL where the artifact can be retrieved.
         pub url: Url,
+        /// Also consider releases authored by users who are not
+        /// repository delegates (and not the local user) when matching
+        /// a `<revision>`.
+        #[clap(long)]
+        pub all_authors: bool,
     }
 
     /// Attest that you verified an artifact CID
@@ -2029,6 +2152,11 @@ Examples:
         /// a target (<revision> or --release).
         #[clap(long, requires = "target")]
         pub cid: Option<Cid>,
+        /// Also consider releases authored by users who are not
+        /// repository delegates (and not the local user) when matching
+        /// a `<revision>`.
+        #[clap(long)]
+        pub all_authors: bool,
     }
 
     /// Redact an artifact CID, indicating it should not be used.
@@ -2068,6 +2196,11 @@ Examples:
         /// Reason for the redaction.
         #[clap(short = 'm', long = "reason")]
         pub reason: Option<String>,
+        /// Also consider releases authored by users who are not
+        /// repository delegates (and not the local user) when matching
+        /// a `<revision>`.
+        #[clap(long)]
+        pub all_authors: bool,
     }
 
     /// Set or overwrite a metadata entry on an artifact.
@@ -2113,6 +2246,11 @@ Examples:
         pub key: String,
         /// Value to store. Treated as a string unless --json is set.
         pub value: String,
+        /// Also consider releases authored by users who are not
+        /// repository delegates (and not the local user) when matching
+        /// a `<revision>`.
+        #[clap(long)]
+        pub all_authors: bool,
     }
 
     /// Remove a metadata entry from an artifact.
@@ -2146,6 +2284,11 @@ Examples:
         pub cid: Option<Cid>,
         /// Metadata key to remove.
         pub key: String,
+        /// Also consider releases authored by users who are not
+        /// repository delegates (and not the local user) when matching
+        /// a `<revision>`.
+        #[clap(long)]
+        pub all_authors: bool,
     }
 
     /// Remove a download location for an artifact.
@@ -2183,14 +2326,20 @@ Examples:
         /// URL to remove. Picked interactively from your registered
         /// locations when omitted.
         pub url: Option<Url>,
+        /// Also consider releases authored by users who are not
+        /// repository delegates (and not the local user) when matching
+        /// a `<revision>`.
+        #[clap(long)]
+        pub all_authors: bool,
     }
 
     /// Show the release COB for a Git commit or annotated tag.
     ///
-    /// By default only artifacts authored by a repository delegate are
-    /// shown. Pass `--all-authors` to include artifacts added by other users.
-    /// Pass `--release <id>` to target a specific release directly when
-    /// multiple exist for the same commit.
+    /// By default only releases (and artifacts within them) authored by
+    /// a repository delegate or by the local user are shown. Pass
+    /// `--all-authors` to include releases and artifacts from other
+    /// users. Pass `--release <id>` to target a specific release
+    /// directly when multiple exist for the same commit.
     #[derive(Parser)]
     #[clap(
         group = clap::ArgGroup::new("target").required(true).args(["revision", "release"]),
@@ -2240,8 +2389,9 @@ Examples:
 
     /// List all release COBs for a repository.
     ///
-    /// By default only artifacts authored by a repository delegate are
-    /// shown. Pass `--all-authors` to include artifacts added by other users.
+    /// By default only releases (and artifacts within them) authored by
+    /// a repository delegate or by the local user are shown. Pass
+    /// `--all-authors` to include releases and artifacts from other users.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
@@ -2463,7 +2613,7 @@ mod error {
     pub enum Find {
         #[error("no release was found for the commit {0}")]
         NoRelease(Oid),
-        #[error("multiple non-delegate releases found for the commit {oid}, pass --release <id>{candidates}")]
+        #[error("multiple releases found for the commit {oid}, pass --release <id>{candidates}")]
         Ambiguous { oid: Oid, candidates: String },
         #[error("failed to find a release for the commit {oid}")]
         Lookup {
@@ -2493,21 +2643,6 @@ mod error {
         Find(#[from] Find),
         #[error("{0}")]
         Picker(String),
-    }
-
-    impl From<radicle_artifact::error::FindRelease> for Find {
-        fn from(e: radicle_artifact::error::FindRelease) -> Self {
-            match e {
-                radicle_artifact::error::FindRelease::NoRelease(oid) => Self::NoRelease(oid),
-                radicle_artifact::error::FindRelease::Ambiguous(oid) => Self::Ambiguous {
-                    oid,
-                    candidates: String::new(),
-                },
-                radicle_artifact::error::FindRelease::Store { oid, err } => {
-                    Self::Lookup { oid, err }
-                }
-            }
-        }
     }
 
     #[derive(Debug, Error)]

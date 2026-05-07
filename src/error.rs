@@ -5,28 +5,6 @@ use thiserror::Error;
 
 use crate::Cid;
 
-/// Errors that can occur when looking up a [`Release`][release] by commit OID.
-///
-/// [release]: super::Release
-#[derive(Debug, Error)]
-pub enum FindRelease {
-    /// No release was found for the given commit.
-    #[error("no release found for commit {0}")]
-    NoRelease(git::Oid),
-    /// Multiple releases were found for the given commit.
-    #[error("multiple releases found for commit {0}")]
-    Ambiguous(git::Oid),
-    /// An error occurred in the underlying COB store.
-    #[error("failed to look up release for commit {oid}")]
-    Store {
-        /// The commit OID being looked up.
-        oid: git::Oid,
-        /// The underlying store error.
-        #[source]
-        err: cob::store::Error,
-    },
-}
-
 /// Errors that can occur when redacting an artifact.
 #[derive(Debug, Error)]
 pub enum Redact {
