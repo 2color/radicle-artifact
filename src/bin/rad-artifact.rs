@@ -554,9 +554,9 @@ fn resolve_metadata_target(
     let authorized = local == artifact_author || delegates.contains(&local);
     if !authorized {
         return Err(error::Metadata::NotAuthorized {
-            local,
-            artifact_author,
-            cid,
+            local: Box::new(local),
+            artifact_author: Box::new(artifact_author),
+            cid: Box::new(cid),
         });
     }
     Ok((id, cid))
@@ -2424,9 +2424,9 @@ mod error {
         UnknownCid { id: ReleaseId, cid: Cid },
         #[error("not authorized to manage metadata on artifact {cid}: only the artifact author ({artifact_author}) or a repository delegate may. local DID is {local}")]
         NotAuthorized {
-            local: Did,
-            artifact_author: Did,
-            cid: Cid,
+            local: Box<Did>,
+            artifact_author: Box<Did>,
+            cid: Box<Cid>,
         },
         #[error("--json was set but value is not valid JSON: {err}")]
         InvalidJson {
