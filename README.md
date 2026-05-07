@@ -2,15 +2,15 @@
 
 Secure artifact distribution for [radicle](https://radicle.dev/).
 
-Git was never built to distribute large file and binaries. Existing solutions like Git LFS encode a URL in the repository tree, which breaks Git's content-addressed nature and leaves every artifact prone to link rot.
+Git was never built to distribute large files and binaries. Existing solutions like Git LFS encode a URL in the repository tree, which breaks Git's content-addressed nature and leaves every artifact prone to link rot.
 
 `radicle-artifact` makes artifact distribution:
 
-- **Verifiable and signed** — every artifact is hashed with [BLAKE3] and content addressed with a [CID] and bound to the exact commit it was built from. Every [action](#actions) (`AddArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
+- **Verifiable and signed** — every artifact is content-addressed via a [CID] (a [BLAKE3] hash) and bound to the exact commit it was built from. Every [action](#actions) (`AddArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
 - **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
-- **Transport-agnostic** — artifacts can have multiple _locations_ and shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The cli comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
+- **Transport-agnostic** — artifacts can have multiple _locations_ and be shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
 
-Trust is multi-party and follows from the repository **delegates**, the trusted maintainers that establish canonical branches and tags. Attestations allow delegates to independently rebuild and **attest** that their CIDs match, and can also **redact** artifacts if compromised or broken.
+Trust is multi-party and follows the repository's **delegates** — the maintainers who establish canonical branches and tags.
 
 radicle-artifact is useful for distributing any data related to code: binaries, static sites, model weights, and scientific datasets.
 
@@ -42,17 +42,19 @@ cargo install radicle-artifact
 
 ## How it works
 
-A **Release** is a radicle [COB] (Collaborative Object) identified by a Release ID and associated with a Git commit and optionally an annotated tag.
+> **Note:** this COB is still in early development and the API is subject to change. Feedback and contributions are very welcome!
+
+A **Release** is a radicle [COB] (Collaborative Object) identified by a Release ID associated with a Git commit and optionally an annotated tag.
 
 Releases contain one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help mirror artifacts by announcing location URLs for any artifact, enabling decentralized mirroring.
 
+![data-model-diagram](public/diagram.svg)
+
 Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
-The artifact author and repository delegates can attach free-form **metadata** entries to an artifact, e.g. a build-environment note or an SBOM URL. Keys are strings; values are arbitrary JSON. The keyspace is shared (last-writer-wins); per-entry attribution is not stored, but the COB entry log retains signatures for audit.
+The artifact author and repository delegates can attach free-form **metadata** entries to an artifact, e.g. a build-environment note or an SBOM URL. Keys are strings; values are arbitrary JSON. The keyspace is shared (last-writer-wins). Per-entry attribution is not stored on the entry itself, but every write is a signed COB op, so the writer's DID is recoverable from the log.
 
 Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key. This could change in the future — there are ongoing discussions to decouple DIDs from NodeIDs as part of a broader effort to support multiple devices and agents, but for now the two are practically equivalent.
-
-> **Note:** this cob is still in early development and the API is subject to change. Feedback and contributions are very welcome!
 
 This COB is **build-system agnostic**. It works with any toolchain or build process that produces addressable artifacts. Ideally your builds are deterministic (reproducible), which lets other delegates independently verify artifacts and record attestations. However, deterministic builds are not a requirement; you can use radicle-artifact purely for publishing and discovering release artifacts without attestation.
 
@@ -60,9 +62,10 @@ This COB is **build-system agnostic**. It works with any toolchain or build proc
 
 ```
 Release
-├── id: Oid                           # Release ID
-├── oid: Oid                          # git commit the release is linked to
+├── id: Oid                           # release ID
+├── oid: Oid                          # git commit ID the release is linked to
 ├── tag: Option<Oid>                  # optional annotated tag OID linked to the commit
+├── creator: Did                      # user that created the release
 └── artifacts: Map<CID, Artifact>
     └── Artifact
         ├── author: Did               # user that added this artifact
@@ -77,9 +80,15 @@ Release
 - **Locations** — plain URLs (`https://`, `ipfs://`, `magnet://`, [`rasl://`](https://dasl.ing/rasl.html), `iroh://`, etc.)
 - Each user can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
 
+## Collaboration and trust model
+
+All actions on a release are signed by the acting user's DID. Most actions: creating a release, adding an artifact, attesting, redacting, registering a location, are open to any user. The exceptions are renaming an artifact (constrained to the artifact's original author) and writing metadata (constrained to the artifact's author or a repository delegate).
+
+Trust is inherited from the repository's delegate set. By default, commands consider only releases and artifacts authored by a delegate or by the local user. Contributions from other users are hidden. Pass `--all-authors` to widen the view. Targeting a specific release with `--release <id>` always works regardless of who authored it.
+
 ## Artifact types
 
-radicle-artifact supports two kinds of artifacts types: blobs and collections, and are encoded as a [CID].
+radicle-artifact supports two artifact types: blobs and collections, both encoded as a [CID].
 
 | Kind       | CID [multicodec]          | Hash              | Contents                           | Transports       |
 | ---------- | ------------------------- | ----------------- | ---------------------------------- | ---------------- |
@@ -89,12 +98,6 @@ radicle-artifact supports two kinds of artifacts types: blobs and collections, a
 Blobs are the common case: one binary, archive, or model file. [Collections](https://docs.iroh.computer/protocols/blobs#collections) derive a hash from a collection of files, i.e. directory, and are useful when the collection represents a single artifact, e.g. static frontend builds.
 
 Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as locations and resolved by external tools, but the CLI itself only fetches HTTP and iroh.
-
-## Collaboration model
-
-A release is linked by the build commit `oid`, not by the person who created it. Any user can add artifacts, announce discovery locations, or attest and redact on any release. The first contributor's `add` creates the release COB; subsequent contributors reuse it. Artifact-level attribution is still recorded — only the DID that added an artifact can update its name, and attestations/redactions are attributed to their signer.
-
-Trust weighting happens at the artifact level: redactions and attestations from repository **delegates** are highlighted. By default, `list` and `show` only display artifacts authored by a delegate or the local user. Pass `--all-authors` to include artifacts added by non-delegates.
 
 ## Actions
 
@@ -127,7 +130,7 @@ rad-artifact redact <REVISION> --cid <CID> -m <REASON>           # redact an art
 rad-artifact metadata set --revision <REVISION> --cid <CID> [--json] <KEY> <VALUE>  # attach metadata
 rad-artifact metadata unset --revision <REVISION> --cid <CID> <KEY>                 # remove metadata
 rad-artifact show <REVISION> [--pretty] [--all-authors]          # show release
-rad-artifact list [--pretty] [--all-authors]                     # list releases (default: delegate-authored only)
+rad-artifact list [--pretty] [--all-authors]                     # list releases (default: delegate- or local-authored)
 rad-artifact cid <PATH>                                          # compute BLAKE3 CID
 rad-artifact fetch [<REVISION> --cid <CID>]                      # fetch artifact (interactive without args)
 rad-artifact serve <PATH>                                        # serve artifact via iroh-blobs
@@ -136,18 +139,6 @@ rad-artifact serve <PATH>                                        # serve artifac
 Use `--repository <RID>` to target a specific repo (defaults to cwd).
 Use `--no-sync` to skip network announcement after writes.
 Use `--no-input` to disable interactive prompts (for scripts and CI).
-
-## Project structure
-
-```
-src/
-├── lib.rs              # core types, COB traits, store layer
-├── error.rs            # Build and Apply error types
-├── display.rs          # JSON and pretty-print display forms
-├── share/              # iroh-blobs serve/fetch, CID utilities, key handling
-└── bin/
-    └── rad-artifact.rs # CLI binary
-```
 
 ## How the COB is implemented
 

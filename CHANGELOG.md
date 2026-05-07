@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ⭐️ Highlights
 
-#### Metadata for artifacts
+#### Add metadata to artifacts
 
-Artifacts can now carry arbitrary key/value metadata, useful for recording the build environment, reproducibility flags, or anything else downstream tooling cares about. Only the artifact's author or a current repository delegate can write. The metadata keyspace is shared and last-writer-wins.
+Artifacts can now carry JSON metadata, useful for recording the build environment, [SLSA metadata](https://slsa.dev/), reproducibility flags, or anything else downstream tooling cares about. Only the artifact's author or a current repository delegate can write. The metadata keyspace is shared and last-writer-wins.
 
 Set a string value:
 
@@ -35,6 +35,22 @@ Remove an entry with `rad-artifact metadata unset <key>`.
 
 In `--json` output from `list`/`show`, metadata renders as a flat object (`"metadata": {"size_bytes": 1048576, ...}`).
 
+#### Releases scoped by author
+
+Release visibility now follows the same rule as artifacts: by default `list`, `show`, and the `<revision>` lookup used by every mutating command consider only releases authored by a repository delegate or by the local user. Releases from other users are skipped.
+
+Pass `--all-authors` to widen the set:
+
+```sh
+$ rad-artifact list --all-authors
+$ rad-artifact show --all-authors v1.0
+$ rad-artifact attest --all-authors v1.0 --cid baf..
+```
+
+`--all-authors` has been added to `add`, `attest`, `redact`, `location add`, `location remove`, and `metadata set`/`unset`. Targeting a specific release directly with `--release <id>` continues to work regardless of who authored it.
+
+This means that when multiple users have created releases for the same commit, the local user's own releases are now always visible without `--all-authors`.
+
 ### Added
 
 * `14d78b1` **release:** validate tag OID on create *<daniel@norman.life>*
@@ -44,6 +60,7 @@ In `--json` output from `list`/`show`, metadata renders as a flat object (`"meta
 
 ### Changed
 
+* `bb5daff` scope release lookup by author *<daniel@norman.life>*
 * `cbfed1b` **cli:** tighten duplicate-release UX helpers *<daniel@norman.life>*
 
 ### Fixed
