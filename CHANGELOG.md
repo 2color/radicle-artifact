@@ -60,25 +60,22 @@ This means that when multiple users have created releases for the same commit, t
 
 ### Changed
 
-* `bb5daff` scope release lookup by author *<daniel@norman.life>*
 * `cbfed1b` **cli:** tighten duplicate-release UX helpers *<daniel@norman.life>*
+* `988a612` address clippy comments *<daniel@norman.life>*
 
 ### Fixed
 
 * `00b90d8` **display:** emit metadata as flat JSON object *<daniel@norman.life>*
 * `99a148f` **cli:** improve duplicate-release UX *<daniel@norman.life>*
+* `b92918b` **cli:** box large Metadata error variant fields *<daniel@norman.life>*
+* `d125bc7` scope release lookup by author *<daniel@norman.life>*
 
 ### Other
 
 * `d858587` update CHANGELOG *<daniel@norman.life>*
+* `8c80fc7` update CHANGELOG *<daniel@norman.life>*
+* `f0b724d` update README and CHANGELOG *<daniel@norman.life>*
 
-## [0.12.1] - 2026-05-04
-
-Small patch release which fixes a bug with the serve command.
-
-### Fixed
-
-* `9bcabea` **serve:** canonicalize blob path before import *<daniel@norman.life>*
 
 ## [0.12.0] - 2026-04-29
 
