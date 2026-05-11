@@ -3814,7 +3814,7 @@ dependencies = [
  "radicle-git-metadata",
  "radicle-git-ref-format",
  "radicle-localtime",
- "radicle-oid 0.2.0",
+ "radicle-oid",
  "serde",
  "serde-untagged",
  "serde_json",
@@ -3844,7 +3844,6 @@ dependencies = [
  "n0-future",
  "nonempty 0.11.0",
  "radicle",
- "radicle-oid 0.1.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -3869,7 +3868,7 @@ dependencies = [
  "radicle-crypto",
  "radicle-dag",
  "radicle-git-metadata",
- "radicle-oid 0.2.0",
+ "radicle-oid",
  "serde",
  "serde_json",
  "signature 2.2.0",
@@ -3886,7 +3885,7 @@ dependencies = [
  "multibase",
  "qcheck",
  "radicle-crypto",
- "radicle-oid 0.2.0",
+ "radicle-oid",
  "schemars",
  "serde",
  "sqlite",
@@ -3950,15 +3949,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5c36714fd32dc9421f8ed3edf0d1c1a4aa3b5210fddf8eaef40ea90c88fdddd"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "radicle-oid"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d95c486f589d4f5ef7bd8fce56419854d90cc63a8bbcebe021e0a4f4cca75ac9"
-dependencies = [
- "qcheck",
 ]
 
 [[package]]
