@@ -488,7 +488,7 @@ impl Release {
                     })
                     .collect();
                 // Sort by DID for deterministic output.
-                redactions.sort_by(|a, b| a.did.cmp(&b.did));
+                redactions.sort_by_key(|a| a.did);
                 let artifact_author = *artifact.author();
                 Artifact {
                     cid: cid.to_string(),

@@ -1566,7 +1566,7 @@ mod prompt {
             let time = peeled.as_commit().map(|c| c.time().seconds()).unwrap_or(0);
             tag_entries.push((time, name.to_string(), tag_oid, commit_oid));
         }
-        tag_entries.sort_by(|a, b| b.0.cmp(&a.0));
+        tag_entries.sort_by_key(|a| std::cmp::Reverse(a.0));
         for (_, name, tag_oid, commit_oid) in tag_entries {
             // The tag's peeled commit is intentionally NOT added to the
             // dedup set: showing both the tag and the underlying commit
