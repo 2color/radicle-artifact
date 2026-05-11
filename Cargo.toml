@@ -18,7 +18,7 @@ authors = ["Daniel Norman <daniel@norman.life>"]
 license = "MIT OR Apache-2.0"
 version = "0.13.0"
 edition = "2021"
-rust-version = "1.84.0"
+rust-version = "1.91"
 
 [features]
 default = ["share"]
