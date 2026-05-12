@@ -5,6 +5,37 @@ use thiserror::Error;
 
 use crate::Cid;
 
+/// Errors that can occur when setting a metadata entry on an artifact.
+///
+/// Validation is enforced at the [`ReleaseMut`][release_mut] boundary so
+/// that malformed keys never reach the COB log; COB replay itself stays
+/// permissive for determinism.
+///
+/// [release_mut]: super::ReleaseMut
+#[derive(Debug, Error)]
+pub enum Metadata {
+    /// The metadata key was empty.
+    #[error("metadata key must not be empty")]
+    EmptyKey,
+    /// The metadata key exceeds the maximum allowed byte length.
+    #[error("metadata key exceeds maximum length of {max} bytes (got {actual})")]
+    KeyTooLong {
+        /// The actual byte length of the key.
+        actual: usize,
+        /// The maximum allowed byte length.
+        max: usize,
+    },
+    /// The metadata key contained a control character (e.g. newline, tab, NUL).
+    #[error("metadata key contains control character {:?}", ch)]
+    KeyControlChar {
+        /// The offending character.
+        ch: char,
+    },
+    /// An error occurred in the underlying COB store.
+    #[error(transparent)]
+    Store(#[from] cob::store::Error),
+}
+
 /// Errors that can occur when redacting an artifact.
 #[derive(Debug, Error)]
 pub enum Redact {

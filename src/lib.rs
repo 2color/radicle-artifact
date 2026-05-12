@@ -88,6 +88,9 @@ pub static TYPENAME: LazyLock<TypeName> =
 /// Maximum byte length for a redaction reason string.
 pub const MAX_REDACT_REASON_LEN: usize = 2048;
 
+/// Maximum byte length for a metadata key.
+pub const MAX_METADATA_KEY_LEN: usize = 256;
+
 /// The identifier for a given [`Release`] collaborative object.
 ///
 /// When a [`Release`] is created, through [`Releases::create`], the identifier
@@ -851,22 +854,27 @@ where
 
     /// Set or overwrite a metadata entry on an artifact.
     ///
-    /// Authorization (artifact author or current repo delegate) must be
-    /// enforced by the caller; the COB layer is permissive so replay stays
-    /// deterministic across nodes that may disagree on the delegate set.
+    /// The key is validated here (non-empty, within [`MAX_METADATA_KEY_LEN`]
+    /// bytes, no control characters) so malformed entries never enter the
+    /// COB log. Authorization (artifact author or current repo delegate)
+    /// must still be enforced by the caller; the COB layer is permissive so
+    /// replay stays deterministic across nodes that may disagree on the
+    /// delegate set.
     pub fn set_metadata<G>(
         &mut self,
         cid: Cid,
         key: String,
         value: serde_json::Value,
         signer: &Device<G>,
-    ) -> Result<EntryId, store::Error>
+    ) -> Result<EntryId, error::Metadata>
     where
         G: Signer<crypto::Signature>,
     {
+        validate_metadata_key(&key)?;
         self.transaction("Set metadata", signer, |tx| {
             tx.set_metadata(cid, key, value)
         })
+        .map_err(error::Metadata::from)
     }
 
     /// Remove a metadata entry from an artifact.
@@ -930,6 +938,23 @@ where
 
         Ok(commit)
     }
+}
+
+/// Enforce the metadata key rules applied by [`ReleaseMut::set_metadata`].
+fn validate_metadata_key(key: &str) -> Result<(), error::Metadata> {
+    if key.is_empty() {
+        return Err(error::Metadata::EmptyKey);
+    }
+    if key.len() > MAX_METADATA_KEY_LEN {
+        return Err(error::Metadata::KeyTooLong {
+            actual: key.len(),
+            max: MAX_METADATA_KEY_LEN,
+        });
+    }
+    if let Some(ch) = key.chars().find(|c| c.is_control()) {
+        return Err(error::Metadata::KeyControlChar { ch });
+    }
+    Ok(())
 }
 
 /// An update for the `Release` COB.
@@ -2316,6 +2341,40 @@ mod test {
         let metadata = release.artifact(&cid).unwrap().metadata();
         assert!(metadata.get("a").is_none());
         assert_eq!(metadata.get("b"), Some(&serde_json::json!("2")));
+    }
+
+    #[test]
+    fn set_metadata_rejects_invalid_keys() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+
+        assert!(matches!(
+            release.set_metadata(cid, "".into(), "v".into(), &alice.signer),
+            Err(crate::error::Metadata::EmptyKey),
+        ));
+
+        let too_long = "x".repeat(crate::MAX_METADATA_KEY_LEN + 1);
+        assert!(matches!(
+            release.set_metadata(cid, too_long, "v".into(), &alice.signer),
+            Err(crate::error::Metadata::KeyTooLong { .. }),
+        ));
+
+        assert!(matches!(
+            release.set_metadata(cid, "bad\nkey".into(), "v".into(), &alice.signer),
+            Err(crate::error::Metadata::KeyControlChar { ch: '\n' }),
+        ));
+
+        // None of the rejected keys should have been recorded.
+        assert!(release.artifact(&cid).unwrap().metadata().is_empty());
     }
 
     #[test]

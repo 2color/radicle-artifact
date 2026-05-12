@@ -698,7 +698,10 @@ where
         .map_err(|err| error::Metadata::Store { id, err })?;
     release
         .set_metadata(cid, key.clone(), value, signer)
-        .map_err(|err| error::Metadata::Store { id, err })?;
+        .map_err(|err| match err {
+            radicle_artifact::error::Metadata::Store(err) => error::Metadata::Store { id, err },
+            err => error::Metadata::InvalidKey(err),
+        })?;
     eprintln!("Set metadata {key} on artifact {cid}");
     Ok(())
 }
@@ -2599,6 +2602,8 @@ mod error {
             #[source]
             err: serde_json::Error,
         },
+        #[error(transparent)]
+        InvalidKey(radicle_artifact::error::Metadata),
         #[error("failed to update metadata on release {id}")]
         Store {
             id: ReleaseId,
