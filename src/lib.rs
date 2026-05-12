@@ -91,6 +91,9 @@ pub const MAX_REDACT_REASON_LEN: usize = 2048;
 /// Maximum byte length for a metadata key.
 pub const MAX_METADATA_KEY_LEN: usize = 256;
 
+/// Maximum byte length for a serialized metadata value.
+pub const MAX_METADATA_VALUE_LEN: usize = 8 * 1024;
+
 /// The identifier for a given [`Release`] collaborative object.
 ///
 /// When a [`Release`] is created, through [`Releases::create`], the identifier
@@ -855,11 +858,12 @@ where
     /// Set or overwrite a metadata entry on an artifact.
     ///
     /// The key is validated here (non-empty, within [`MAX_METADATA_KEY_LEN`]
-    /// bytes, no control characters) so malformed entries never enter the
-    /// COB log. Authorization (artifact author or current repo delegate)
-    /// must still be enforced by the caller; the COB layer is permissive so
-    /// replay stays deterministic across nodes that may disagree on the
-    /// delegate set.
+    /// bytes, no control characters) and the serialized value must fit
+    /// within [`MAX_METADATA_VALUE_LEN`] so malformed or oversized entries
+    /// never enter the COB log. Authorization (artifact author or current
+    /// repo delegate) must still be enforced by the caller; the COB layer
+    /// is permissive so replay stays deterministic across nodes that may
+    /// disagree on the delegate set.
     pub fn set_metadata<G>(
         &mut self,
         cid: Cid,
@@ -871,6 +875,7 @@ where
         G: Signer<crypto::Signature>,
     {
         validate_metadata_key(&key)?;
+        validate_metadata_value_size(&value)?;
         self.transaction("Set metadata", signer, |tx| {
             tx.set_metadata(cid, key, value)
         })
@@ -938,6 +943,21 @@ where
 
         Ok(commit)
     }
+}
+
+/// Reject metadata values whose serialized form exceeds
+/// [`MAX_METADATA_VALUE_LEN`].
+fn validate_metadata_value_size(value: &serde_json::Value) -> Result<(), error::Metadata> {
+    let actual = serde_json::to_vec(value)
+        .expect("serde_json::Value always serializes")
+        .len();
+    if actual > MAX_METADATA_VALUE_LEN {
+        return Err(error::Metadata::ValueTooLarge {
+            actual,
+            max: MAX_METADATA_VALUE_LEN,
+        });
+    }
+    Ok(())
 }
 
 /// Enforce the metadata key rules applied by [`ReleaseMut::set_metadata`].
@@ -2374,6 +2394,29 @@ mod test {
         ));
 
         // None of the rejected keys should have been recorded.
+        assert!(release.artifact(&cid).unwrap().metadata().is_empty());
+    }
+
+    #[test]
+    fn set_metadata_rejects_oversized_value() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .add_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+
+        // A string of MAX+1 bytes serializes to MAX+3 with the surrounding quotes.
+        let big = serde_json::Value::String("x".repeat(crate::MAX_METADATA_VALUE_LEN + 1));
+        assert!(matches!(
+            release.set_metadata(cid, "k".into(), big, &alice.signer),
+            Err(crate::error::Metadata::ValueTooLarge { .. }),
+        ));
         assert!(release.artifact(&cid).unwrap().metadata().is_empty());
     }
 

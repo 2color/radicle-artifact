@@ -31,6 +31,14 @@ pub enum Metadata {
         /// The offending character.
         ch: char,
     },
+    /// The serialized metadata value exceeds the maximum allowed byte length.
+    #[error("metadata value exceeds maximum length of {max} bytes (got {actual})")]
+    ValueTooLarge {
+        /// The actual serialized byte length of the value.
+        actual: usize,
+        /// The maximum allowed byte length.
+        max: usize,
+    },
     /// An error occurred in the underlying COB store.
     #[error(transparent)]
     Store(#[from] cob::store::Error),

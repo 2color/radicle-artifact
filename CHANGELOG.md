@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ⭐️ Highlights
 
+#### Validate metadata keys and value size
+
+`ReleaseMut::set_metadata` now rejects malformed entries before they enter the COB log, so a bad input from one node never has to be replayed by every other peer.
+
+Keys must be non-empty, at most `MAX_METADATA_KEY_LEN` (256) bytes, and free of control characters (newlines, tabs, NUL, etc.). Values are capped at `MAX_METADATA_VALUE_LEN` (8 KiB) of serialized JSON — large enough for typical build provenance or SBOM summaries.
+
+Each rule surfaces as a dedicated `error::Metadata` variant (`EmptyKey`, `KeyTooLong`, `KeyControlChar`, `ValueTooLarge`) so callers can act on the specific failure. COB replay itself stays permissive, preserving deterministic application across nodes.
+
 #### Honour endpoint id in `iroh://` URLs
 
 The `rad-artifact` CLI currently reuses your radicle ed25519 key as the key for creating the iroh endpoint. That meant every iroh location in an artifact COB was pinned to its author's radicle identity, i.e. the endpoint id was always derived from the signer's DID for location URLs with the `iroh://` url scheme.
