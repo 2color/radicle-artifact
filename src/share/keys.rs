@@ -5,6 +5,7 @@
 //! Radicle COB operations and iroh-blobs networking.
 
 use radicle::crypto::ssh::keystore::Keystore;
+use url::Url;
 
 use super::Error;
 
@@ -40,6 +41,23 @@ pub fn radicle_secret_to_iroh(
     Ok(iroh::SecretKey::from_bytes(seed_bytes))
 }
 
+/// Parse the iroh endpoint id encoded in an `iroh://<endpoint-id>` URL.
+///
+/// Returns `Ok(None)` for a bare `iroh://` (no host) so callers can fall
+/// back to deriving the endpoint id from the location author's DID. `Err`
+/// is returned only when the URL has a host that fails to parse as an
+/// [`iroh::EndpointId`]. The scheme is not validated here; callers should
+/// gate on `url.scheme() == "iroh"` before invoking.
+pub fn endpoint_id_from_iroh_url(url: &Url) -> Result<Option<iroh::EndpointId>, Error> {
+    match url.host_str() {
+        Some(host) if !host.is_empty() => host
+            .parse::<iroh::EndpointId>()
+            .map(Some)
+            .map_err(|e| Error::Iroh(format!("invalid endpoint id '{host}': {e}"))),
+        _ => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use radicle::crypto::ssh::keystore::Passphrase;
@@ -60,6 +78,30 @@ mod tests {
         let iroh_pk = iroh_sk.public();
 
         assert_eq!(&radicle_pk.to_byte_array(), iroh_pk.as_bytes());
+    }
+
+    #[test]
+    fn endpoint_id_from_bare_iroh_url_is_none() {
+        let url = Url::parse("iroh://").unwrap();
+        assert_eq!(endpoint_id_from_iroh_url(&url).unwrap(), None);
+    }
+
+    #[test]
+    fn endpoint_id_from_iroh_url_round_trips() {
+        // Use a deterministic key so the test is reproducible.
+        let sk = iroh::SecretKey::from_bytes(&[7u8; 32]);
+        let pk = sk.public();
+        let url = Url::parse(&format!("iroh://{pk}")).unwrap();
+        let parsed = endpoint_id_from_iroh_url(&url)
+            .expect("valid host should parse")
+            .expect("host present");
+        assert_eq!(parsed, pk);
+    }
+
+    #[test]
+    fn endpoint_id_from_iroh_url_with_garbage_host_errors() {
+        let url = Url::parse("iroh://abc123").unwrap();
+        assert!(endpoint_id_from_iroh_url(&url).is_err());
     }
 
     #[test]

@@ -436,6 +436,12 @@ where
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
     };
+    // Validate iroh:// URLs up front so a typo in the endpoint id surfaces
+    // here, before it ends up signed into the COB. A bare iroh:// is allowed
+    // and resolves to the author's DID-derived endpoint id at fetch time.
+    if url.scheme() == "iroh" {
+        share::endpoint_id_from_iroh_url(&url).map_err(|e| error::Locate::Usage(e.to_string()))?;
+    }
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Locate::Store { id, err })?;
@@ -1205,25 +1211,35 @@ fn run_serve(
 
 /// Convert locations from one or more artifacts into fetch locations.
 ///
-/// For `iroh://` URLs, derives the endpoint ID from the DID that authored the
-/// location (same Ed25519 key). Locations are deduplicated across artifacts —
-/// a plain URL contributed by the same or different users collapses to one
-/// entry, and a DID's iroh endpoint collapses to one entry regardless of how
-/// many releases record it.
+/// For `iroh://<endpoint-id>` URLs, parses the endpoint id from the URL host.
+/// For bare `iroh://` URLs, derives the endpoint id from the DID that authored
+/// the location (same Ed25519 key). Locations are deduplicated across
+/// artifacts — plain URLs collapse on URL equality, and iroh entries collapse
+/// on resolved endpoint id regardless of how many releases or DIDs contributed
+/// them. URLs whose iroh host fails to parse are skipped with a warning on
+/// stderr so that one bad entry doesn't sink an otherwise-fetchable artifact.
 fn artifact_locations<'a>(
     artifacts: impl IntoIterator<Item = &'a Artifact>,
 ) -> Result<Vec<share::Location<'a>>, RadArtifactError> {
     let mut seen_urls: BTreeSet<&url::Url> = BTreeSet::new();
-    let mut seen_iroh: BTreeSet<Did> = BTreeSet::new();
+    let mut seen_iroh: BTreeSet<iroh::EndpointId> = BTreeSet::new();
     let mut locations = Vec::new();
     for artifact in artifacts {
         for (did, urls) in artifact.locations() {
             for url in urls {
                 if url.scheme() == "iroh" {
-                    if seen_iroh.insert(*did) {
-                        let pk =
-                            share::did_to_iroh_public_key(did).map_err(error::Share::Protocol)?;
-                        locations.push(share::Location::Iroh(pk));
+                    let endpoint_id = match share::endpoint_id_from_iroh_url(url) {
+                        Ok(Some(id)) => id,
+                        Ok(None) => {
+                            share::did_to_iroh_public_key(did).map_err(error::Share::Protocol)?
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: skipping location {url}: {e}");
+                            continue;
+                        }
+                    };
+                    if seen_iroh.insert(endpoint_id) {
+                        locations.push(share::Location::Iroh(endpoint_id));
                     }
                 } else if seen_urls.insert(url) {
                     locations.push(share::Location::Url(url));

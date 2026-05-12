@@ -37,7 +37,7 @@ pub use cid_utils::{
 };
 pub use endpoint::EndpointPreset;
 pub use fetch::{download, download_collection, Location};
-pub use keys::{did_to_iroh_public_key, radicle_secret_to_iroh};
+pub use keys::{did_to_iroh_public_key, endpoint_id_from_iroh_url, radicle_secret_to_iroh};
 pub use serve::{add_blob, add_collection, Server};
 
 /// Errors from sharing operations.

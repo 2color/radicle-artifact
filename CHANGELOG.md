@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### ⭐️ Highlights
+
+#### Honour endpoint id in `iroh://` URLs
+
+The `rad-artifact` CLI currently reuses your radicle ed25519 key as the key for creating the iroh endpoint. That meant every iroh location in an artifact COB was pinned to its author's radicle identity, i.e. the endpoint id was always derived from the signer's DID for location URLs with the `iroh://` url scheme.
+
+This change honors the endpoint id in `iroh://<endpoint-id>` URLs when present, while still supporting derivation from DID for bare `iroh://` urls.
+
+Practically, this means that fetching works for `iroh://...` endpoints not derived from the radicle key, and consumers of this crate can choose whether to reuse the radicle key, or create a separate key for the iroh sharing.
+
+Note that [endpoint address discovery](https://docs.iroh.computer/concepts/discovery) still goes through the [Radworks DNS server](src/share/endpoint.rs).
+
+
 ## [0.13.0] - 2026-05-11
 
 ### ⭐️ Highlights
