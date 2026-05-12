@@ -67,6 +67,8 @@ struct Args {
 
     /// Operate against a remote `radicle-httpd` seed instead of a local node.
     ///
+    /// Experimental: behavior and flag name may change in a future release.
+    ///
     /// In this mode no local Radicle profile or running node is required;
     /// the repository is fetched into a local cache via the seed's git
     /// smart-HTTP endpoint. Only read commands (`list`, `show`, `fetch`,
@@ -118,6 +120,20 @@ fn requires_local_node(cmd: &command::Command) -> bool {
     matches!(cmd, Add(_) | Location(_) | Attest(_) | Redact(_) | Serve(_))
 }
 
+/// Print a one-line stderr note that `--seed` mode is experimental. Colored
+/// yellow when stderr is a terminal, matching the ERROR-red convention.
+fn warn_experimental_seed() {
+    let use_color = std::io::stderr().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    if use_color {
+        eprintln!(
+            "\x1b[1;33mnote\x1b[0m: --seed is experimental; behavior and flag name may change"
+        );
+    } else {
+        eprintln!("note: --seed is experimental; behavior and flag name may change");
+    }
+}
+
 fn load_profile() -> Result<Profile, error::Profile> {
     Profile::load().map_err(error::Profile)
 }
@@ -139,10 +155,12 @@ fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> 
 fn release_visible(
     release: &radicle_artifact::Release,
     delegates: &BTreeSet<Did>,
-    local: &Did,
+    local: Option<&Did>,
     all_authors: bool,
 ) -> bool {
-    all_authors || delegates.contains(release.creator()) || release.creator() == local
+    all_authors
+        || delegates.contains(release.creator())
+        || local.is_some_and(|l| release.creator() == l)
 }
 
 fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
@@ -197,11 +215,9 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         if requires_local_node(&args.command) {
             return Err(error::Mode::seed_unsupported(&args.command).into());
         }
-        let rid = args
-            .repository
-            .ok_or(error::Mode::SeedNeedsRepository)?;
-        let repo =
-            radicle_artifact::remote::open(seed, rid).map_err(error::Remote::from)?;
+        warn_experimental_seed();
+        let rid = args.repository.ok_or(error::Mode::SeedNeedsRepository)?;
+        let repo = radicle_artifact::remote::open(seed, rid).map_err(error::Remote::from)?;
         let releases = open_releases(&repo)?;
         return run_read_only(args.command, args.no_input, &releases, &repo, None);
     }
@@ -261,7 +277,13 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             }
         }
         Command::Show(_) | Command::List(_) | Command::Fetch(_) => {
-            run_read_only(args.command, args.no_input, &releases, &repo, Some(&profile))?;
+            run_read_only(
+                args.command,
+                args.no_input,
+                &releases,
+                &repo,
+                Some(&profile),
+            )?;
         }
         Command::Serve(cmd) => run_serve(cmd, args.no_input, &profile, &mut releases)?,
     }
@@ -382,7 +404,7 @@ where
             let oid = resolved.commit;
             let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
                 .into_iter()
-                .filter(|(_, r)| release_visible(r, &delegates, &local, all_authors))
+                .filter(|(_, r)| release_visible(r, &delegates, Some(&local), all_authors))
                 .collect();
 
             // Disambiguate when multiple releases exist OR when a single
@@ -1839,7 +1861,7 @@ fn resolve_target_release(
             let oid = resolve_ref(rev, repo)?.commit;
             let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
                 .into_iter()
-                .filter(|(_, r)| release_visible(r, delegates, local, all_authors))
+                .filter(|(_, r)| release_visible(r, delegates, Some(local), all_authors))
                 .collect();
             match candidates.as_slice() {
                 [] => Err(error::Find::NoRelease(oid).into()),
@@ -1882,7 +1904,7 @@ fn resolve_release_after_pick(
 ) -> Result<ReleaseId, error::Find> {
     let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
         .into_iter()
-        .filter(|(_, r)| release_visible(r, delegates, local, all_authors))
+        .filter(|(_, r)| release_visible(r, delegates, Some(local), all_authors))
         .filter(|(_, r)| r.artifact(cid).is_some())
         .collect();
     match candidates.as_slice() {
