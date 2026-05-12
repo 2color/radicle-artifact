@@ -27,6 +27,11 @@ Practically, this means that fetching works for `iroh://...` endpoints not deriv
 
 Note that [endpoint address discovery](https://docs.iroh.computer/concepts/discovery) still goes through the [Radworks DNS server](src/share/endpoint.rs).
 
+### Added
+
+* `ba7331d` parse endpoint id from iroh:// URL *<daniel@norman.life>*
+* `b6e4ec5` validate metadata keys *<daniel@norman.life>*
+* `e1dd25b` cap metadata value size at 8 KiB *<daniel@norman.life>*
 
 ## [0.13.0] - 2026-05-11
 
