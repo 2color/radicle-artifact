@@ -1,1 +1,1 @@
-{"base":"858f8d9371f469d7d4a1e2d38eff65aa70cdb240","description":"refactor(remote): fetch via libgit2 instead of git CLI\n\n- drop the `git fetch` subprocess in favor of `git2::Remote`\n- removes the implicit dependency on a `git` binary on PATH\n- vendor libgit2 but link `https` against the system OpenSSL\n  to avoid bundling a TLS stack","oid":"27f33fd2bef0055adb7d65d67015eabfb4d1095a","type":"revision"}
+{"base":"1469e0c33e6eea7e1b3c4a2ff605fcaaf997ba6b","description":"Rebase on rad/main","oid":"9db7325ca4c18432326fa437d395e70d7655d809","type":"revision"}
