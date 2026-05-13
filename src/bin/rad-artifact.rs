@@ -437,10 +437,17 @@ where
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
     };
     // Validate iroh:// URLs up front so a typo in the endpoint id surfaces
-    // here, before it ends up signed into the COB. A bare iroh:// is allowed
-    // and resolves to the author's DID-derived endpoint id at fetch time.
-    if url.scheme() == "iroh" {
-        share::endpoint_id_from_iroh_url(&url).map_err(|e| error::Locate::Usage(e.to_string()))?;
+    // here, before it ends up signed into the COB. The bare iroh:// form
+    // (no host) is only accepted on read for back-compat with old COBs;
+    // new writes must carry an explicit endpoint id.
+    if url.scheme() == "iroh"
+        && share::endpoint_id_from_iroh_url(&url)
+            .map_err(|e| error::Locate::Usage(e.to_string()))?
+            .is_none()
+    {
+        return Err(error::Locate::Usage(
+            "bare iroh:// URL is no longer supported; specify iroh://<endpoint-id>".into(),
+        ));
     }
     let mut release = releases
         .get_mut(&id)
@@ -1146,9 +1153,11 @@ fn run_serve(
         }
     }
 
-    let passphrase = prompt::passphrase_for_keystore(&profile.keystore)?;
-    let iroh_sk = share::radicle_secret_to_iroh(&profile.keystore, passphrase)
-        .map_err(error::Share::Protocol)?;
+    // Load (or generate on first run) a freestanding ed25519 key for the
+    // seeding endpoint. Decoupled from the radicle DID so unattended
+    // serving doesn't need the keystore passphrase.
+    let key_path = profile.home.path().join("artifacts").join("iroh.key");
+    let iroh_sk = share::load_or_generate_key(&key_path).map_err(error::Share::Protocol)?;
     let preset = share::EndpointPreset::from_env().map_err(error::Share::Protocol)?;
 
     let rt = tokio::runtime::Runtime::new().map_err(error::Share::Io)?;
@@ -1170,9 +1179,11 @@ fn run_serve(
             }
         }
 
-        // Scheme-only marker; artifact_locations derives the iroh public key
-        // from the DID that authored the location, not from the URL.
-        let iroh_url = url::Url::parse("iroh://").expect("static URL is valid");
+        // Explicit endpoint id from the persisted seeding key. The bare
+        // iroh:// form is no longer written; artifact_locations still
+        // accepts it on read for back-compat with older COBs.
+        let iroh_url = url::Url::parse(&format!("iroh://{}", server.endpoint().id()))
+            .map_err(|e| error::Share::Usage(format!("build iroh url: {e}")))?;
 
         let signer = profile.signer().map_err(error::Signer)?;
         {
@@ -1215,12 +1226,16 @@ fn run_serve(
 /// Convert locations from one or more artifacts into fetch locations.
 ///
 /// For `iroh://<endpoint-id>` URLs, parses the endpoint id from the URL host.
-/// For bare `iroh://` URLs, derives the endpoint id from the DID that authored
-/// the location (same Ed25519 key). Locations are deduplicated across
-/// artifacts — plain URLs collapse on URL equality, and iroh entries collapse
-/// on resolved endpoint id regardless of how many releases or DIDs contributed
-/// them. URLs whose iroh host fails to parse are skipped with a warning on
-/// stderr so that one bad entry doesn't sink an otherwise-fetchable artifact.
+/// For bare `iroh://` URLs (back-compat: written by older versions when the
+/// seeding identity was derived from the radicle DID), derives the endpoint
+/// id from the DID that authored the location. New writes always carry an
+/// explicit endpoint id; see `share::load_or_generate_key`.
+///
+/// Locations are deduplicated across artifacts — plain URLs collapse on URL
+/// equality, and iroh entries collapse on resolved endpoint id regardless of
+/// how many releases or DIDs contributed them. URLs whose iroh host fails to
+/// parse are skipped with a warning on stderr so that one bad entry doesn't
+/// sink an otherwise-fetchable artifact.
 fn artifact_locations<'a>(
     artifacts: impl IntoIterator<Item = &'a Artifact>,
 ) -> Result<Vec<share::Location<'a>>, RadArtifactError> {
@@ -1677,39 +1692,6 @@ mod prompt {
                 },
             }
         }
-    }
-
-    pub fn passphrase_for_keystore(
-        keystore: &radicle::crypto::ssh::keystore::Keystore,
-    ) -> Result<Option<radicle::crypto::ssh::keystore::Passphrase>, super::error::Share> {
-        use radicle::crypto::ssh::keystore::Passphrase;
-
-        let is_encrypted = keystore
-            .is_encrypted()
-            .map_err(|e| super::error::Share::Usage(format!("failed to check keystore: {e}")))?;
-
-        if !is_encrypted {
-            return Ok(None);
-        }
-
-        // Try env var first, matching radicle convention.
-        if let Some(passphrase) = radicle::profile::env::passphrase() {
-            return Ok(Some(passphrase));
-        }
-
-        if !std::io::stderr().is_terminal() {
-            return Err(super::error::Share::Usage(
-                "encrypted keystore requires RAD_PASSPHRASE (no terminal for prompt)".into(),
-            ));
-        }
-
-        let passphrase = inquire::Password::new("Enter passphrase to unlock your radicle key:")
-            .with_display_mode(inquire::PasswordDisplayMode::Masked)
-            .without_confirmation()
-            .prompt()
-            .map_err(|e| super::error::Share::Usage(format!("passphrase prompt failed: {e}")))?;
-
-        Ok(Some(Passphrase::from(passphrase)))
     }
 }
 
