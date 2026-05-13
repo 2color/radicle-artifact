@@ -26,6 +26,7 @@ use std::io;
 pub mod cid_utils;
 pub mod endpoint;
 pub mod fetch;
+pub mod identity;
 pub mod keys;
 pub mod serve;
 
@@ -37,7 +38,8 @@ pub use cid_utils::{
 };
 pub use endpoint::EndpointPreset;
 pub use fetch::{download, download_collection, Location};
-pub use keys::{did_to_iroh_public_key, endpoint_id_from_iroh_url, radicle_secret_to_iroh};
+pub use identity::load_or_generate_key;
+pub use keys::{did_to_iroh_public_key, endpoint_id_from_iroh_url};
 pub use serve::{add_blob, add_collection, Server};
 
 /// Errors from sharing operations.
