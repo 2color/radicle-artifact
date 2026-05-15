@@ -1,1 +1,1 @@
-{"body":"Closing this as this has been resolved as of version `0.12` which added explicit support for an optional annotated tag OID when creating the release. See CHANGELOG.md for a full explanation of the changes and the approach taken.","replyTo":"13ea60727e8494d98686fc8e020c7d110eaf40bb","type":"comment"}
+{"state":{"reason":"solved","status":"closed"},"type":"lifecycle"}
