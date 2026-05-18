@@ -53,6 +53,9 @@
 pub mod client;
 
 #[cfg(feature = "share")]
+pub mod node;
+
+#[cfg(feature = "share")]
 pub mod protocol;
 
 #[cfg(feature = "share")]
