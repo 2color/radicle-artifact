@@ -35,10 +35,12 @@ cargo install radicle-artifact
 1. **Tag** — Create a release tag or commit — ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references).
 2. **Build** — Build your release artifacts.
 3. **Add** — Add artifacts to a release using the `rad-artifact add <PATH>` command, which creates the release if it doesn't exist and records the artifact CID.
-4. **Serve** — Upload artifacts to an HTTP server and register location with `rad-artifact location add`, or serve directly from the CLI using `rad-artifact serve <PATH>`.
+4. **Seed** — Upload artifacts to an HTTP server and register the location with `rad-artifact location add`, or serve directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
 5. **Fetch** — Fetch artifacts using the `rad-artifact fetch` command.
 6. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
 7. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
+
+> **Breaking change in `0.15`:** the old `rad-artifact serve <PATH>` (a foreground, Ctrl-C-bounded process) was replaced by the long-running seeder node plus `rad-artifact seed <PATH>`. Run `rad-artifact node start` once per host, then seed and unseed individual artifacts. See [Seeding via the local node](#seeding-via-the-local-node) below.
 
 ## How it works
 
@@ -120,6 +122,8 @@ Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as lo
 
 `<REVISION>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**.
 
+### COB-facing commands
+
 ```
 rad-artifact add <PATH> [--revision <REVISION>] [-n <NAME>]      # add artifact (creates release if needed)
 rad-artifact add --cid <CID> --revision <REVISION> -n <NAME>     # register a precomputed CID without local bytes
@@ -133,12 +137,61 @@ rad-artifact show <REVISION> [--pretty] [--all-authors]          # show release
 rad-artifact list [--pretty] [--all-authors]                     # list releases (default: delegate- or local-authored)
 rad-artifact cid <PATH>                                          # compute BLAKE3 CID
 rad-artifact fetch [<REVISION> --cid <CID>]                      # fetch artifact (interactive without args)
-rad-artifact serve <PATH>                                        # serve artifact via iroh-blobs
+```
+
+### Seeding (requires a running node)
+
+```
+rad-artifact seed <PATH> [--release <ID>] [--reference] [--no-announce]  # compute CID from PATH, seed, announce
+rad-artifact unseed <CID> [--release <ID>]                               # stop seeding + retract our iroh:// locations
+rad-artifact reconcile [--all-repos] [--retract-orphaned <CID>] [--retract-orphaned-self]  # fix COB drift
+```
+
+### Node control
+
+```
+rad-artifact node start [--foreground] [--force]                 # start the seeder daemon
+rad-artifact node stop                                           # graceful shutdown
+rad-artifact node status [--json]                                # endpoint id, seeded count, disk, traffic
+rad-artifact node list [--json]                                  # list CIDs the node is seeding for this repo
+rad-artifact node seed <CID> <PATH> [--release <ID>] [--reference] [--no-announce]
+rad-artifact node unseed <CID> [--release <ID>]
+rad-artifact node logs [--follow] [-n <LINES>]                   # tail <home>/artifacts/node.log
 ```
 
 Use `--repository <RID>` to target a specific repo (defaults to cwd).
 Use `--no-sync` to skip network announcement after writes.
 Use `--no-input` to disable interactive prompts (for scripts and CI).
+
+## Seeding via the local node
+
+Long-running seeding is owned by `rad-artifact node`, a per-host daemon that holds a persistent iroh-blobs store. Start it once and it survives shell exits, terminal closes, and reboots (when supervised):
+
+```
+$ rad-artifact node start
+Node started (socket: /Users/you/.radicle/artifacts/control.sock)
+
+$ rad-artifact seed ./dist/linux-amd64.tar.gz
+Seeded baf...abc (12.4 MiB, new tagged)
+Added iroh location to release abc1234
+
+$ rad-artifact node status
+Node          AB12CD…WXYZ (started 14m ago)
+Seeded        1 artifact · 12.4 MiB
+Disk          12.6 MiB on disk
+```
+
+The daemon stores blobs under `<home>/artifacts/store/` (persistent iroh-blobs FsStore), tracks what to seed via `seeded/{rid}/{cid}` tags, and writes a JSON log to `<home>/artifacts/node.log` (rotated on each start). The control socket lives at `<home>/artifacts/control.sock` (mode 0600); set `RAD_ARTIFACT_SOCKET` to override.
+
+The node never writes COB ops — every signed location write (`add_location`, `remove_location`) happens client-side. The daemon's identity (the iroh endpoint id) currently derives from the same Ed25519 secret as your radicle DID, so `RAD_PASSPHRASE` is required on start when the keystore is encrypted (or the parent CLI will prompt).
+
+`rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `iroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-retracting — pass `--retract-orphaned <CID>` or `--retract-orphaned-self` explicitly when you want it gone.
+
+### `iroh://` location format
+
+Seeded artifacts are announced as `iroh://<endpoint-id>` URLs, where `<endpoint-id>` is the iroh endpoint id encoded as **plain BASE32 with no padding** (RFC 4648, `A-Z` and `2-7`). This is a project-specific convention — deliberately distinct from iroh's internal z-base-32 (used for DNS discovery) and radicle's z32 DIDs. Fetchers in this crate decode the host segment with `data_encoding::BASE32_NOPAD`; external clients consuming our URLs need to use the same alphabet.
+
+Older releases recorded bare `iroh://` URLs and derived the endpoint id from the location author's DID. Those URLs are still readable, but every new write uses the explicit form so a future split between the radicle DID and the iroh identity is forward-compatible on the wire.
 
 ## How the COB is implemented
 

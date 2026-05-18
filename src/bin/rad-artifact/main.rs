@@ -402,7 +402,7 @@ where
         eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {cid} <url>` to register a download location");
         if let Some(p) = path.as_deref() {
             eprintln!(
-                "      or `rad-artifact serve {}` to seed it yourself over iroh",
+                "      or `rad-artifact seed {}` to seed it yourself via the local node",
                 p.display()
             );
         }
@@ -2706,7 +2706,7 @@ mod error {
         // Distinct from `ArtifactNotFound`: the artifact is known, but no
         // usable source has been announced. Surface the actionable recovery
         // paths so the user doesn't get a generic "no locations" error.
-        #[error("no download locations known for artifact {cid}\n  hint: pass --url <URL> to fetch directly, or ask a seed to run `rad-artifact serve`")]
+        #[error("no download locations known for artifact {cid}\n  hint: pass --url <URL> to fetch directly, or ask a seed to run `rad-artifact seed`")]
         NoLocationsForCid { cid: radicle_artifact::Cid },
         #[error(transparent)]
         Protocol(radicle_artifact::share::Error),
