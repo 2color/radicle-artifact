@@ -1,13 +1,17 @@
-//! Key conversion between radicle and iroh identities.
+//! Key conversion between radicle and iroh identities, plus URL encoding.
 //!
 //! Radicle and iroh both use ed25519 keys. These utilities convert between
 //! the two representations, enabling a single identity to be used for both
 //! Radicle COB operations and iroh-blobs networking.
+//!
+//! Endpoint IDs are encoded as plain BASE32 (RFC 4648), no padding — the
+//! project-specific convention for `iroh://{base32}` location URLs.
 
+use data_encoding::BASE32_NOPAD;
 use radicle::crypto::ssh::keystore::Keystore;
 use url::Url;
 
-use super::Error;
+use crate::share::Error;
 
 /// Convert a radicle DID's public key to an iroh public key.
 ///
@@ -41,19 +45,45 @@ pub fn radicle_secret_to_iroh(
     Ok(iroh::SecretKey::from_bytes(seed_bytes))
 }
 
+/// Encode an iroh endpoint id as a BASE32_NOPAD string (no `iroh://` prefix).
+///
+/// This is the canonical wire/storage form. Use `decode_endpoint_id` to
+/// parse it back. Do not use [`std::fmt::Display`] on `EndpointId` — that
+/// produces a different (z-base-32) encoding incompatible with this one.
+pub fn encode_endpoint_id(id: &iroh::EndpointId) -> String {
+    BASE32_NOPAD.encode(id.as_bytes())
+}
+
+/// Parse a BASE32_NOPAD-encoded endpoint id back into an `EndpointId`.
+pub fn decode_endpoint_id(s: &str) -> Result<iroh::EndpointId, Error> {
+    let bytes = BASE32_NOPAD
+        .decode(s.as_bytes())
+        .map_err(|e| Error::Iroh(format!("invalid base32 endpoint id '{s}': {e}")))?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+        Error::Iroh(format!(
+            "endpoint id must decode to 32 bytes, got {}",
+            v.len()
+        ))
+    })?;
+    iroh::EndpointId::from_bytes(&arr)
+        .map_err(|e| Error::Iroh(format!("invalid endpoint id bytes: {e}")))
+}
+
+/// Build the canonical `iroh://{base32}` URL for an endpoint.
+pub fn iroh_url_for(id: &iroh::EndpointId) -> String {
+    format!("iroh://{}", encode_endpoint_id(id))
+}
+
 /// Parse the iroh endpoint id encoded in an `iroh://<endpoint-id>` URL.
 ///
 /// Returns `Ok(None)` for a bare `iroh://` (no host) so callers can fall
 /// back to deriving the endpoint id from the location author's DID. `Err`
-/// is returned only when the URL has a host that fails to parse as an
-/// [`iroh::EndpointId`]. The scheme is not validated here; callers should
-/// gate on `url.scheme() == "iroh"` before invoking.
+/// is returned only when the URL has a host that fails to parse as a
+/// BASE32_NOPAD-encoded endpoint id. The scheme is not validated here;
+/// callers should gate on `url.scheme() == "iroh"` before invoking.
 pub fn endpoint_id_from_iroh_url(url: &Url) -> Result<Option<iroh::EndpointId>, Error> {
     match url.host_str() {
-        Some(host) if !host.is_empty() => host
-            .parse::<iroh::EndpointId>()
-            .map(Some)
-            .map_err(|e| Error::Iroh(format!("invalid endpoint id '{host}': {e}"))),
+        Some(host) if !host.is_empty() => decode_endpoint_id(host).map(Some),
         _ => Ok(None),
     }
 }
@@ -87,19 +117,31 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_id_from_iroh_url_round_trips() {
-        // Use a deterministic key so the test is reproducible.
+    fn endpoint_id_base32_round_trip() {
+        // Deterministic 32-byte key.
         let sk = iroh::SecretKey::from_bytes(&[7u8; 32]);
-        let pk = sk.public();
-        let url = Url::parse(&format!("iroh://{pk}")).unwrap();
+        let id = sk.public();
+        let encoded = encode_endpoint_id(&id);
+        let decoded = decode_endpoint_id(&encoded).unwrap();
+        assert_eq!(decoded, id);
+        // Re-encoding produces the same string bit-for-bit.
+        assert_eq!(encode_endpoint_id(&decoded), encoded);
+    }
+
+    #[test]
+    fn iroh_url_round_trip() {
+        let sk = iroh::SecretKey::from_bytes(&[7u8; 32]);
+        let id = sk.public();
+        let url = Url::parse(&iroh_url_for(&id)).unwrap();
         let parsed = endpoint_id_from_iroh_url(&url)
             .expect("valid host should parse")
             .expect("host present");
-        assert_eq!(parsed, pk);
+        assert_eq!(parsed, id);
     }
 
     #[test]
     fn endpoint_id_from_iroh_url_with_garbage_host_errors() {
+        // Lowercase letters are not valid BASE32 alphabet (which is A-Z, 2-7).
         let url = Url::parse("iroh://abc123").unwrap();
         assert!(endpoint_id_from_iroh_url(&url).is_err());
     }
