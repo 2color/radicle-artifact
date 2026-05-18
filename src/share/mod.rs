@@ -1,7 +1,9 @@
 //! Share artifacts from Radicle Artifact COBs.
 //!
-//! Provides utilities for fetching, serving, and content-addressing artifacts
-//! using iroh-blobs and BLAKE3 hashing.
+//! Provides utilities for fetching and content-addressing artifacts
+//! using iroh-blobs and BLAKE3 hashing. Long-running seeding is owned
+//! by [`crate::node`] over the control socket; this module only covers
+//! the read side (`fetch`) and the CID helpers used by both sides.
 //!
 //! This module is available when the `share` feature is enabled (default).
 //!
@@ -16,17 +18,12 @@
 //! Applications with a long-lived async runtime and persistent iroh endpoint
 //! (e.g. a Tauri desktop app) should use `iroh_blobs::api::downloader::Downloader`
 //! directly instead of these functions.
-//!
-//! The [`Server`] type similarly uses an in-memory store suited for ephemeral
-//! CLI serving. Long-running apps should build their own
-//! `iroh::protocol::Router` with an `iroh_blobs::store::fs::FsStore`.
 
 use std::io;
 
 pub mod cid_utils;
 pub mod endpoint;
 pub mod fetch;
-pub mod serve;
 
 // Re-export key types for convenience.
 pub use cid_utils::{
@@ -41,7 +38,6 @@ pub use fetch::{download, download_collection, Location};
 pub use crate::seeder::keys::{
     did_to_iroh_public_key, endpoint_id_from_iroh_url, radicle_secret_to_iroh,
 };
-pub use serve::{add_blob, add_collection, Server};
 
 /// Errors from sharing operations.
 #[derive(Debug, thiserror::Error)]
@@ -63,10 +59,6 @@ pub enum Error {
     /// Iroh networking or fetch error.
     #[error("iroh error: {0}")]
     Iroh(String),
-
-    /// Serve/blob-store error.
-    #[error("serve error: {0}")]
-    Serve(String),
 
     /// I/O error.
     #[error("I/O error: {0}")]

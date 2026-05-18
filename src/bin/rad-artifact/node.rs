@@ -302,6 +302,32 @@ fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Resu
 }
 
 fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(), Error> {
+    seed_artifact(
+        cmd.cid,
+        cmd.path,
+        cmd.release,
+        cmd.reference,
+        cmd.no_announce,
+        repo_override,
+        profile,
+    )
+}
+
+/// Shared implementation for `rad-artifact seed <PATH>` (the top-level
+/// renamed `serve`) and `rad-artifact node seed <CID> <PATH>`.
+///
+/// Sends the seed request to the running node and, unless
+/// `no_announce`, writes the `iroh://{endpoint_id}` location to the
+/// target release.
+pub(crate) fn seed_artifact(
+    cid: Cid,
+    path: std::path::PathBuf,
+    release_override: Option<String>,
+    reference: bool,
+    no_announce: bool,
+    repo_override: Option<RepoId>,
+    profile: &Profile,
+) -> Result<(), Error> {
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
     let rid = repo.id.to_string();
@@ -309,19 +335,19 @@ fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(
     let client = Client::new(socket);
 
     // Resolve target release: --release wins, else most recent matching.
-    let release_id = if let Some(s) = cmd.release.as_deref() {
+    let release_id = if let Some(s) = release_override.as_deref() {
         parse_release_id(s, &repo).map_err(|e| Error::Usage(e.to_string()))?
     } else {
-        let matching = releases.find_by_cid(&cmd.cid).map_err(Error::Find)?;
+        let matching = releases.find_by_cid(&cid).map_err(Error::Find)?;
         let (id, _) = matching
             .into_iter()
             .max_by_key(|(_, r)| r.timestamp())
-            .ok_or(Error::ArtifactNotFound(cmd.cid))?;
+            .ok_or(Error::ArtifactNotFound(cid))?;
         id
     };
 
-    let kind = share::artifact_kind(&cmd.cid).map_err(Error::Protocol)?;
-    let mode = if cmd.reference {
+    let kind = share::artifact_kind(&cid).map_err(Error::Protocol)?;
+    let mode = if reference {
         ImportMode::Reference
     } else {
         ImportMode::Copy
@@ -332,8 +358,8 @@ fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(
         .call_blocking::<SeedReceipt>(
             &NodeMsg::Seed {
                 rid,
-                cid: cmd.cid.to_string(),
-                path: cmd.path.clone(),
+                cid: cid.to_string(),
+                path: path.clone(),
                 kind,
                 mode,
             },
@@ -344,11 +370,11 @@ fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(
     let new_or_dup = if receipt.was_new { "new" } else { "already" };
     eprintln!(
         "Seeded {} ({}, {new_or_dup} tagged)",
-        cmd.cid,
+        cid,
         human_bytes(receipt.bytes)
     );
 
-    if cmd.no_announce {
+    if no_announce {
         eprintln!("Skipped COB location write (--no-announce)");
         return Ok(());
     }
@@ -360,7 +386,7 @@ fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(
         .map_err(|e| Error::Usage(format!("invalid endpoint id from node: {e}")))?;
     let mut release_mut = releases.get_mut(&release_id).map_err(Error::Find)?;
     release_mut
-        .add_location(cmd.cid, url, &signer)
+        .add_location(cid, url, &signer)
         .map_err(|err| Error::Store {
             id: release_id,
             err,
@@ -370,6 +396,22 @@ fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(
 }
 
 fn unseed(cmd: Unseed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(), Error> {
+    unseed_artifact(cmd.cid, cmd.release, repo_override, profile)
+}
+
+/// Shared implementation for `rad-artifact unseed <CID>` and
+/// `rad-artifact node unseed <CID>`.
+///
+/// Sends the unseed request to the running node and retracts every
+/// `iroh://` location under our DID for the given CID. `release_override`
+/// restricts the retraction to a single release id; otherwise every
+/// release containing the CID is scanned.
+pub(crate) fn unseed_artifact(
+    cid: Cid,
+    release_override: Option<String>,
+    repo_override: Option<RepoId>,
+    profile: &Profile,
+) -> Result<(), Error> {
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
     let rid = repo.id.to_string();
@@ -380,30 +422,28 @@ fn unseed(cmd: Unseed, repo_override: Option<RepoId>, profile: &Profile) -> Resu
         .call_blocking::<UnseedReceipt>(
             &NodeMsg::Unseed {
                 rid,
-                cid: cmd.cid.to_string(),
+                cid: cid.to_string(),
             },
             client::DEFAULT_TIMEOUT,
         )
         .map_err(client_err)?;
 
     if receipt.was_removed {
-        eprintln!("Unseeded {}", cmd.cid);
+        eprintln!("Unseeded {cid}");
     } else {
-        eprintln!("Note: {} was not being seeded", cmd.cid);
+        eprintln!("Note: {cid} was not being seeded");
     }
 
-    // Retract iroh:// locations under our DID for this cid, across the
-    // requested release set.
     let local_did = Did::from(*profile.id());
     let signer = profile
         .signer()
         .map_err(|e| Error::Usage(format!("signer: {e}")))?;
 
-    let target_ids: Vec<ReleaseId> = if let Some(s) = cmd.release.as_deref() {
+    let target_ids: Vec<ReleaseId> = if let Some(s) = release_override.as_deref() {
         vec![parse_release_id(s, &repo).map_err(|e| Error::Usage(e.to_string()))?]
     } else {
         releases
-            .find_by_cid(&cmd.cid)
+            .find_by_cid(&cid)
             .map_err(Error::Find)?
             .into_iter()
             .map(|(id, _)| id)
@@ -422,7 +462,7 @@ fn unseed(cmd: Unseed, repo_override: Option<RepoId>, profile: &Profile) -> Resu
         // Snapshot the URLs we want to remove before mutating the COB,
         // so the borrow on release_mut doesn't overlap the writes.
         let urls_to_remove: Vec<Url> = release_mut
-            .artifact(&cmd.cid)
+            .artifact(&cid)
             .and_then(|a| a.locations_of(&local_did))
             .map(|urls| {
                 urls.iter()
@@ -432,7 +472,7 @@ fn unseed(cmd: Unseed, repo_override: Option<RepoId>, profile: &Profile) -> Resu
             })
             .unwrap_or_default();
         for url in urls_to_remove {
-            match release_mut.remove_location(cmd.cid, url.clone(), &signer) {
+            match release_mut.remove_location(cid, url.clone(), &signer) {
                 Ok(_) => removed += 1,
                 Err(e) => eprintln!("Warning: failed to remove {url} from {id}: {e}"),
             }

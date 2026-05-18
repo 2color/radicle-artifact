@@ -184,19 +184,25 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         return run_cid(cmd);
     }
 
-    // Node subcommands handle their own profile/repo plumbing — some
-    // (`start`, `stop`, `status`, `logs`) don't need a repo at all.
-    if matches!(args.command, Command::Node(_)) {
+    // Subcommands that drive the daemon handle their own profile/repo
+    // plumbing — some (`node start/stop/status/logs`) don't need a repo
+    // at all; the rest open it through `open_repo`.
+    if matches!(
+        args.command,
+        Command::Node(_) | Command::Seed(_) | Command::Unseed(_)
+    ) {
         let profile = load_profile()?;
         let Args {
             command,
             repository,
             ..
         } = args;
-        let Command::Node(cmd) = command else {
-            unreachable!();
+        return match command {
+            Command::Node(cmd) => node::run(cmd, repository, &profile).map_err(Into::into),
+            Command::Seed(cmd) => run_seed(cmd, repository, &profile).map_err(Into::into),
+            Command::Unseed(cmd) => run_unseed(cmd, repository, &profile).map_err(Into::into),
+            _ => unreachable!(),
         };
-        return node::run(cmd, repository, &profile).map_err(Into::into);
     }
 
     let profile = load_profile()?;
@@ -264,7 +270,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             list_releases(cmd, &releases, &repo, &local, &profile)?;
         }
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
-        Command::Serve(cmd) => run_serve(cmd, args.no_input, &profile, &mut releases)?,
+        Command::Seed(_) | Command::Unseed(_) => unreachable!(), // handled above
     }
 
     Ok(())
@@ -1135,110 +1141,38 @@ fn run_fetch(
     Ok(())
 }
 
-fn run_serve(
-    args: command::Serve,
-    no_input: bool,
+/// Top-level `rad-artifact seed <PATH>` — the renamed `serve`.
+///
+/// Computes the CID from `<PATH>` and delegates the import + COB
+/// write to the shared helper in the node module.
+fn run_seed(
+    cmd: command::Seed,
+    repo_override: Option<RepoId>,
     profile: &Profile,
-    releases: &mut Releases<Repository>,
-) -> Result<(), RadArtifactError> {
-    // Compute CID from the provided path.
-    let cid = if args.path.is_dir() {
-        share::compute_content_id(&args.path).map_err(error::Share::Io)?
+) -> Result<(), node::Error> {
+    let cid = if cmd.path.is_dir() {
+        share::compute_content_id(&cmd.path).map_err(node::Error::Io)?
     } else {
-        share::compute_blob_cid(&args.path).map_err(error::Share::Protocol)?
+        share::compute_blob_cid(&cmd.path).map_err(node::Error::Protocol)?
     };
+    node::seed_artifact(
+        cid,
+        cmd.path,
+        cmd.release,
+        cmd.reference,
+        cmd.no_announce,
+        repo_override,
+        profile,
+    )
+}
 
-    // Register the serving location on a single release. Fetchers look up
-    // by CID and union locations across every release that contains it, so
-    // one registration is sufficient to make the server discoverable. Pick
-    // the most recently created release as the most representative home
-    // for the new location.
-    let matching = releases
-        .find_by_cid(&cid)
-        .map_err(|e| error::Share::Usage(e.to_string()))?;
-    let (release_id, release) = matching
-        .into_iter()
-        .max_by_key(|(_, r)| r.timestamp())
-        .ok_or(error::Share::ArtifactNotFound(cid))?;
-    let artifact = release.artifact(&cid).expect("find_by_cid guarantees this");
-    let kind = share::artifact_kind(&cid).map_err(error::Share::Protocol)?;
-
-    eprintln!("Artifact: {} (CID: {cid})", artifact.name());
-
-    if !no_input && std::io::stdin().is_terminal() {
-        let confirmed = inquire::Confirm::new("Add yourself as a location for this artifact?")
-            .with_default(true)
-            .prompt()
-            .map_err(|e| error::Share::Usage(format!("confirmation cancelled: {e}")))?;
-        if !confirmed {
-            return Ok(());
-        }
-    }
-
-    let passphrase = prompt::passphrase_for_keystore(&profile.keystore)?;
-    let iroh_sk = share::radicle_secret_to_iroh(&profile.keystore, passphrase)
-        .map_err(error::Share::Protocol)?;
-    let preset = share::EndpointPreset::from_env().map_err(error::Share::Protocol)?;
-
-    let rt = tokio::runtime::Runtime::new().map_err(error::Share::Io)?;
-    rt.block_on(async {
-        let server = share::Server::start(iroh_sk, preset)
-            .await
-            .map_err(error::Share::Protocol)?;
-
-        match kind {
-            share::ArtifactKind::Blob => {
-                share::add_blob(server.store(), &args.path, &cid)
-                    .await
-                    .map_err(error::Share::Protocol)?;
-            }
-            share::ArtifactKind::Collection => {
-                share::add_collection(server.store(), &args.path, &cid)
-                    .await
-                    .map_err(error::Share::Protocol)?;
-            }
-        }
-
-        // Scheme-only marker; artifact_locations derives the iroh public key
-        // from the DID that authored the location, not from the URL.
-        let iroh_url = url::Url::parse("iroh://").expect("static URL is valid");
-
-        let signer = profile.signer().map_err(error::Signer)?;
-        {
-            let mut release_mut = releases
-                .get_mut(&release_id)
-                .map_err(|e| error::Share::Usage(e.to_string()))?;
-            release_mut
-                .add_location(cid, iroh_url.clone(), &signer)
-                .map_err(|e| error::Share::Usage(e.to_string()))?;
-        }
-
-        eprintln!("Serving artifact via iroh-blobs");
-        eprintln!("Press Ctrl+C to stop");
-
-        tokio::signal::ctrl_c().await.map_err(error::Share::Io)?;
-
-        eprintln!("\nShutting down...");
-
-        // Retract the location we added. Surface failure as a warning so
-        // shutdown still proceeds to the server teardown below.
-        match releases.get_mut(&release_id) {
-            Ok(mut release_mut) => {
-                if let Err(e) = release_mut.remove_location(cid, iroh_url.clone(), &signer) {
-                    eprintln!("Warning: failed to remove location from {release_id}: {e}");
-                } else {
-                    eprintln!("Removed location from release {release_id}");
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to open release {release_id} for cleanup: {e}");
-            }
-        }
-
-        server.shutdown().await.map_err(error::Share::Protocol)?;
-
-        Ok::<_, RadArtifactError>(())
-    })
+/// Top-level `rad-artifact unseed <CID>`.
+fn run_unseed(
+    cmd: command::Unseed,
+    repo_override: Option<RepoId>,
+    profile: &Profile,
+) -> Result<(), node::Error> {
+    node::unseed_artifact(cmd.cid, cmd.release, repo_override, profile)
 }
 
 /// Convert locations from one or more artifacts into fetch locations.
@@ -1707,39 +1641,6 @@ mod prompt {
             }
         }
     }
-
-    pub fn passphrase_for_keystore(
-        keystore: &radicle::crypto::ssh::keystore::Keystore,
-    ) -> Result<Option<radicle::crypto::ssh::keystore::Passphrase>, super::error::Share> {
-        use radicle::crypto::ssh::keystore::Passphrase;
-
-        let is_encrypted = keystore
-            .is_encrypted()
-            .map_err(|e| super::error::Share::Usage(format!("failed to check keystore: {e}")))?;
-
-        if !is_encrypted {
-            return Ok(None);
-        }
-
-        // Try env var first, matching radicle convention.
-        if let Some(passphrase) = radicle::profile::env::passphrase() {
-            return Ok(Some(passphrase));
-        }
-
-        if !std::io::stderr().is_terminal() {
-            return Err(super::error::Share::Usage(
-                "encrypted keystore requires RAD_PASSPHRASE (no terminal for prompt)".into(),
-            ));
-        }
-
-        let passphrase = inquire::Password::new("Enter passphrase to unlock your radicle key:")
-            .with_display_mode(inquire::PasswordDisplayMode::Masked)
-            .without_confirmation()
-            .prompt()
-            .map_err(|e| super::error::Share::Usage(format!("passphrase prompt failed: {e}")))?;
-
-        Ok(Some(Passphrase::from(passphrase)))
-    }
 }
 
 /// A git ref resolved to its commit OID, plus the annotated tag OID
@@ -1966,8 +1867,10 @@ mod command {
         ComputeCid(ComputeCid),
         /// Fetch an artifact from a release COB
         Fetch(Fetch),
-        /// Serve an artifact via iroh-blobs using your radicle identity
-        Serve(Serve),
+        /// Seed an artifact via the local rad-artifact node.
+        Seed(Seed),
+        /// Stop seeding an artifact via the local rad-artifact node.
+        Unseed(Unseed),
         /// Control the local rad-artifact seeder node.
         Node(crate::node::Cli),
     }
@@ -2054,20 +1957,57 @@ Examples:
         pub url: Option<url::Url>,
     }
 
-    /// Serve an artifact via iroh-blobs using your radicle identity.
+    /// Seed an artifact via the local rad-artifact node.
     ///
-    /// Computes the CID from the given path, looks up the matching artifact
-    /// in existing releases, registers an `iroh://` location in the release
-    /// COB, and serves the content until interrupted. The location is removed
-    /// on graceful shutdown (Ctrl+C).
+    /// Computes the CID from the given path, asks the running node to
+    /// register `seeded/{rid}/{cid}`, and writes an
+    /// `iroh://{endpoint_id}` location to the COB unless
+    /// `--no-announce`. Requires a running node — start one with
+    /// `rad-artifact node start`.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
-  Serve an artifact:
-    $ rad-artifact serve ./my-binary")]
-    pub struct Serve {
-        /// Path to file or directory to serve.
+  Seed an artifact registered in a release:
+    $ rad-artifact seed ./my-binary
+
+  Skip the COB write (e.g. for local sharing):
+    $ rad-artifact seed ./my-binary --no-announce
+
+  Reference the file in place instead of copying bytes:
+    $ rad-artifact seed ./my-binary --reference")]
+    pub struct Seed {
+        /// Path to the file or directory to seed.
         pub path: std::path::PathBuf,
+        /// Target release id; defaults to the most recent matching release.
+        #[clap(long)]
+        pub release: Option<String>,
+        /// Import by reference instead of copying bytes into the store.
+        #[clap(long)]
+        pub reference: bool,
+        /// Skip writing the iroh:// location to the COB.
+        #[clap(long)]
+        pub no_announce: bool,
+    }
+
+    /// Stop seeding an artifact via the local rad-artifact node.
+    ///
+    /// Removes the `seeded/{rid}/{cid}` tag and retracts every
+    /// `iroh://` location under your DID for the given CID. With
+    /// `--release`, the retraction is restricted to a single release.
+    #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Stop seeding an artifact across every matching release:
+    $ rad-artifact unseed baf...abc
+
+  Restrict the retraction to a specific release:
+    $ rad-artifact unseed baf...abc --release <release-id>")]
+    pub struct Unseed {
+        /// Content identifier of the artifact to stop seeding.
+        pub cid: radicle_artifact::Cid,
+        /// Target release id; defaults to every matching release.
+        #[clap(long)]
+        pub release: Option<String>,
     }
 
     /// Add an artifact to a release, creating the release if needed.
