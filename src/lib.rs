@@ -50,6 +50,9 @@
 #![deny(missing_docs)]
 
 #[cfg(feature = "share")]
+pub mod client;
+
+#[cfg(feature = "share")]
 pub mod protocol;
 
 #[cfg(feature = "share")]
