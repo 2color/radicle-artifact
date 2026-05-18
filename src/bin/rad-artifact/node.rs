@@ -179,7 +179,7 @@ pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result
 /// Map ConnectionRefused / NotFound IO errors from the Client to the
 /// friendlier "node is not running" message; pass everything else
 /// through.
-fn client_err(e: ClientError) -> Error {
+pub(crate) fn client_err(e: ClientError) -> Error {
     if let ClientError::Io(io) = &e {
         if matches!(
             io.kind(),

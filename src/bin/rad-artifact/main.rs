@@ -25,6 +25,7 @@ use radicle_artifact::*;
 use url::Url;
 
 mod node;
+mod reconcile;
 
 const TIMEOUT: Duration = Duration::from_millis(5000);
 
@@ -189,7 +190,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     // at all; the rest open it through `open_repo`.
     if matches!(
         args.command,
-        Command::Node(_) | Command::Seed(_) | Command::Unseed(_)
+        Command::Node(_) | Command::Seed(_) | Command::Unseed(_) | Command::Reconcile(_)
     ) {
         let profile = load_profile()?;
         let Args {
@@ -201,6 +202,9 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             Command::Node(cmd) => node::run(cmd, repository, &profile).map_err(Into::into),
             Command::Seed(cmd) => run_seed(cmd, repository, &profile).map_err(Into::into),
             Command::Unseed(cmd) => run_unseed(cmd, repository, &profile).map_err(Into::into),
+            Command::Reconcile(cmd) => {
+                reconcile::run(cmd, repository, &profile).map_err(Into::into)
+            }
             _ => unreachable!(),
         };
     }
@@ -270,7 +274,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             list_releases(cmd, &releases, &repo, &local, &profile)?;
         }
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
-        Command::Seed(_) | Command::Unseed(_) => unreachable!(), // handled above
+        Command::Seed(_) | Command::Unseed(_) | Command::Reconcile(_) => unreachable!(), // handled above
     }
 
     Ok(())
@@ -1843,6 +1847,8 @@ enum RadArtifactError {
     Share(#[from] error::Share),
     #[error(transparent)]
     Node(#[from] node::Error),
+    #[error(transparent)]
+    Reconcile(#[from] reconcile::Error),
 }
 
 mod command {
@@ -1871,6 +1877,8 @@ mod command {
         Seed(Seed),
         /// Stop seeding an artifact via the local rad-artifact node.
         Unseed(Unseed),
+        /// Reconcile COB locations with what the local node is seeding.
+        Reconcile(crate::reconcile::Cli),
         /// Control the local rad-artifact seeder node.
         Node(crate::node::Cli),
     }
