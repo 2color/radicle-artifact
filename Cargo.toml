@@ -3,7 +3,7 @@ members = ["."]
 
 [[bin]]
 name = "rad-artifact"
-path = "src/bin/rad-artifact.rs"
+path = "src/bin/rad-artifact/main.rs"
 # The binary needs CID computation from local paths, which lives in the
 # `share` module. Library consumers can still disable `share` to avoid the
 # iroh/tokio/blake3 dep tree.
