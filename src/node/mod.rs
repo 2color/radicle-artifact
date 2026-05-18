@@ -1,11 +1,11 @@
 //! Long-running `rad-artifact` node: owns the seeder, exposes a
 //! control socket, drives graceful shutdown on signals.
 //!
-//! Phase 2 ships the foreground path only — [`run`] bootstraps the
-//! [`Seeder`](crate::seeder::Seeder), binds `<home>/artifacts/control.sock`,
-//! accepts one [`Command`] per connection and writes back one
-//! [`CommandResult`]. Detached startup, log rotation, and the parent
-//! CLI's passphrase plumbing live in `node::lifecycle` (phase 3).
+//! [`run`] bootstraps the [`Seeder`](crate::seeder::Seeder), binds
+//! `<home>/artifacts/control.sock`, accepts one [`Command`] per
+//! connection and writes back one [`CommandResult`]. Parent-side
+//! helpers (detached spawn, passphrase resolution, log rotation,
+//! liveness polling) live in [`lifecycle`].
 //!
 //! Deliberate non-features (all explicit decisions during grilling):
 //! - no PID file — the socket is the only liveness marker
@@ -13,6 +13,8 @@
 //!   consistency
 //! - tags survive shutdown — restart resumes seeding what was previously
 //!   tagged
+
+pub mod lifecycle;
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
