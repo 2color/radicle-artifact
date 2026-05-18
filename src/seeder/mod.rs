@@ -261,6 +261,36 @@ pub async fn seeded_cids(store: &Store, rid: &RepoId) -> Result<HashSet<Cid>, Er
     Ok(out)
 }
 
+/// Walk every `seeded/...` tag in the store, regardless of repo.
+///
+/// Yields each `(rid, cid)` pair currently tagged as seeded. Tag names
+/// that don't parse cleanly are skipped — we own the writer, so this
+/// only fires on corrupt stores.
+pub async fn all_seeded(store: &Store) -> Result<Vec<(RepoId, Cid)>, Error> {
+    let mut stream = store
+        .tags()
+        .list_prefix(SEEDED_PREFIX.as_bytes())
+        .await
+        .map_err(|e| Error::Iroh(format!("list seeded tags: {e}")))?;
+
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
+        let name = String::from_utf8_lossy(info.name.as_ref());
+        let Some(rest) = name.strip_prefix(SEEDED_PREFIX) else {
+            continue;
+        };
+        let Some((rid_s, cid_s)) = rest.split_once('/') else {
+            continue;
+        };
+        let (Ok(rid), Ok(cid)) = (RepoId::from_str(rid_s), Cid::from_str(cid_s)) else {
+            continue;
+        };
+        out.push((rid, cid));
+    }
+    Ok(out)
+}
+
 /// Sum of stored bytes for a single seeded `(rid, cid)` pair.
 ///
 /// Blobs report their own size; collections walk their hash sequence and
