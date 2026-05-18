@@ -112,6 +112,8 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
     let endpoint_id = seeder::keys::encode_endpoint_id(&seeder.router.endpoint().id());
     let store: FsStore = seeder.blobs.clone();
 
+    log::info!(endpoint_id = endpoint_id.as_str(), socket = socket_path.display().to_string().as_str(); "rad-artifact node ready");
+
     let (shutdown_tx, _) = broadcast::channel::<()>(8);
     spawn_signal_handler(shutdown_tx.clone());
 
@@ -129,7 +131,7 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
                 let (stream, _addr) = match accept {
                     Ok(v) => v,
                     Err(e) => {
-                        eprintln!("rad-artifact node: accept error: {e}");
+                        log::warn!("accept error: {e}");
                         continue;
                     }
                 };
@@ -148,7 +150,7 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
                     )
                     .await
                     {
-                        eprintln!("rad-artifact node: handler error: {e}");
+                        log::warn!("handler error: {e}");
                     }
                     in_flight.fetch_sub(1, Ordering::SeqCst);
                 });
@@ -167,6 +169,7 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
     }
 
     let _ = tokio::time::timeout(ROUTER_SHUTDOWN_TIMEOUT, seeder.router.shutdown()).await;
+    log::info!("rad-artifact node stopped");
     Ok(())
 }
 

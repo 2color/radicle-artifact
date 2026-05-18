@@ -35,6 +35,8 @@ share = [
     "dep:indicatif",
     "dep:n0-future",
     "dep:data-encoding",
+    "dep:log",
+    "dep:structured-logger",
 ]
 
 [dependencies]
@@ -62,6 +64,8 @@ indicatif = { version = "0.17", optional = true }
 inquire = { version = "0.7" }
 n0-future = { version = "0.3", optional = true }
 data-encoding = { version = "2.6", optional = true }
+log = { version = "0.4", optional = true }
+structured-logger = { version = "1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
