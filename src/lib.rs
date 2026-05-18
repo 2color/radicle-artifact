@@ -50,6 +50,9 @@
 #![deny(missing_docs)]
 
 #[cfg(feature = "share")]
+pub mod protocol;
+
+#[cfg(feature = "share")]
 pub mod seeder;
 
 #[cfg(feature = "share")]
