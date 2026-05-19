@@ -188,7 +188,7 @@ The node never writes COB ops — every signed location write (`add_location`, `
 
 ### `iroh://` location format
 
-Seeded artifacts are announced as `iroh://<endpoint-id>` URLs, where `<endpoint-id>` is the iroh endpoint id encoded as **plain BASE32 with no padding** (RFC 4648, `A-Z` and `2-7`). This is a project-specific convention — deliberately distinct from iroh's internal z-base-32 (used for DNS discovery) and radicle's z32 DIDs. Fetchers in this crate decode the host segment with `data_encoding::BASE32_NOPAD`; external clients consuming our URLs need to use the same alphabet.
+Seeded artifacts are announced as `iroh://<endpoint-id>` URLs, where `<endpoint-id>` is the iroh endpoint id encoded as **lowercase base32 with no padding** (RFC 4648, `a-z` and `2-7`).
 
 Older releases recorded bare `iroh://` URLs and derived the endpoint id from the location author's DID. Those URLs are still readable, but every new write uses the explicit form so a future split between the radicle DID and the iroh identity is forward-compatible on the wire.
 

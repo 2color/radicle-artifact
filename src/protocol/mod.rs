@@ -114,7 +114,7 @@ pub struct SeedReceipt {
     pub rid: String,
     /// Echo of the requested CID.
     pub cid: String,
-    /// BASE32_NOPAD-encoded endpoint id the node is serving on.
+    /// Lowercase base32 (RFC 4648, no padding) endpoint id the node is serving on.
     pub endpoint_id: String,
     /// Logical size of the imported artifact in bytes.
     pub bytes: u64,
@@ -150,7 +150,7 @@ pub struct SeededEntry {
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Status {
-    /// BASE32_NOPAD-encoded endpoint id.
+    /// Lowercase base32 (RFC 4648, no padding) endpoint id.
     pub endpoint_id: String,
     /// Unix timestamp (seconds) when the node bound its socket.
     pub started_at_unix: i64,

@@ -4,14 +4,19 @@
 //! the two representations, enabling a single identity to be used for both
 //! Radicle COB operations and iroh-blobs networking.
 //!
-//! Endpoint IDs are encoded as plain BASE32 (RFC 4648), no padding — the
-//! project-specific convention for `iroh://{base32}` location URLs.
+//! Endpoint IDs are encoded as lowercase RFC 4648 base32, no padding — the
+//! project-specific convention for `iroh://{base32}` location URLs. We use
+//! the `multibase` crate's `Base32Lower` directly (no multibase prefix),
+//! since the `iroh://` scheme already disambiguates the encoding.
 
-use data_encoding::BASE32_NOPAD;
+use multibase::Base;
 use radicle::crypto::ssh::keystore::Keystore;
 use url::Url;
 
 use crate::share::Error;
+
+/// Canonical wire encoding for endpoint ids: RFC 4648 base32, lowercase, no padding.
+const ENDPOINT_ID_BASE: Base = Base::Base32Lower;
 
 /// Convert a radicle DID's public key to an iroh public key.
 ///
@@ -45,19 +50,19 @@ pub fn radicle_secret_to_iroh(
     Ok(iroh::SecretKey::from_bytes(seed_bytes))
 }
 
-/// Encode an iroh endpoint id as a BASE32_NOPAD string (no `iroh://` prefix).
+/// Encode an iroh endpoint id as a lowercase base32 string (no `iroh://` prefix).
 ///
 /// This is the canonical wire/storage form. Use `decode_endpoint_id` to
 /// parse it back. Do not use [`std::fmt::Display`] on `EndpointId` — that
 /// produces a different (z-base-32) encoding incompatible with this one.
 pub fn encode_endpoint_id(id: &iroh::EndpointId) -> String {
-    BASE32_NOPAD.encode(id.as_bytes())
+    ENDPOINT_ID_BASE.encode(id.as_bytes())
 }
 
-/// Parse a BASE32_NOPAD-encoded endpoint id back into an `EndpointId`.
+/// Parse a lowercase base32 endpoint id back into an `EndpointId`.
 pub fn decode_endpoint_id(s: &str) -> Result<iroh::EndpointId, Error> {
-    let bytes = BASE32_NOPAD
-        .decode(s.as_bytes())
+    let bytes = ENDPOINT_ID_BASE
+        .decode(s)
         .map_err(|e| Error::Iroh(format!("invalid base32 endpoint id '{s}': {e}")))?;
     let arr: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
         Error::Iroh(format!(
@@ -79,7 +84,7 @@ pub fn iroh_url_for(id: &iroh::EndpointId) -> String {
 /// Returns `Ok(None)` for a bare `iroh://` (no host) so callers can fall
 /// back to deriving the endpoint id from the location author's DID. `Err`
 /// is returned only when the URL has a host that fails to parse as a
-/// BASE32_NOPAD-encoded endpoint id. The scheme is not validated here;
+/// lowercase base32-encoded endpoint id. The scheme is not validated here;
 /// callers should gate on `url.scheme() == "iroh"` before invoking.
 pub fn endpoint_id_from_iroh_url(url: &Url) -> Result<Option<iroh::EndpointId>, Error> {
     match url.host_str() {
@@ -141,7 +146,7 @@ mod tests {
 
     #[test]
     fn endpoint_id_from_iroh_url_with_garbage_host_errors() {
-        // Lowercase letters are not valid BASE32 alphabet (which is A-Z, 2-7).
+        // '1' is not in the base32 alphabet (a-z + 2-7), so this must fail.
         let url = Url::parse("iroh://abc123").unwrap();
         assert!(endpoint_id_from_iroh_url(&url).is_err());
     }
