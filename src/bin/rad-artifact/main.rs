@@ -478,8 +478,8 @@ where
     // Validate iroh:// URLs up front so a typo in the endpoint id surfaces
     // here, before it ends up signed into the COB. A bare iroh:// is allowed
     // and resolves to the author's DID-derived endpoint id at fetch time.
-    if url.scheme() == "iroh" {
-        share::endpoint_id_from_iroh_url(&url).map_err(|e| error::Locate::Usage(e.to_string()))?;
+    if share::iroh_url::matches(&url) {
+        share::iroh_url::endpoint_id(&url).map_err(|e| error::Locate::Usage(e.to_string()))?;
     }
     let mut release = releases
         .get_mut(&id)
@@ -1197,8 +1197,8 @@ fn artifact_locations<'a>(
     for artifact in artifacts {
         for (did, urls) in artifact.locations() {
             for url in urls {
-                if url.scheme() == "iroh" {
-                    let endpoint_id = match share::endpoint_id_from_iroh_url(url) {
+                if share::iroh_url::matches(url) {
+                    let endpoint_id = match share::iroh_url::endpoint_id(url) {
                         Ok(Some(id)) => id,
                         Ok(None) => {
                             share::did_to_iroh_public_key(did).map_err(error::Share::Protocol)?

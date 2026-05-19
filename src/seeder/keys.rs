@@ -1,17 +1,16 @@
-//! Key conversion between radicle and iroh identities, plus URL encoding.
+//! Key conversion between radicle and iroh identities, plus the endpoint id codec.
 //!
 //! Radicle and iroh both use ed25519 keys. These utilities convert between
 //! the two representations, enabling a single identity to be used for both
 //! Radicle COB operations and iroh-blobs networking.
 //!
-//! Endpoint IDs are encoded as lowercase RFC 4648 base32, no padding — the
-//! project-specific convention for `iroh://{base32}` location URLs. We use
-//! the `multibase` crate's `Base32Lower` directly (no multibase prefix),
-//! since the `iroh://` scheme already disambiguates the encoding.
+//! Endpoint IDs are encoded as lowercase RFC 4648 base32, no padding. We
+//! use the `multibase` crate's `Base32Lower` directly (no multibase
+//! prefix) since the `iroh://` URL scheme already disambiguates the
+//! encoding.
 
 use multibase::Base;
 use radicle::crypto::ssh::keystore::Keystore;
-use url::Url;
 
 use crate::share::Error;
 
@@ -74,25 +73,6 @@ pub fn decode_endpoint_id(s: &str) -> Result<iroh::EndpointId, Error> {
         .map_err(|e| Error::Iroh(format!("invalid endpoint id bytes: {e}")))
 }
 
-/// Build the canonical `iroh://{base32}` URL for an endpoint.
-pub fn iroh_url_for(id: &iroh::EndpointId) -> String {
-    format!("iroh://{}", encode_endpoint_id(id))
-}
-
-/// Parse the iroh endpoint id encoded in an `iroh://<endpoint-id>` URL.
-///
-/// Returns `Ok(None)` for a bare `iroh://` (no host) so callers can fall
-/// back to deriving the endpoint id from the location author's DID. `Err`
-/// is returned only when the URL has a host that fails to parse as a
-/// lowercase base32-encoded endpoint id. The scheme is not validated here;
-/// callers should gate on `url.scheme() == "iroh"` before invoking.
-pub fn endpoint_id_from_iroh_url(url: &Url) -> Result<Option<iroh::EndpointId>, Error> {
-    match url.host_str() {
-        Some(host) if !host.is_empty() => decode_endpoint_id(host).map(Some),
-        _ => Ok(None),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use radicle::crypto::ssh::keystore::Passphrase;
@@ -116,12 +96,6 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_id_from_bare_iroh_url_is_none() {
-        let url = Url::parse("iroh://").unwrap();
-        assert_eq!(endpoint_id_from_iroh_url(&url).unwrap(), None);
-    }
-
-    #[test]
     fn endpoint_id_base32_round_trip() {
         // Deterministic 32-byte key.
         let sk = iroh::SecretKey::from_bytes(&[7u8; 32]);
@@ -131,24 +105,6 @@ mod tests {
         assert_eq!(decoded, id);
         // Re-encoding produces the same string bit-for-bit.
         assert_eq!(encode_endpoint_id(&decoded), encoded);
-    }
-
-    #[test]
-    fn iroh_url_round_trip() {
-        let sk = iroh::SecretKey::from_bytes(&[7u8; 32]);
-        let id = sk.public();
-        let url = Url::parse(&iroh_url_for(&id)).unwrap();
-        let parsed = endpoint_id_from_iroh_url(&url)
-            .expect("valid host should parse")
-            .expect("host present");
-        assert_eq!(parsed, id);
-    }
-
-    #[test]
-    fn endpoint_id_from_iroh_url_with_garbage_host_errors() {
-        // '1' is not in the base32 alphabet (a-z + 2-7), so this must fail.
-        let url = Url::parse("iroh://abc123").unwrap();
-        assert!(endpoint_id_from_iroh_url(&url).is_err());
     }
 
     #[test]

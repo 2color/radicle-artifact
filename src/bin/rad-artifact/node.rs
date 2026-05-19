@@ -382,7 +382,7 @@ pub(crate) fn seed_artifact(
     let signer = profile
         .signer()
         .map_err(|e| Error::Usage(format!("signer: {e}")))?;
-    let url = Url::parse(&format!("iroh://{}", receipt.endpoint_id))
+    let url = share::iroh_url::build_from_id_str(&receipt.endpoint_id)
         .map_err(|e| Error::Usage(format!("invalid endpoint id from node: {e}")))?;
     let mut release_mut = releases.get_mut(&release_id).map_err(Error::Find)?;
     release_mut
@@ -466,7 +466,7 @@ pub(crate) fn unseed_artifact(
             .and_then(|a| a.locations_of(&local_did))
             .map(|urls| {
                 urls.iter()
-                    .filter(|u| u.scheme() == "iroh")
+                    .filter(|u| share::iroh_url::matches(u))
                     .cloned()
                     .collect()
             })

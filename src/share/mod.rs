@@ -24,6 +24,7 @@ use std::io;
 pub mod cid_utils;
 pub mod endpoint;
 pub mod fetch;
+pub mod iroh_url;
 
 // Re-export key types for convenience.
 pub use cid_utils::{
@@ -35,9 +36,7 @@ pub use endpoint::EndpointPreset;
 pub use fetch::{download, download_collection, Location};
 // `keys` moved to `crate::seeder::keys`; re-exported here for back-compat
 // with existing callers in the binary.
-pub use crate::seeder::keys::{
-    did_to_iroh_public_key, endpoint_id_from_iroh_url, radicle_secret_to_iroh,
-};
+pub use crate::seeder::keys::{did_to_iroh_public_key, radicle_secret_to_iroh};
 
 /// Errors from sharing operations.
 #[derive(Debug, thiserror::Error)]

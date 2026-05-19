@@ -26,7 +26,8 @@ use radicle::{
 };
 use radicle_artifact::client::{self, Client};
 use radicle_artifact::protocol::{Command as NodeMsg, SeededEntry, Status};
-use radicle_artifact::seeder::keys::{encode_endpoint_id, endpoint_id_from_iroh_url};
+use radicle_artifact::seeder::keys::encode_endpoint_id;
+use radicle_artifact::share::iroh_url;
 use radicle_artifact::Cid;
 use thiserror::Error;
 use url::Url;
@@ -190,8 +191,8 @@ fn reconcile_one(
             let Some(urls) = artifact.locations_of(ctx.local_did) else {
                 continue;
             };
-            for url in urls.iter().filter(|u| u.scheme() == "iroh") {
-                let url_endpoint = match endpoint_id_from_iroh_url(url) {
+            for url in urls.iter().filter(|u| iroh_url::matches(u)) {
+                let url_endpoint = match iroh_url::endpoint_id(url) {
                     Ok(Some(eid)) => Some(encode_endpoint_id(&eid)),
                     // Bare `iroh://` under our DID resolves to our
                     // current endpoint id (key derived from same
@@ -238,7 +239,7 @@ fn reconcile_one(
     let mut report = RepoReport::default();
 
     for (release_id, cid) in missing {
-        let url = Url::parse(&format!("iroh://{}", ctx.endpoint_id)).map_err(|e| {
+        let url = iroh_url::build_from_id_str(ctx.endpoint_id).map_err(|e| {
             Error::Node(node::Error::Usage(format!(
                 "invalid endpoint id from node: {e}"
             )))

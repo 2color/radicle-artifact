@@ -327,14 +327,6 @@ async fn blob_size(store: &Store, hash: Hash) -> u64 {
     }
 }
 
-/// Build the canonical `iroh://{base32}` URL for the seeder's endpoint.
-///
-/// Delegates to [`keys::iroh_url_for`] so the lowercase-base32 convention
-/// stays in one place.
-pub fn our_iroh_url(endpoint: &iroh::Endpoint) -> String {
-    keys::iroh_url_for(&endpoint.id())
-}
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
