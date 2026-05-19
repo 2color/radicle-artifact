@@ -1,1 +1,1 @@
-{"revision":"c884af86bfb218bd0cc98a2beadc8948f487a9f1","summary":"looks pretty good","type":"review"}
+{"body":"We should move this into a constant ","location":{"commit":"f7f8dde153daedb728352bfd37d04e307531a3bd","new":{"range":{"end":444,"start":443},"type":"lines"},"old":null,"path":"src/bin/rad-artifact.rs"},"review":"df1181a60e9a4ed89d5acfc41e3deaef4e88183c","type":"review.comment"}
