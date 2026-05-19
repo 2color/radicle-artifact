@@ -522,17 +522,10 @@ fn logs(cmd: Logs, profile: &Profile) -> Result<(), Error> {
 }
 
 fn print_status_pretty(s: &Status) {
-    let endpoint = if s.endpoint_id.len() >= 12 {
-        format!(
-            "{}…{}",
-            &s.endpoint_id[..6],
-            &s.endpoint_id[s.endpoint_id.len() - 4..]
-        )
-    } else {
-        s.endpoint_id.clone()
-    };
+    // Print the full base32 endpoint id — peers need to copy it
+    // verbatim, so truncation here is hostile.
     let uptime = humanize_uptime(s.started_at_unix);
-    println!("Node          {endpoint} (started {uptime})");
+    println!("Node          {} (started {uptime})", s.endpoint_id);
     println!(
         "Seeded        {} artifacts · {}",
         s.seeded.count,

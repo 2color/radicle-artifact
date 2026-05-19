@@ -40,7 +40,6 @@ cargo install radicle-artifact
 6. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
 7. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
 
-> **Breaking change in `0.15`:** the old `rad-artifact serve <PATH>` (a foreground, Ctrl-C-bounded process) was replaced by the long-running seeder node plus `rad-artifact seed <PATH>`. Run `rad-artifact node start` once per host, then seed and unseed individual artifacts. See [Seeding via the local node](#seeding-via-the-local-node) below.
 
 ## How it works
 
@@ -165,7 +164,7 @@ Use `--no-input` to disable interactive prompts (for scripts and CI).
 
 ## Seeding via the local node
 
-Long-running seeding is owned by `rad-artifact node`, a per-host daemon that holds a persistent iroh-blobs store. Start it once and it survives shell exits, terminal closes, and reboots (when supervised):
+Seeding involves running a daemon that holds a persistent iroh-blobs store that serves the files over iroh connection. Start it once and it survives shell exits and terminal closes:
 
 ```
 $ rad-artifact node start
@@ -176,7 +175,7 @@ Seeded baf...abc (12.4 MiB, new tagged)
 Added iroh location to release abc1234
 
 $ rad-artifact node status
-Node          AB12CD…WXYZ (started 14m ago)
+Node          AS3WGSDOX5RKLZG46G2GDUMHWJ43L6FK5DEYTQ6HQKWJVRDSF5OQ (started 14m ago)
 Seeded        1 artifact · 12.4 MiB
 Disk          12.6 MiB on disk
 ```
