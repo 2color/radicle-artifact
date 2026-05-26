@@ -1116,10 +1116,17 @@ fn run_fetch(
     if locations.is_empty() {
         return Err(error::Share::NoLocationsForCid { cid }.into());
     }
+    let (http_count, iroh_count) =
+        locations
+            .iter()
+            .fold((0usize, 0usize), |(h, i), loc| match loc {
+                share::Location::Url(_) => (h + 1, i),
+                share::Location::Iroh(_) => (h, i + 1),
+            });
     eprintln!(
-        "Trying {} location{}...",
+        "Trying {} location{} ({http_count} https, {iroh_count} iroh)...",
         locations.len(),
-        if locations.len() == 1 { "" } else { "s" }
+        if locations.len() == 1 { "" } else { "s" },
     );
 
     let output_path = args.output.unwrap_or_else(|| {
