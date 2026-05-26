@@ -7,10 +7,6 @@
 //! helpers (detached spawn, passphrase resolution, log rotation,
 //! liveness polling) live in [`lifecycle`].
 //!
-//! Deliberate non-features (all explicit decisions during grilling):
-//! - no PID file — the socket is the only liveness marker
-//! - no startup integrity sweep — trust iroh-blobs' own tag↔hash
-//!   consistency
 //! - tags survive shutdown — restart resumes seeding what was previously
 //!   tagged
 
