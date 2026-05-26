@@ -1877,7 +1877,15 @@ mod command {
         Seed(Seed),
         /// Stop seeding an artifact via the local rad-artifact node.
         Unseed(Unseed),
-        /// Reconcile COB locations with what the local node is seeding.
+        /// Reconcile release-COB locations with the artifacts in the node's store.
+        ///
+        /// Locations published in release COBs and the artifacts the local
+        /// node is actually seeding can drift out of sync, e.g. the node
+        /// is seeding a CID but no `iroh://` location under our DID
+        /// advertises it, or a location under our DID points at a CID the
+        /// node no longer seeds, or at a previous endpoint id. This
+        /// command inspects that drift, auto-adds missing locations, and
+        /// (with the appropriate flag) retracts the stale ones.
         Reconcile(crate::reconcile::Cli),
         /// Control the local rad-artifact seeder node.
         Node(crate::node::Cli),

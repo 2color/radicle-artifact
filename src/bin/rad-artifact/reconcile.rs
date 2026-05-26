@@ -6,15 +6,16 @@
 //!   no `iroh://{current_endpoint}` location for that CID exists in
 //!   any release under our DID. Auto-fixed by writing the location to
 //!   the most recent matching release.
-//! - **OrphanedSelf**: a `iroh://{current_endpoint}` location under our
-//!   DID exists for a CID we are *not* seeding. Flagged but only
-//!   retracted when the user passes `--retract-orphaned <CID>` for
-//!   that specific CID.
+//! - **OrphanedSelf**: a `iroh://{current_endpoint}` (or bare `iroh://`,
+//!   which resolves to our current endpoint) location under our DID
+//!   exists for a CID we are *not* seeding. Flagged; retracted either
+//!   per-CID via `--retract-orphaned <CID>` or in bulk via
+//!   `--retract-orphaned-self`.
 //! - **StaleEndpoint**: an `iroh://{other_endpoint}` location under our
 //!   DID — i.e. one of our previous keys, or a malformed/legacy-encoded
 //!   endpoint id that no longer decodes (e.g. a hex host left over from
-//!   a previous encoding). Reported in summary; retracted only when
-//!   `--retract-orphaned-self` is passed.
+//!   a previous encoding). Reported in summary; retracted in bulk by
+//!   `--retract-orphaned-self`.
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -48,9 +49,13 @@ pub struct Cli {
     /// which the node is no longer seeding. Repeatable.
     #[clap(long = "retract-orphaned", value_name = "CID")]
     pub retract_orphaned: Vec<Cid>,
-    /// Retract `iroh://{other_endpoint}` locations under our DID
-    /// (URLs whose endpoint id does not match the running node).
-    #[clap(long)]
+    /// Retract every location under our DID that no longer reflects
+    /// what the local node is seeding from its current endpoint:
+    /// both orphaned-self entries (current endpoint, CID not seeded)
+    /// and stale-endpoint entries (URL pinned to a previous or
+    /// undecodable endpoint id). Use after reviewing a previous
+    /// `reconcile` run.
+    #[clap(long, conflicts_with = "retract_orphaned")]
     pub retract_orphaned_self: bool,
 }
 
@@ -73,13 +78,112 @@ pub enum Error {
     },
 }
 
-/// One per-repo run.
+/// One row per affected location, used both for per-action logging and
+/// the final summary.
+#[derive(Debug)]
+struct LocationRow {
+    rid: RepoId,
+    release_id: radicle_artifact::ReleaseId,
+    cid: Cid,
+    url: Url,
+}
+
 #[derive(Default, Debug)]
 struct RepoReport {
     added: u32,
     retracted: u32,
-    orphaned_self_skipped: Vec<Cid>,
-    stale_endpoint_skipped: u32,
+    orphaned_self_skipped: Vec<LocationRow>,
+    stale_endpoint_skipped: Vec<LocationRow>,
+}
+
+/// One iroh:// URL under our DID, flattened out of the release/artifact
+/// tree so classification can be unit-tested without a real COB.
+struct OurLocation {
+    release_id: radicle_artifact::ReleaseId,
+    cid: Cid,
+    url: Url,
+}
+
+/// One (release, cid) occurrence — every artifact entry across every
+/// release, regardless of whether it has a location under our DID.
+/// Used to pick the most recent matching release when filling in a
+/// missing location.
+struct ReleaseArtifact {
+    release_id: radicle_artifact::ReleaseId,
+    timestamp: u64,
+    cid: Cid,
+}
+
+/// Result of [`classify_locations`].
+#[derive(Default, Debug)]
+struct Classified {
+    /// CIDs that already have a current-endpoint location under our DID.
+    current_endpoint_have: HashSet<Cid>,
+    /// Current-endpoint locations under our DID whose CID the node is
+    /// no longer seeding.
+    orphaned_self: Vec<(radicle_artifact::ReleaseId, Cid, Url)>,
+    /// Locations under our DID pinned to a different (or undecodable)
+    /// endpoint id.
+    stale_endpoint: Vec<(radicle_artifact::ReleaseId, Cid, Url)>,
+}
+
+/// Sort each iroh:// URL under our DID into one of the three buckets.
+///
+/// - Bare `iroh://` (no host) resolves to our current endpoint because
+///   the host falls back to the location author's DID, which is us.
+/// - A host that fails to decode is treated as stale: it isn't our
+///   current endpoint id and belongs in the same retraction bucket as
+///   a foreign one.
+fn classify_locations(
+    endpoint_id: &str,
+    seeded: &HashSet<Cid>,
+    locations: impl IntoIterator<Item = OurLocation>,
+) -> Classified {
+    let mut out = Classified::default();
+    for loc in locations {
+        let eid = match iroh_url::endpoint_id(&loc.url) {
+            Ok(Some(eid)) => encode_endpoint_id(&eid),
+            Ok(None) => endpoint_id.to_string(),
+            Err(_) => {
+                out.stale_endpoint.push((loc.release_id, loc.cid, loc.url));
+                continue;
+            }
+        };
+        if eid == endpoint_id {
+            out.current_endpoint_have.insert(loc.cid);
+            if !seeded.contains(&loc.cid) {
+                out.orphaned_self.push((loc.release_id, loc.cid, loc.url));
+            }
+        } else {
+            out.stale_endpoint.push((loc.release_id, loc.cid, loc.url));
+        }
+    }
+    out
+}
+
+/// For every seeded CID that we don't already advertise from the
+/// current endpoint, pick the most recent release that contains the
+/// CID. Releases without the CID are skipped.
+fn find_missing(
+    seeded: &HashSet<Cid>,
+    current_have: &HashSet<Cid>,
+    artifacts: &[ReleaseArtifact],
+) -> Vec<(radicle_artifact::ReleaseId, Cid)> {
+    let mut missing = Vec::new();
+    for cid in seeded {
+        if current_have.contains(cid) {
+            continue;
+        }
+        let target = artifacts
+            .iter()
+            .filter(|r| &r.cid == cid)
+            .max_by_key(|r| r.timestamp)
+            .map(|r| r.release_id);
+        if let Some(release_id) = target {
+            missing.push((release_id, *cid));
+        }
+    }
+    missing
 }
 
 /// Carries everything `reconcile_one` needs to inspect a single repo
@@ -142,7 +246,9 @@ pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result
         total
             .orphaned_self_skipped
             .extend(report.orphaned_self_skipped);
-        total.stale_endpoint_skipped += report.stale_endpoint_skipped;
+        total
+            .stale_endpoint_skipped
+            .extend(report.stale_endpoint_skipped);
     }
 
     print_summary(&total);
@@ -182,58 +288,35 @@ fn reconcile_one(
         .map(|(oid, r)| (radicle_artifact::ReleaseId::from(oid), r))
         .collect();
 
-    // Classify every iroh:// URL under our DID across every release.
-    let mut current_endpoint_have: HashSet<Cid> = HashSet::new();
-    let mut orphaned_self: Vec<(radicle_artifact::ReleaseId, Cid, Url)> = Vec::new();
-    let mut stale_endpoint: Vec<(radicle_artifact::ReleaseId, Cid, Url)> = Vec::new();
-
+    // Build flat snapshots so classification can be tested in isolation.
+    let mut our_locations: Vec<OurLocation> = Vec::new();
+    let mut all_artifacts: Vec<ReleaseArtifact> = Vec::new();
     for (release_id, release) in &all_releases {
         for (cid, artifact) in release.artifacts() {
+            all_artifacts.push(ReleaseArtifact {
+                release_id: *release_id,
+                timestamp: release.timestamp(),
+                cid: *cid,
+            });
             let Some(urls) = artifact.locations_of(ctx.local_did) else {
                 continue;
             };
             for url in urls.iter().filter(|u| iroh_url::matches(u)) {
-                // Bare `iroh://` under our DID resolves to our current
-                // endpoint id (key derived from same Ed25519 secret), so
-                // treat it as current. A host that fails to decode is
-                // treated as stale: it isn't our current endpoint id and
-                // belongs in the same retraction bucket as a foreign one.
-                let eid = match iroh_url::endpoint_id(url) {
-                    Ok(Some(eid)) => encode_endpoint_id(&eid),
-                    Ok(None) => ctx.endpoint_id.to_string(),
-                    Err(_) => {
-                        stale_endpoint.push((*release_id, *cid, url.clone()));
-                        continue;
-                    }
-                };
-                if eid == ctx.endpoint_id {
-                    current_endpoint_have.insert(*cid);
-                    if !seeded.contains(cid) {
-                        orphaned_self.push((*release_id, *cid, url.clone()));
-                    }
-                } else {
-                    stale_endpoint.push((*release_id, *cid, url.clone()));
-                }
+                our_locations.push(OurLocation {
+                    release_id: *release_id,
+                    cid: *cid,
+                    url: url.clone(),
+                });
             }
         }
     }
 
-    // Seeded CIDs missing a current-endpoint location: pick the most
-    // recent matching release and queue an add.
-    let mut missing: Vec<(radicle_artifact::ReleaseId, Cid)> = Vec::new();
-    for cid in &seeded {
-        if current_endpoint_have.contains(cid) {
-            continue;
-        }
-        let target = all_releases
-            .iter()
-            .filter(|(_, r)| r.artifact(cid).is_some())
-            .max_by_key(|(_, r)| r.timestamp())
-            .map(|(id, _)| *id);
-        if let Some(release_id) = target {
-            missing.push((release_id, *cid));
-        }
-    }
+    let Classified {
+        current_endpoint_have,
+        orphaned_self,
+        stale_endpoint,
+    } = classify_locations(ctx.endpoint_id, &seeded, our_locations);
+    let missing = find_missing(&seeded, &current_endpoint_have, &all_artifacts);
 
     // Apply: additions are always auto; retractions are gated.
     let signer = profile
@@ -250,34 +333,44 @@ fn reconcile_one(
         let mut release_mut = releases
             .get_mut(&release_id)
             .map_err(|e| Error::Node(node::Error::Find(e)))?;
-        match release_mut.add_location(cid, url, &signer) {
+        match release_mut.add_location(cid, url.clone(), &signer) {
             Ok(_) => {
-                eprintln!("added missing location for {cid} on {release_id}");
+                eprintln!("added: rid={rid} release={release_id} cid={cid} url={url}");
                 report.added += 1;
             }
             Err(err) => {
-                eprintln!("warning: failed to add location for {cid} on {release_id}: {err}")
+                eprintln!(
+                    "warning: failed to add rid={rid} release={release_id} cid={cid} url={url}: {err}"
+                );
             }
         }
     }
 
     for (release_id, cid, url) in orphaned_self {
-        if ctx.retract_orphaned.contains(&cid) {
+        if ctx.retract_orphaned_self || ctx.retract_orphaned.contains(&cid) {
             let mut release_mut = releases
                 .get_mut(&release_id)
                 .map_err(|e| Error::Node(node::Error::Find(e)))?;
             match release_mut.remove_location(cid, url.clone(), &signer) {
                 Ok(_) => {
-                    eprintln!("retracted orphaned-self {cid} on {release_id}");
+                    eprintln!(
+                        "retracted orphaned-self: rid={rid} release={release_id} cid={cid} url={url}"
+                    );
                     report.retracted += 1;
                 }
-                Err(err) => eprintln!("warning: failed to retract {url} on {release_id}: {err}"),
+                Err(err) => eprintln!(
+                    "warning: failed to retract rid={rid} release={release_id} cid={cid} url={url}: {err}"
+                ),
             }
         } else {
-            eprintln!(
-                "note: orphaned-self {cid} on {release_id} (pass `--retract-orphaned {cid}` to act)"
-            );
-            report.orphaned_self_skipped.push(cid);
+            // Skipped rows are surfaced once in the final summary
+            // instead of also being logged here.
+            report.orphaned_self_skipped.push(LocationRow {
+                rid,
+                release_id,
+                cid,
+                url,
+            });
         }
     }
 
@@ -288,13 +381,22 @@ fn reconcile_one(
                 .map_err(|e| Error::Node(node::Error::Find(e)))?;
             match release_mut.remove_location(cid, url.clone(), &signer) {
                 Ok(_) => {
-                    eprintln!("retracted stale-endpoint {url} on {release_id}");
+                    eprintln!(
+                        "retracted stale-endpoint: rid={rid} release={release_id} cid={cid} url={url}"
+                    );
                     report.retracted += 1;
                 }
-                Err(err) => eprintln!("warning: failed to retract {url} on {release_id}: {err}"),
+                Err(err) => eprintln!(
+                    "warning: failed to retract rid={rid} release={release_id} cid={cid} url={url}: {err}"
+                ),
             }
         } else {
-            report.stale_endpoint_skipped += 1;
+            report.stale_endpoint_skipped.push(LocationRow {
+                rid,
+                release_id,
+                cid,
+                url,
+            });
         }
     }
 
@@ -305,7 +407,7 @@ fn print_summary(r: &RepoReport) {
     if r.added == 0
         && r.retracted == 0
         && r.orphaned_self_skipped.is_empty()
-        && r.stale_endpoint_skipped == 0
+        && r.stale_endpoint_skipped.is_empty()
     {
         eprintln!("Reconcile: no drift.");
         return;
@@ -317,15 +419,264 @@ fn print_summary(r: &RepoReport) {
         eprintln!("Reconcile: retracted {} stale location(s)", r.retracted);
     }
     if !r.orphaned_self_skipped.is_empty() {
+        eprintln!();
         eprintln!(
-            "Reconcile: {} orphaned-self CID(s) left in place (pass --retract-orphaned <CID>)",
+            "Reconcile: {} orphaned-self location(s) left in place — pass --retract-orphaned <CID> (or --retract-orphaned-self for all) to retract:",
             r.orphaned_self_skipped.len()
         );
+        print_grouped_by_rid(&r.orphaned_self_skipped);
     }
-    if r.stale_endpoint_skipped > 0 {
+    if !r.stale_endpoint_skipped.is_empty() {
+        eprintln!();
         eprintln!(
-            "Reconcile: {} stale-endpoint URL(s) left in place (pass --retract-orphaned-self)",
-            r.stale_endpoint_skipped
+            "Reconcile: {} stale-endpoint location(s) left in place — pass --retract-orphaned-self to retract (also covers orphaned-self):",
+            r.stale_endpoint_skipped.len()
         );
+        print_grouped_by_rid(&r.stale_endpoint_skipped);
+    }
+}
+
+/// Print skipped locations grouped by RID, then release, with each CID
+/// and URL on its own indented line.
+fn print_grouped_by_rid(rows: &[LocationRow]) {
+    use std::collections::BTreeMap;
+    let mut by_rid: BTreeMap<String, Vec<&LocationRow>> = BTreeMap::new();
+    for row in rows {
+        by_rid.entry(row.rid.to_string()).or_default().push(row);
+    }
+    for (rid, items) in &by_rid {
+        eprintln!("  {rid}");
+        for row in items {
+            eprintln!("    release {}", row.release_id);
+            eprintln!("      cid: {}", row.cid);
+            eprintln!("      url: {}", row.url);
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::collections::HashSet;
+    use std::str::FromStr;
+
+    use radicle_artifact::seeder::keys::encode_endpoint_id;
+    use radicle_artifact::share::{blake3_hash_to_cid, iroh_url, ArtifactKind};
+    use radicle_artifact::{Cid, ReleaseId};
+    use url::Url;
+
+    use super::{classify_locations, find_missing, OurLocation, ReleaseArtifact};
+
+    /// Production-faithful CID: BLAKE3 multihash, raw codec, derived
+    /// from a single distinguishing byte.
+    fn test_cid(n: u8) -> Cid {
+        blake3_hash_to_cid(iroh_blobs::Hash::new([n]), ArtifactKind::Blob)
+    }
+
+    /// 40-char hex Oid keyed by `n`.
+    fn test_release(n: u8) -> ReleaseId {
+        ReleaseId::from_str(&format!("{n:040x}")).unwrap()
+    }
+
+    /// Endpoint id derived from a fixed-byte secret.
+    fn test_endpoint(byte: u8) -> iroh::EndpointId {
+        iroh::SecretKey::from_bytes(&[byte; 32]).public()
+    }
+
+    fn bare_iroh_url() -> Url {
+        Url::parse(&format!("{}://", iroh_url::SCHEME)).unwrap()
+    }
+
+    fn undecodable_iroh_url() -> Url {
+        // '1' is not in the base32 alphabet (a-z + 2-7).
+        Url::parse(&format!("{}://abc123", iroh_url::SCHEME)).unwrap()
+    }
+
+    // --- classify_locations -------------------------------------------------
+
+    #[test]
+    fn bare_iroh_is_current_endpoint() {
+        let our_ep = test_endpoint(1);
+        let cid = test_cid(1);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let out = classify_locations(
+            &encode_endpoint_id(&our_ep),
+            &seeded,
+            [OurLocation {
+                release_id: test_release(1),
+                cid,
+                url: bare_iroh_url(),
+            }],
+        );
+        assert!(out.current_endpoint_have.contains(&cid));
+        assert!(out.orphaned_self.is_empty());
+        assert!(out.stale_endpoint.is_empty());
+    }
+
+    #[test]
+    fn explicit_current_endpoint_is_current() {
+        let our_ep = test_endpoint(1);
+        let cid = test_cid(1);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let out = classify_locations(
+            &encode_endpoint_id(&our_ep),
+            &seeded,
+            [OurLocation {
+                release_id: test_release(1),
+                cid,
+                url: iroh_url::build(&our_ep),
+            }],
+        );
+        assert!(out.current_endpoint_have.contains(&cid));
+        assert!(out.orphaned_self.is_empty());
+        assert!(out.stale_endpoint.is_empty());
+    }
+
+    #[test]
+    fn other_endpoint_is_stale() {
+        let our_ep = test_endpoint(1);
+        let other_ep = test_endpoint(2);
+        let cid = test_cid(1);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let out = classify_locations(
+            &encode_endpoint_id(&our_ep),
+            &seeded,
+            [OurLocation {
+                release_id: test_release(1),
+                cid,
+                url: iroh_url::build(&other_ep),
+            }],
+        );
+        assert!(!out.current_endpoint_have.contains(&cid));
+        assert!(out.orphaned_self.is_empty());
+        assert_eq!(out.stale_endpoint.len(), 1);
+    }
+
+    #[test]
+    fn undecodable_host_is_stale() {
+        // Regression: hosts that fail base32 decoding (e.g. legacy hex
+        // endpoint ids) must go to the stale bucket so
+        // --retract-orphaned-self can clean them up.
+        let our_ep = test_endpoint(1);
+        let cid = test_cid(1);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let out = classify_locations(
+            &encode_endpoint_id(&our_ep),
+            &seeded,
+            [OurLocation {
+                release_id: test_release(1),
+                cid,
+                url: undecodable_iroh_url(),
+            }],
+        );
+        assert!(!out.current_endpoint_have.contains(&cid));
+        assert!(out.orphaned_self.is_empty());
+        assert_eq!(out.stale_endpoint.len(), 1);
+    }
+
+    #[test]
+    fn current_endpoint_not_seeded_is_orphaned_self() {
+        let our_ep = test_endpoint(1);
+        let cid = test_cid(1);
+        let seeded: HashSet<Cid> = HashSet::new();
+        let out = classify_locations(
+            &encode_endpoint_id(&our_ep),
+            &seeded,
+            [OurLocation {
+                release_id: test_release(1),
+                cid,
+                url: iroh_url::build(&our_ep),
+            }],
+        );
+        assert!(out.current_endpoint_have.contains(&cid));
+        assert_eq!(out.orphaned_self.len(), 1);
+        assert!(out.stale_endpoint.is_empty());
+    }
+
+    #[test]
+    fn mixed_urls_on_same_cid_split_into_buckets() {
+        // One CID with two URLs: one current, one stale. The current
+        // URL marks the CID already-advertised; the stale URL still
+        // goes to the stale bucket so it can be retracted independently.
+        let our_ep = test_endpoint(1);
+        let other_ep = test_endpoint(2);
+        let cid = test_cid(1);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let rel = test_release(1);
+        let out = classify_locations(
+            &encode_endpoint_id(&our_ep),
+            &seeded,
+            [
+                OurLocation {
+                    release_id: rel,
+                    cid,
+                    url: iroh_url::build(&our_ep),
+                },
+                OurLocation {
+                    release_id: rel,
+                    cid,
+                    url: iroh_url::build(&other_ep),
+                },
+            ],
+        );
+        assert!(out.current_endpoint_have.contains(&cid));
+        assert!(out.orphaned_self.is_empty());
+        assert_eq!(out.stale_endpoint.len(), 1);
+    }
+
+    // --- find_missing -------------------------------------------------------
+
+    #[test]
+    fn missing_picks_release_with_latest_timestamp() {
+        let cid = test_cid(1);
+        let older = test_release(1);
+        let newer = test_release(2);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let have: HashSet<Cid> = HashSet::new();
+        let artifacts = vec![
+            ReleaseArtifact {
+                release_id: older,
+                timestamp: 100,
+                cid,
+            },
+            ReleaseArtifact {
+                release_id: newer,
+                timestamp: 200,
+                cid,
+            },
+        ];
+        let m = find_missing(&seeded, &have, &artifacts);
+        assert_eq!(m, vec![(newer, cid)]);
+    }
+
+    #[test]
+    fn seeded_with_current_location_is_not_missing() {
+        let cid = test_cid(1);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let have: HashSet<Cid> = [cid].into_iter().collect();
+        let artifacts = vec![ReleaseArtifact {
+            release_id: test_release(1),
+            timestamp: 100,
+            cid,
+        }];
+        let m = find_missing(&seeded, &have, &artifacts);
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn seeded_cid_with_no_matching_release_is_skipped() {
+        // Seeded CID isn't present in any release, so reconcile has no
+        // anchor for a missing-location add. Drop it.
+        let seeded_cid = test_cid(1);
+        let other_cid = test_cid(2);
+        let seeded: HashSet<Cid> = [seeded_cid].into_iter().collect();
+        let have: HashSet<Cid> = HashSet::new();
+        let artifacts = vec![ReleaseArtifact {
+            release_id: test_release(1),
+            timestamp: 100,
+            cid: other_cid,
+        }];
+        let m = find_missing(&seeded, &have, &artifacts);
+        assert!(m.is_empty());
     }
 }
