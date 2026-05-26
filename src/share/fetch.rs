@@ -13,7 +13,8 @@
 //!
 //! Per-provider iroh causes are not preserved (the [`iroh_blobs`]
 //! downloader drops them on `ProviderFailed`); set
-//! `RUST_LOG=iroh_blobs=debug` for detail.
+//! `RUST_LOG=iroh_blobs=debug` in the node to surface them
+//! (subscriber is installed in `rad-artifact node start --foreground`).
 
 use std::io::{self, BufWriter, Write};
 use std::path::Path;

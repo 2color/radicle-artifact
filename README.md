@@ -182,6 +182,8 @@ Disk          12.6 MiB on disk
 
 The daemon stores blobs under `<home>/artifacts/store/` (persistent iroh-blobs FsStore), tracks what to seed via `seeded/{rid}/{cid}` tags, and writes a JSON log to `<home>/artifacts/node.log` (rotated on each start). The control socket lives at `<home>/artifacts/control.sock` (mode 0600); set `RAD_ARTIFACT_SOCKET` to override.
 
+Log verbosity is controlled via `RUST_LOG`, which covers both this crate and iroh — e.g. `RUST_LOG=iroh_blobs=debug rad-artifact node start`. Default filter: `warn,iroh=warn,iroh_blobs=warn,radicle_artifact=info`.
+
 The node never writes COB ops — every signed location write (`add_location`, `remove_location`) happens client-side. The daemon's identity (the iroh endpoint id) currently derives from the same Ed25519 secret as your radicle DID, so `RAD_PASSPHRASE` is required on start when the keystore is encrypted (or the parent CLI will prompt).
 
 `rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `iroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-retracting — pass `--retract-orphaned <CID>` or `--retract-orphaned-self` explicitly when you want it gone.

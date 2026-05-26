@@ -233,8 +233,18 @@ fn start(cmd: Start, profile: &Profile) -> Result<(), Error> {
 }
 
 fn start_foreground(profile: &Profile) -> Result<(), Error> {
-    // Best-effort logger init — already-installed is fine.
-    let _ = structured_logger::Builder::new().try_init();
+    // JSON-format tracing to stderr, which the detached parent
+    // redirects into node.log. Iroh uses tracing too, so this
+    // subscriber catches both our events and iroh's, gated by
+    // RUST_LOG. Default keeps iroh quiet and our own crate at info.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new("warn,iroh=warn,iroh_blobs=warn,radicle_artifact=info")
+    });
+    let _ = tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 
     let passphrase = node::lifecycle::resolve_passphrase(&profile.keystore)?;
     let secret =
