@@ -138,14 +138,6 @@ rad-artifact cid <PATH>                                          # compute BLAKE
 rad-artifact fetch [<REVISION> --cid <CID>]                      # fetch artifact (interactive without args)
 ```
 
-### Seeding (requires a running node)
-
-```
-rad-artifact seed <PATH> [--release <ID>] [--reference] [--no-announce]  # compute CID from PATH, seed, announce
-rad-artifact unseed <CID> [--release <ID>]                               # stop seeding + retract our iroh:// locations
-rad-artifact reconcile [--all-repos] [--retract-orphaned <CID>] [--retract-orphaned-self]  # fix COB drift
-```
-
 ### Node control
 
 ```
@@ -153,9 +145,17 @@ rad-artifact node start [--foreground] [--force]                 # start the see
 rad-artifact node stop                                           # graceful shutdown
 rad-artifact node status [--json]                                # endpoint id, seeded count, disk, traffic
 rad-artifact node list [--json]                                  # list CIDs the node is seeding for this repo
-rad-artifact node seed <CID> <PATH> [--release <ID>] [--reference] [--no-announce]
-rad-artifact node unseed <CID> [--release <ID>]
+rad-artifact node seed <PATH> [--release <ID>] [--reference] [--no-announce]  # compute CID from PATH, seed, announce
+rad-artifact node unseed <CID> [--release <ID>]                  # stop seeding + retract our iroh:// locations
 rad-artifact node logs [--follow] [-n <LINES>]                   # tail <home>/artifacts/node.log
+```
+
+`rad-artifact seed` and `rad-artifact unseed` are top-level aliases for `rad-artifact node seed` / `node unseed`.
+
+### Reconciling
+
+```
+rad-artifact reconcile [--all-repos] [--retract-orphaned <CID>] [--retract-orphaned-self]  # fix COB drift
 ```
 
 Use `--repository <RID>` to target a specific repo (defaults to cwd).

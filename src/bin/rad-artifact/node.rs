@@ -81,9 +81,8 @@ pub struct ListArgs {
 
 #[derive(Parser)]
 pub struct Seed {
-    /// Content identifier of the artifact to seed.
-    pub cid: Cid,
-    /// Path to the artifact on disk.
+    /// Path to the file or directory to seed. The CID is computed from
+    /// its contents.
     pub path: std::path::PathBuf,
     /// Target release id; defaults to the most recent matching release.
     #[clap(long)]
@@ -313,7 +312,6 @@ fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Resu
 
 fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(), Error> {
     seed_artifact(
-        cmd.cid,
         cmd.path,
         cmd.release,
         cmd.reference,
@@ -323,14 +321,13 @@ fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(
     )
 }
 
-/// Shared implementation for `rad-artifact seed <PATH>` (the top-level
-/// renamed `serve`) and `rad-artifact node seed <CID> <PATH>`.
+/// Shared implementation for `rad-artifact node seed <PATH>` and its
+/// top-level alias `rad-artifact seed <PATH>`.
 ///
-/// Sends the seed request to the running node and, unless
-/// `no_announce`, writes the `iroh://{endpoint_id}` location to the
-/// target release.
+/// Computes the CID from `<PATH>`, sends the seed request to the
+/// running node, and (unless `no_announce`) writes the
+/// `iroh://{endpoint_id}` location to the target release.
 pub(crate) fn seed_artifact(
-    cid: Cid,
     path: std::path::PathBuf,
     release_override: Option<String>,
     reference: bool,
@@ -338,6 +335,13 @@ pub(crate) fn seed_artifact(
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), Error> {
+    // Same codec split as `rad-artifact add <PATH>`: raw for files,
+    // blake3-hashseq for directories.
+    let cid = if path.is_dir() {
+        share::compute_content_id(&path).map_err(Error::Io)?
+    } else {
+        share::compute_blob_cid(&path).map_err(Error::Protocol)?
+    };
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
     let rid = repo.id.to_string();

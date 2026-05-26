@@ -1145,22 +1145,13 @@ fn run_fetch(
     Ok(())
 }
 
-/// Top-level `rad-artifact seed <PATH>` — the renamed `serve`.
-///
-/// Computes the CID from `<PATH>` and delegates the import + COB
-/// write to the shared helper in the node module.
+/// Top-level alias for `rad-artifact node seed <PATH>`.
 fn run_seed(
     cmd: command::Seed,
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), node::Error> {
-    let cid = if cmd.path.is_dir() {
-        share::compute_content_id(&cmd.path).map_err(node::Error::Io)?
-    } else {
-        share::compute_blob_cid(&cmd.path).map_err(node::Error::Protocol)?
-    };
     node::seed_artifact(
-        cid,
         cmd.path,
         cmd.release,
         cmd.reference,
@@ -1873,9 +1864,9 @@ mod command {
         ComputeCid(ComputeCid),
         /// Fetch an artifact from a release COB
         Fetch(Fetch),
-        /// Seed an artifact via the local rad-artifact node.
+        /// Alias for `rad-artifact node seed`.
         Seed(Seed),
-        /// Stop seeding an artifact via the local rad-artifact node.
+        /// Alias for `rad-artifact node unseed`.
         Unseed(Unseed),
         /// Reconcile release-COB locations with the artifacts in the node's store.
         ///
@@ -1973,7 +1964,7 @@ Examples:
         pub url: Option<url::Url>,
     }
 
-    /// Seed an artifact via the local rad-artifact node.
+    /// Alias for `rad-artifact node seed`.
     ///
     /// Computes the CID from the given path, asks the running node to
     /// register `seeded/{rid}/{cid}`, and writes an
@@ -2005,7 +1996,7 @@ Examples:
         pub no_announce: bool,
     }
 
-    /// Stop seeding an artifact via the local rad-artifact node.
+    /// Alias for `rad-artifact node unseed`.
     ///
     /// Removes the `seeded/{rid}/{cid}` tag and retracts every
     /// `iroh://` location under your DID for the given CID. With
