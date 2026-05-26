@@ -353,13 +353,19 @@ pub(crate) fn seed_artifact(
         ImportMode::Copy
     };
 
+    // Canonicalise so the node, which runs from its own cwd, resolves
+    // the same file the user pointed at.
+    let abs_path = path
+        .canonicalize()
+        .map_err(|e| Error::Usage(format!("cannot resolve path {}: {e}", path.display())))?;
+
     // Generous timeout: collection imports can take a while.
     let receipt = client
         .call_blocking::<SeedReceipt>(
             &NodeMsg::Seed {
                 rid,
                 cid: cid.to_string(),
-                path: path.clone(),
+                path: abs_path,
                 kind,
                 mode,
             },
