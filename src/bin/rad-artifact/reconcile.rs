@@ -11,8 +11,10 @@
 //!   retracted when the user passes `--retract-orphaned <CID>` for
 //!   that specific CID.
 //! - **StaleEndpoint**: an `iroh://{other_endpoint}` location under our
-//!   DID — i.e. one of our previous keys. Reported in summary;
-//!   retracted only when `--retract-orphaned-self` is passed.
+//!   DID — i.e. one of our previous keys, or a malformed/legacy-encoded
+//!   endpoint id that no longer decodes (e.g. a hex host left over from
+//!   a previous encoding). Reported in summary; retracted only when
+//!   `--retract-orphaned-self` is passed.
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -42,9 +44,8 @@ pub struct Cli {
     /// the current one.
     #[clap(long)]
     pub all_repos: bool,
-    /// Retract `iroh://{current_endpoint}` locations under our DID
-    /// for this CID even though the node is not seeding it.
-    /// Repeatable.
+    /// Retract our `iroh://{current_endpoint}` location for this CID,
+    /// which the node is no longer seeding. Repeatable.
     #[clap(long = "retract-orphaned", value_name = "CID")]
     pub retract_orphaned: Vec<Cid>,
     /// Retract `iroh://{other_endpoint}` locations under our DID
@@ -192,16 +193,18 @@ fn reconcile_one(
                 continue;
             };
             for url in urls.iter().filter(|u| iroh_url::matches(u)) {
-                let url_endpoint = match iroh_url::endpoint_id(url) {
-                    Ok(Some(eid)) => Some(encode_endpoint_id(&eid)),
-                    // Bare `iroh://` under our DID resolves to our
-                    // current endpoint id (key derived from same
-                    // Ed25519 secret), so treat it as current.
-                    Ok(None) => Some(ctx.endpoint_id.to_string()),
-                    Err(_) => None,
-                };
-                let Some(eid) = url_endpoint else {
-                    continue;
+                // Bare `iroh://` under our DID resolves to our current
+                // endpoint id (key derived from same Ed25519 secret), so
+                // treat it as current. A host that fails to decode is
+                // treated as stale: it isn't our current endpoint id and
+                // belongs in the same retraction bucket as a foreign one.
+                let eid = match iroh_url::endpoint_id(url) {
+                    Ok(Some(eid)) => encode_endpoint_id(&eid),
+                    Ok(None) => ctx.endpoint_id.to_string(),
+                    Err(_) => {
+                        stale_endpoint.push((*release_id, *cid, url.clone()));
+                        continue;
+                    }
                 };
                 if eid == ctx.endpoint_id {
                     current_endpoint_have.insert(*cid);
