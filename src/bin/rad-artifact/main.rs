@@ -20,6 +20,7 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
+use radicle_artifact::seeder::keys::EndpointId;
 use radicle_artifact::share;
 use radicle_artifact::*;
 use url::Url;
@@ -478,8 +479,8 @@ where
     // Validate iroh:// URLs up front so a typo in the endpoint id surfaces
     // here, before it ends up signed into the COB. A bare iroh:// is allowed
     // and resolves to the author's DID-derived endpoint id at fetch time.
-    if share::iroh_url::matches(&url) {
-        share::iroh_url::endpoint_id(&url).map_err(|e| error::Locate::Usage(e.to_string()))?;
+    if EndpointId::is_endpoint_url(&url) {
+        EndpointId::from_url(&url).map_err(|e| error::Locate::Usage(e.to_string()))?;
     }
     let mut release = releases
         .get_mut(&id)
@@ -1190,17 +1191,15 @@ fn artifact_locations<'a>(
     artifacts: impl IntoIterator<Item = &'a Artifact>,
 ) -> Result<Vec<share::Location<'a>>, RadArtifactError> {
     let mut seen_urls: BTreeSet<&url::Url> = BTreeSet::new();
-    let mut seen_iroh: BTreeSet<iroh::EndpointId> = BTreeSet::new();
+    let mut seen_iroh: BTreeSet<EndpointId> = BTreeSet::new();
     let mut locations = Vec::new();
     for artifact in artifacts {
         for (did, urls) in artifact.locations() {
             for url in urls {
-                if share::iroh_url::matches(url) {
-                    let endpoint_id = match share::iroh_url::endpoint_id(url) {
+                if EndpointId::is_endpoint_url(url) {
+                    let endpoint_id = match EndpointId::from_url(url) {
                         Ok(Some(id)) => id,
-                        Ok(None) => {
-                            share::did_to_iroh_public_key(did).map_err(error::Share::Protocol)?
-                        }
+                        Ok(None) => EndpointId::try_from(did).map_err(error::Share::Protocol)?,
                         Err(e) => {
                             eprintln!("Warning: skipping location {url}: {e}");
                             continue;

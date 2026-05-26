@@ -23,6 +23,7 @@ use radicle_artifact::node;
 use radicle_artifact::protocol::{
     Command as NodeMsg, ImportMode, SeedReceipt, SeededEntry, Status, UnseedReceipt,
 };
+use radicle_artifact::seeder::keys::{radicle_secret_to_iroh, EndpointId};
 use radicle_artifact::share;
 use radicle_artifact::{Cid, ReleaseId};
 use thiserror::Error;
@@ -246,8 +247,7 @@ fn start_foreground(profile: &Profile) -> Result<(), Error> {
         .try_init();
 
     let passphrase = node::lifecycle::resolve_passphrase(&profile.keystore)?;
-    let secret =
-        share::radicle_secret_to_iroh(&profile.keystore, passphrase).map_err(Error::Protocol)?;
+    let secret = radicle_secret_to_iroh(&profile.keystore, passphrase).map_err(Error::Protocol)?;
     let home = profile.home.path().to_path_buf();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -402,8 +402,14 @@ pub(crate) fn seed_artifact(
     let signer = profile
         .signer()
         .map_err(|e| Error::Usage(format!("signer: {e}")))?;
-    let url = share::iroh_url::build_from_id_str(&receipt.endpoint_id)
-        .map_err(|e| Error::Usage(format!("invalid endpoint id from node: {e}")))?;
+    // Receipt carries the canonical iroh:// URL form; round-trip through
+    // EndpointId so a malformed string from the node fails loudly here
+    // rather than getting signed into the COB.
+    let url = receipt
+        .endpoint_id
+        .parse::<EndpointId>()
+        .map_err(|e| Error::Usage(format!("invalid endpoint id from node: {e}")))?
+        .to_url();
     let mut release_mut = releases.get_mut(&release_id).map_err(Error::Find)?;
     release_mut
         .add_location(cid, url, &signer)
@@ -486,7 +492,7 @@ pub(crate) fn unseed_artifact(
             .and_then(|a| a.locations_of(&local_did))
             .map(|urls| {
                 urls.iter()
-                    .filter(|u| share::iroh_url::matches(u))
+                    .filter(|u| EndpointId::is_endpoint_url(u))
                     .cloned()
                     .collect()
             })
@@ -542,8 +548,8 @@ fn logs(cmd: Logs, profile: &Profile) -> Result<(), Error> {
 }
 
 fn print_status_pretty(s: &Status) {
-    // Print the full base32 endpoint id — peers need to copy it
-    // verbatim, so truncation here is hostile.
+    // Print the full iroh:// URL — peers need to copy it verbatim, so
+    // truncation here is hostile.
     let uptime = humanize_uptime(s.started_at_unix);
     println!("Node          {} (started {uptime})", s.endpoint_id);
     println!(

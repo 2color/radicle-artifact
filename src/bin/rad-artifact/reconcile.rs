@@ -29,8 +29,7 @@ use radicle::{
 };
 use radicle_artifact::client::{self, Client};
 use radicle_artifact::protocol::{Command as NodeMsg, SeededEntry, Status};
-use radicle_artifact::seeder::keys::encode_endpoint_id;
-use radicle_artifact::share::iroh_url;
+use radicle_artifact::seeder::keys::EndpointId;
 use radicle_artifact::Cid;
 use thiserror::Error;
 use url::Url;
@@ -141,8 +140,8 @@ fn classify_locations(
 ) -> Classified {
     let mut out = Classified::default();
     for loc in locations {
-        let eid = match iroh_url::endpoint_id(&loc.url) {
-            Ok(Some(eid)) => encode_endpoint_id(&eid),
+        let eid = match EndpointId::from_url(&loc.url) {
+            Ok(Some(eid)) => eid.to_string(),
             Ok(None) => endpoint_id.to_string(),
             Err(_) => {
                 out.stale_endpoint.push((loc.release_id, loc.cid, loc.url));
@@ -301,7 +300,7 @@ fn reconcile_one(
             let Some(urls) = artifact.locations_of(ctx.local_did) else {
                 continue;
             };
-            for url in urls.iter().filter(|u| iroh_url::matches(u)) {
+            for url in urls.iter().filter(|u| EndpointId::is_endpoint_url(u)) {
                 our_locations.push(OurLocation {
                     release_id: *release_id,
                     cid: *cid,
@@ -325,11 +324,18 @@ fn reconcile_one(
     let mut report = RepoReport::default();
 
     for (release_id, cid) in missing {
-        let url = iroh_url::build_from_id_str(ctx.endpoint_id).map_err(|e| {
-            Error::Node(node::Error::Usage(format!(
-                "invalid endpoint id from node: {e}"
-            )))
-        })?;
+        // ctx.endpoint_id carries the canonical iroh:// URL form from the
+        // node; round-trip through EndpointId so a malformed value fails
+        // here rather than getting signed into the COB.
+        let url = ctx
+            .endpoint_id
+            .parse::<EndpointId>()
+            .map_err(|e| {
+                Error::Node(node::Error::Usage(format!(
+                    "invalid endpoint id from node: {e}"
+                )))
+            })?
+            .to_url();
         let mut release_mut = releases
             .get_mut(&release_id)
             .map_err(|e| Error::Node(node::Error::Find(e)))?;
@@ -460,8 +466,8 @@ mod tests {
     use std::collections::HashSet;
     use std::str::FromStr;
 
-    use radicle_artifact::seeder::keys::encode_endpoint_id;
-    use radicle_artifact::share::{blake3_hash_to_cid, iroh_url, ArtifactKind};
+    use radicle_artifact::seeder::keys::EndpointId;
+    use radicle_artifact::share::{blake3_hash_to_cid, ArtifactKind};
     use radicle_artifact::{Cid, ReleaseId};
     use url::Url;
 
@@ -479,17 +485,17 @@ mod tests {
     }
 
     /// Endpoint id derived from a fixed-byte secret.
-    fn test_endpoint(byte: u8) -> iroh::EndpointId {
-        iroh::SecretKey::from_bytes(&[byte; 32]).public()
+    fn test_endpoint(byte: u8) -> EndpointId {
+        iroh::SecretKey::from_bytes(&[byte; 32]).public().into()
     }
 
     fn bare_iroh_url() -> Url {
-        Url::parse(&format!("{}://", iroh_url::SCHEME)).unwrap()
+        Url::parse(&format!("{}://", EndpointId::URL_SCHEME)).unwrap()
     }
 
     fn undecodable_iroh_url() -> Url {
         // '1' is not in the base32 alphabet (a-z + 2-7).
-        Url::parse(&format!("{}://abc123", iroh_url::SCHEME)).unwrap()
+        Url::parse(&format!("{}://abc123", EndpointId::URL_SCHEME)).unwrap()
     }
 
     // --- classify_locations -------------------------------------------------
@@ -500,7 +506,7 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let out = classify_locations(
-            &encode_endpoint_id(&our_ep),
+            &our_ep.to_string(),
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
@@ -519,12 +525,12 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let out = classify_locations(
-            &encode_endpoint_id(&our_ep),
+            &our_ep.to_string(),
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
                 cid,
-                url: iroh_url::build(&our_ep),
+                url: our_ep.to_url(),
             }],
         );
         assert!(out.current_endpoint_have.contains(&cid));
@@ -539,12 +545,12 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let out = classify_locations(
-            &encode_endpoint_id(&our_ep),
+            &our_ep.to_string(),
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
                 cid,
-                url: iroh_url::build(&other_ep),
+                url: other_ep.to_url(),
             }],
         );
         assert!(!out.current_endpoint_have.contains(&cid));
@@ -561,7 +567,7 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let out = classify_locations(
-            &encode_endpoint_id(&our_ep),
+            &our_ep.to_string(),
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
@@ -580,12 +586,12 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = HashSet::new();
         let out = classify_locations(
-            &encode_endpoint_id(&our_ep),
+            &our_ep.to_string(),
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
                 cid,
-                url: iroh_url::build(&our_ep),
+                url: our_ep.to_url(),
             }],
         );
         assert!(out.current_endpoint_have.contains(&cid));
@@ -604,18 +610,18 @@ mod tests {
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let rel = test_release(1);
         let out = classify_locations(
-            &encode_endpoint_id(&our_ep),
+            &our_ep.to_string(),
             &seeded,
             [
                 OurLocation {
                     release_id: rel,
                     cid,
-                    url: iroh_url::build(&our_ep),
+                    url: our_ep.to_url(),
                 },
                 OurLocation {
                     release_id: rel,
                     cid,
-                    url: iroh_url::build(&other_ep),
+                    url: other_ep.to_url(),
                 },
             ],
         );

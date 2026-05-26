@@ -22,8 +22,6 @@ use std::time::Duration;
 
 use cid::Cid;
 use indicatif::{ProgressBar, ProgressStyle};
-use iroh::EndpointId;
-//
 use iroh_blobs::api::downloader::{DownloadProgressItem, Downloader, Shuffled};
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::store::fs::FsStore;
@@ -35,6 +33,7 @@ use url::Url;
 use super::cid_utils::{self, ArtifactKind};
 use super::endpoint::EndpointPreset;
 use super::Error;
+use crate::seeder::keys::EndpointId;
 
 /// Per-provider connect bound. A provider that cannot establish a usable
 /// connection (HTTP TCP handshake or iroh QUIC+relay path) within this
@@ -54,7 +53,7 @@ pub enum Location<'a> {
     /// Fetch from an HTTP(S) URL.
     Url(&'a Url),
     /// Fetch via iroh-blobs. The BLAKE3 hash is extracted from the CID.
-    Iroh(iroh::EndpointId),
+    Iroh(EndpointId),
 }
 
 /// Build a ureq agent with connect and response-header timeouts.
@@ -133,6 +132,9 @@ async fn iroh_fetch_to_store(
     preset: EndpointPreset,
     db: &FsStore,
 ) -> Result<(), Vec<Error>> {
+    // Convert to iroh's bare type at the iroh-blobs API boundary.
+    let providers: Vec<iroh::EndpointId> =
+        providers.into_iter().map(EndpointId::into_inner).collect();
     let endpoint = match iroh::Endpoint::builder(preset).bind().await {
         Ok(ep) => ep,
         Err(e) => return Err(vec![Error::Iroh(format!("endpoint bind: {e}"))]),
@@ -177,10 +179,13 @@ async fn iroh_fetch_to_store(
             Ok(None) => break, // Download completed!
             Ok(Some(item)) => match item {
                 DownloadProgressItem::TryProvider { id, .. } => {
-                    eprintln!("Trying iroh provider {id}...");
+                    eprintln!("Trying iroh provider {}...", EndpointId::from(id));
                 }
                 DownloadProgressItem::ProviderFailed { id, .. } => {
-                    errors.push(Error::Iroh(format!("provider {id}: download failed")));
+                    errors.push(Error::Iroh(format!(
+                        "provider {}: download failed",
+                        EndpointId::from(id)
+                    )));
                 }
                 DownloadProgressItem::Progress(offset) => {
                     pb.set_position(offset);
@@ -512,8 +517,8 @@ mod tests {
         let url_b = Url::parse("https://b.example/y").unwrap();
         // EndpointId is a PublicKey; derive two distinct ones from fixed
         // Ed25519 secret-key bytes so the test is deterministic.
-        let id1 = iroh::SecretKey::from_bytes(&[1u8; 32]).public();
-        let id2 = iroh::SecretKey::from_bytes(&[2u8; 32]).public();
+        let id1: EndpointId = iroh::SecretKey::from_bytes(&[1u8; 32]).public().into();
+        let id2: EndpointId = iroh::SecretKey::from_bytes(&[2u8; 32]).public().into();
         let locs = [
             Location::Url(&url_a),
             Location::Iroh(id1),
