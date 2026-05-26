@@ -202,8 +202,6 @@ pub struct ConnectionStats {
     pub paths_direct: u64,
     /// Path counter: relayed.
     pub paths_relayed: u64,
-    /// Path counter: custom (user-supplied transports).
-    pub paths_custom: u64,
 }
 
 /// Bytes-on-the-wire counters from iroh's socket metrics. See the design
@@ -215,8 +213,6 @@ pub struct TrafficStats {
     pub out_bytes: u64,
     /// Bytes received across ipv4/ipv6/relay/custom (data only).
     pub in_bytes: u64,
-    /// Packet-count cross-check (different unit from bytes).
-    pub recv_datagrams: u64,
 }
 
 /// Soft warnings surfaced in `Status`.
@@ -377,9 +373,8 @@ mod tests {
                     "holepunch_attempts": 0,
                     "paths_direct": 0,
                     "paths_relayed": 0,
-                    "paths_custom": 0,
                 },
-                "traffic": {"out_bytes": 0, "in_bytes": 0, "recv_datagrams": 0},
+                "traffic": {"out_bytes": 0, "in_bytes": 0},
                 "warnings": {"did_locations_unmatched": 0},
             })
         );

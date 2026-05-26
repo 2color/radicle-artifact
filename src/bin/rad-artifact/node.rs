@@ -531,27 +531,37 @@ fn print_status_pretty(s: &Status) {
         s.seeded.count,
         human_bytes(s.seeded.bytes_logical)
     );
-    println!("Disk          {} on disk", human_bytes(s.disk.store_bytes));
+    println!(
+        "Disk          {} on disk · {} logical",
+        human_bytes(s.disk.store_bytes),
+        human_bytes(s.disk.seeded_bytes_logical)
+    );
     let conn = &s.connections;
-    if conn.opened_total > 0 || conn.active > 0 {
-        println!(
-            "Connections   {} active · {} opened · {} closed",
-            conn.active, conn.opened_total, conn.closed_total
-        );
-    }
+    println!(
+        "Connections   {} active · {} opened · {} closed · {} direct · {} holepunches",
+        conn.active,
+        conn.opened_total,
+        conn.closed_total,
+        conn.direct_total,
+        conn.holepunch_attempts
+    );
+    println!(
+        "Paths         {} direct · {} relayed",
+        conn.paths_direct, conn.paths_relayed
+    );
     let tr = &s.traffic;
-    if tr.out_bytes > 0 || tr.in_bytes > 0 {
-        println!(
-            "Traffic       {} out · {} in",
-            human_bytes(tr.out_bytes),
-            human_bytes(tr.in_bytes)
-        );
-    }
+    println!(
+        "Traffic       {} out · {} in",
+        human_bytes(tr.out_bytes),
+        human_bytes(tr.in_bytes)
+    );
     if s.warnings.did_locations_unmatched > 0 {
         println!(
             "Warnings      ⚠ {} stale endpoint URL(s) under your DID (run `rad-artifact reconcile --retract-orphaned-self`)",
             s.warnings.did_locations_unmatched
         );
+    } else {
+        println!("Warnings      none");
     }
 }
 
