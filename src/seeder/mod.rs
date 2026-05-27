@@ -25,7 +25,7 @@ use radicle::identity::RepoId;
 use serde::{Deserialize, Serialize};
 
 use crate::share::cid_utils::{self, ArtifactKind};
-use crate::share::iroh::EndpointPreset;
+use crate::share::iroh::EndpointConfig;
 use crate::share::Error;
 
 /// How imported bytes are placed in the store.
@@ -92,7 +92,7 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
         .await
         .map_err(|e| Error::Iroh(format!("FsStore load: {e}")))?;
 
-    let preset = EndpointPreset::from_env()?;
+    let preset = EndpointConfig::from_env()?;
     let endpoint = iroh::Endpoint::builder(preset)
         .secret_key(secret)
         .bind()

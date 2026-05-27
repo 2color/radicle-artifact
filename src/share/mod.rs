@@ -33,7 +33,7 @@ pub use cid_utils::{
     HASH_CODE_BLAKE3, RAW_CODEC,
 };
 pub use fetch::{download, download_collection, Location};
-pub use iroh::EndpointPreset;
+pub use iroh::EndpointConfig;
 
 /// Errors from sharing operations.
 #[derive(Debug, thiserror::Error)]

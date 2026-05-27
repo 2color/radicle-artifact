@@ -31,7 +31,7 @@ use n0_future::StreamExt;
 use url::Url;
 
 use super::cid_utils::{self, ArtifactKind};
-use super::iroh::EndpointPreset;
+use super::iroh::EndpointConfig;
 use super::keys::EndpointId;
 use super::Error;
 
@@ -129,7 +129,7 @@ fn blob_format_for_cid(cid: &Cid) -> Result<BlobFormat, Error> {
 async fn iroh_fetch_to_store(
     hash_and_format: HashAndFormat,
     providers: Vec<EndpointId>,
-    preset: EndpointPreset,
+    preset: EndpointConfig,
     db: &FsStore,
 ) -> Result<(), Vec<Error>> {
     // Convert to iroh's bare type at the iroh-blobs API boundary.
@@ -246,7 +246,7 @@ enum ExportTarget {
 fn run_iroh_attempt(
     cid: &Cid,
     providers: Vec<EndpointId>,
-    preset: &EndpointPreset,
+    preset: &EndpointConfig,
     target: ExportTarget,
 ) -> Result<(), Vec<Error>> {
     let hash = cid_utils::cid_to_blake3_hash(cid).map_err(|e| vec![e])?;
@@ -359,7 +359,7 @@ pub fn download(
     locations: &[Location],
     expected_cid: &Cid,
     dest: &Path,
-    preset: &EndpointPreset,
+    preset: &EndpointConfig,
 ) -> Result<(), Error> {
     if locations.is_empty() {
         return Err(Error::NoLocations);
@@ -439,7 +439,7 @@ pub fn download_collection(
     locations: &[Location],
     expected_cid: &Cid,
     dest_dir: &Path,
-    preset: &EndpointPreset,
+    preset: &EndpointConfig,
 ) -> Result<(), Error> {
     if locations.is_empty() {
         return Err(Error::NoLocations);
@@ -495,7 +495,7 @@ mod tests {
         let cid = blob_cid(b"test");
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("out");
-        let preset = EndpointPreset::default();
+        let preset = EndpointConfig::default();
         let result = download(&[], &cid, &dest, &preset);
         assert!(matches!(result, Err(Error::NoLocations)));
     }
@@ -506,7 +506,7 @@ mod tests {
         let cid = blob_cid(b"test");
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("out");
-        let preset = EndpointPreset::default();
+        let preset = EndpointConfig::default();
         let result = download(&[Location::Url(&url)], &cid, &dest, &preset);
         assert!(matches!(result, Err(Error::AllFailed(_))));
     }
@@ -542,7 +542,7 @@ mod tests {
         let cid = blob_cid(b"test");
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("out");
-        let preset = EndpointPreset::default();
+        let preset = EndpointConfig::default();
         let start = std::time::Instant::now();
         let result = download(&[Location::Url(&url)], &cid, &dest, &preset);
         let elapsed = start.elapsed();
@@ -563,7 +563,7 @@ mod tests {
         let cid = collection_cid(b"test");
         let url = Url::parse("https://example.com/x").unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let preset = EndpointPreset::default();
+        let preset = EndpointConfig::default();
         let result = download_collection(&[Location::Url(&url)], &cid, dir.path(), &preset);
         match result {
             Err(Error::AllFailed(errors)) => {

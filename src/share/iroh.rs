@@ -7,66 +7,93 @@ use iroh::endpoint::presets::{self, Preset};
 
 use super::Error;
 
-const ENV_IROH_PRESET: &str = "RADWORKS_IROH_PRESET";
+const ENV_RELAY_URL: &str = "IROH_RELAY_URL";
+const ENV_PKARR_URL: &str = "IROH_PKARR_URL";
+const ENV_DNS_ENDPOINT_ORIGIN: &str = "IROH_DNS_ENDPOINT_ORIGIN";
 
-const RADWORKS_RELAY_URL: &str = "https://relay.radworks.xyz";
-const RADWORKS_PKARR_URL: &str = "https://dns.radworks.xyz/pkarr";
-const RADWORKS_DNS_DOMAIN: &str = "dns.radworks.xyz";
+const DEFAULT_RELAY_URL: &str = "https://relay.radworks.xyz";
+const DEFAULT_PKARR_URL: &str = "https://dns.radworks.xyz/pkarr";
+const DEFAULT_DNS_ENDPOINT_ORIGIN: &str = "dns.radworks.xyz";
 
 /// Iroh endpoint configuration.
 ///
-/// Controls relay servers and discovery services for the endpoint.
-/// Defaults to [`EndpointPreset::Radworks`] using the Radworks relay and
-/// DNS infrastructure. Set `RADWORKS_IROH_PRESET=n0` to use n0's
-/// infrastructure instead.
-#[derive(Debug, Clone, Default)]
-pub enum EndpointPreset {
-    /// Use Radworks relay and discovery infrastructure.
-    #[default]
-    Radworks,
-    /// Use n0's relay servers and DNS discovery.
-    N0,
+/// Controls the relay server and discovery services for the endpoint. Each
+/// value defaults to the Radworks infrastructure but can be overridden via
+/// environment variable:
+///
+/// - `IROH_RELAY_URL` (default `https://relay.radworks.xyz`)
+/// - `IROH_PKARR_URL` (default `https://dns.radworks.xyz/pkarr`)
+/// - `IROH_DNS_ENDPOINT_ORIGIN` (default `dns.radworks.xyz`)
+#[derive(Debug, Clone)]
+pub struct EndpointConfig {
+    relay_url: iroh::RelayUrl,
+    pkarr_url: url::Url,
+    dns_endpoint_origin: String,
 }
 
-impl EndpointPreset {
-    /// Build an [`EndpointPreset`] from the `RADWORKS_IROH_PRESET` environment
-    /// variable. Accepts `radworks` (default when unset) or `n0`.
+impl Default for EndpointConfig {
+    fn default() -> Self {
+        // Parsing compile-time constants is infallible.
+        Self {
+            relay_url: DEFAULT_RELAY_URL.parse().expect("valid DEFAULT_RELAY_URL"),
+            pkarr_url: DEFAULT_PKARR_URL.parse().expect("valid DEFAULT_PKARR_URL"),
+            dns_endpoint_origin: DEFAULT_DNS_ENDPOINT_ORIGIN.to_owned(),
+        }
+    }
+}
+
+impl EndpointConfig {
+    /// Build an [`EndpointConfig`] from the `IROH_RELAY_URL`, `IROH_PKARR_URL`
+    /// and `IROH_DNS_ENDPOINT_ORIGIN` environment variables, falling back to the
+    /// Radworks defaults when a variable is unset or empty. A malformed URL
+    /// fails here so [`Preset::apply`] can consume the parsed values directly.
     pub fn from_env() -> Result<Self, Error> {
-        match std::env::var(ENV_IROH_PRESET).as_deref() {
-            Ok("" | "radworks") | Err(_) => Ok(Self::Radworks),
-            Ok("n0") => Ok(Self::N0),
-            Ok(other) => Err(Error::Iroh(format!(
-                "unknown {ENV_IROH_PRESET} value: {other:?} (expected \"radworks\" or \"n0\")"
-            ))),
-        }
+        Ok(Self {
+            relay_url: parse_env(ENV_RELAY_URL, DEFAULT_RELAY_URL)?,
+            pkarr_url: parse_env(ENV_PKARR_URL, DEFAULT_PKARR_URL)?,
+            dns_endpoint_origin: env_or(ENV_DNS_ENDPOINT_ORIGIN, DEFAULT_DNS_ENDPOINT_ORIGIN),
+        })
     }
 }
 
-impl fmt::Display for EndpointPreset {
+/// Read an environment variable, falling back to `default` when unset or empty.
+fn env_or(name: &str, default: &str) -> String {
+    match std::env::var(name) {
+        Ok(value) if !value.is_empty() => value,
+        _ => default.to_owned(),
+    }
+}
+
+/// Read and parse an environment variable, falling back to `default` when unset
+/// or empty. Returns [`Error::Iroh`] if the value fails to parse.
+fn parse_env<T>(name: &str, default: &str) -> Result<T, Error>
+where
+    T: std::str::FromStr,
+    T::Err: fmt::Display,
+{
+    let value = env_or(name, default);
+    value
+        .parse()
+        .map_err(|e| Error::Iroh(format!("invalid {name} value {value:?}: {e}")))
+}
+
+impl fmt::Display for EndpointConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Radworks => write!(f, "radworks (relay={RADWORKS_RELAY_URL})"),
-            Self::N0 => write!(f, "n0"),
-        }
+        write!(
+            f,
+            "relay={} pkarr={} dns={}",
+            self.relay_url, self.pkarr_url, self.dns_endpoint_origin
+        )
     }
 }
 
-impl Preset for EndpointPreset {
+impl Preset for EndpointConfig {
     fn apply(self, builder: iroh::endpoint::Builder) -> iroh::endpoint::Builder {
-        match self {
-            Self::Radworks => presets::Minimal
-                .apply(builder)
-                .address_lookup(PkarrPublisher::builder(
-                    RADWORKS_PKARR_URL
-                        .parse()
-                        .expect("valid RADWORKS_PKARR_URL"),
-                ))
-                .address_lookup(DnsAddressLookup::builder(RADWORKS_DNS_DOMAIN.to_owned()))
-                .relay_mode(iroh::RelayMode::custom([RADWORKS_RELAY_URL
-                    .parse::<iroh::RelayUrl>()
-                    .expect("valid RADWORKS_RELAY_URL")])),
-            Self::N0 => presets::N0.apply(builder),
-        }
+        presets::Minimal
+            .apply(builder)
+            .address_lookup(PkarrPublisher::builder(self.pkarr_url))
+            .address_lookup(DnsAddressLookup::builder(self.dns_endpoint_origin))
+            .relay_mode(iroh::RelayMode::custom([self.relay_url]))
     }
 }
 
@@ -75,10 +102,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_radworks() {
-        assert!(matches!(
-            EndpointPreset::default(),
-            EndpointPreset::Radworks
-        ));
+    fn default_uses_radworks_endpoints() {
+        // Also exercises the constant parsing in `Default`, guarding against a
+        // typo'd default that would otherwise panic at startup.
+        let config = EndpointConfig::default();
+        assert_eq!(config.relay_url, DEFAULT_RELAY_URL.parse().unwrap());
+        assert_eq!(config.pkarr_url, DEFAULT_PKARR_URL.parse().unwrap());
+        assert_eq!(config.dns_endpoint_origin, DEFAULT_DNS_ENDPOINT_ORIGIN);
+    }
+
+    #[test]
+    fn parse_env_rejects_malformed_value() {
+        let result = parse_env::<url::Url>("IROH_UNSET_TEST_VAR", "not a url");
+        assert!(matches!(result, Err(Error::Iroh(_))));
     }
 }

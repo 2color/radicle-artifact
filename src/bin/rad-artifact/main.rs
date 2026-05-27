@@ -1135,7 +1135,7 @@ fn run_fetch(
         std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_")))
     });
 
-    let preset = share::EndpointPreset::from_env().map_err(error::Share::Protocol)?;
+    let preset = share::EndpointConfig::from_env().map_err(error::Share::Protocol)?;
     let kind = share::artifact_kind(&cid).map_err(error::Share::Protocol)?;
 
     match kind {
