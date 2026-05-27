@@ -147,20 +147,25 @@ pub async fn import_blob(
 ) -> Result<Hash, Error> {
     // iroh-blobs requires an absolute path for in-place reference imports.
     let abs = dunce::canonicalize(path).map_err(|e| Error::Iroh(format!("canonicalize: {e}")))?;
-    let tag = store
+    // temp_tag (not with_tag): protects the blob while held, then releases
+    // on drop. The persistent `seeded/{rid}/{cid}` tag set by
+    // register_seeded takes over protection; this leaves no leftover
+    // per-import tag pinning the blob after an unseed.
+    let tt = store
         .add_path_with_opts(add_opts(abs, mode))
-        .with_tag()
+        .temp_tag()
         .await
         .map_err(|e| Error::Iroh(format!("import blob: {e}")))?;
+    let hash = tt.hash();
 
-    let actual = cid_utils::blake3_hash_to_cid(tag.hash, ArtifactKind::Blob);
+    let actual = cid_utils::blake3_hash_to_cid(hash, ArtifactKind::Blob);
     if actual != *expected {
         return Err(Error::CidMismatch {
             expected: expected.to_string(),
             actual: actual.to_string(),
         });
     }
-    Ok(tag.hash)
+    Ok(hash)
 }
 
 /// Import a directory as a [`Collection`] and verify it matches the expected CID.
@@ -176,13 +181,19 @@ pub async fn import_collection(
     let entries = cid_utils::canonical_walk(dir).map_err(Error::Io)?;
 
     let mut pairs: Vec<(String, Hash)> = Vec::new();
+    // Hold a temp tag per file so the child blobs stay protected until
+    // the collection's persistent seeded tag (set by register_seeded)
+    // covers them via its hash-seq. Unlike with_tag(), temp tags release
+    // on drop, so an unseed later leaves no per-file tag pinning blobs.
+    let mut file_tags = Vec::with_capacity(entries.len());
     for (name, abs) in entries {
-        let tag = store
+        let tt = store
             .add_path_with_opts(add_opts(abs, mode))
-            .with_tag()
+            .temp_tag()
             .await
             .map_err(|e| Error::Iroh(format!("import file {name}: {e}")))?;
-        pairs.push((name, tag.hash));
+        pairs.push((name, tt.hash()));
+        file_tags.push(tt);
     }
 
     let collection = Collection::from_iter(pairs);
