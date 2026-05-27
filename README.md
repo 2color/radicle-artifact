@@ -161,7 +161,7 @@ rad-artifact node logs [--follow] [-n <LINES>]                   # tail <home>/a
 ### Reconciling
 
 ```
-rad-artifact reconcile [--all-repos] [--retract-orphaned <CID>] [--retract-orphaned-self]  # fix COB drift
+rad-artifact reconcile [--all-repos] [--remove-orphaned <CID>] [--remove-orphaned-self]  # fix COB drift
 ```
 
 ## Seeding via the local node
@@ -183,7 +183,7 @@ Log verbosity is controlled via `RUST_LOG`, which covers both this crate and iro
 
 The node never writes COB ops — every signed location write (`add_location`, `remove_location`) happens client-side. The daemon's identity (the iroh endpoint id) currently derives from the same Ed25519 secret as your radicle DID, so `RAD_PASSPHRASE` is required on start when the keystore is encrypted (or the parent CLI will prompt).
 
-`rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `iroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-retracting — pass `--retract-orphaned <CID>` or `--retract-orphaned-self` explicitly when you want it gone.
+`rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `iroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-removing — pass `--remove-orphaned <CID>` or `--remove-orphaned-self` explicitly when you want it gone. It also reports **dangling tags** — CIDs the node is seeding that no release references at all (so no location can anchor to them); reclaim them with `rad-artifact unseed <CID>`.
 
 ### `iroh://` location format
 
