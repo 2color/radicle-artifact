@@ -17,6 +17,7 @@ use radicle::cob;
 use radicle::{
     identity::{Did, RepoId},
     prelude::Profile,
+    storage::git::Repository,
 };
 use radicle_artifact::client::{self, Client, ClientError};
 use radicle_artifact::node;
@@ -25,7 +26,7 @@ use radicle_artifact::protocol::{
 };
 use radicle_artifact::share;
 use radicle_artifact::share::keys::{radicle_secret_to_iroh, EndpointId};
-use radicle_artifact::{Cid, ReleaseId};
+use radicle_artifact::{Cid, ReleaseId, Releases};
 use thiserror::Error;
 use url::Url;
 
@@ -403,12 +404,32 @@ pub(crate) fn seed_artifact(
         return Ok(());
     }
 
+    // The node has already tagged the artifact. If announcing the COB
+    // location now fails, leave the tag in place and tell the user how
+    // to retry
+    if let Err(e) = register_location(&mut releases, release_id, cid, &receipt, profile) {
+        eprintln!("Seed tagged, but registering the artifact location failed: {e}");
+        eprintln!("Retry with: rad-artifact seed {}", path.display());
+        return Err(e);
+    }
+    eprintln!("Added iroh location to release {release_id}");
+    Ok(())
+}
+
+/// Sign the seed's `iroh://` location into the target release's COB.
+fn register_location(
+    releases: &mut Releases<'_, Repository>,
+    release_id: ReleaseId,
+    cid: Cid,
+    receipt: &SeedReceipt,
+    profile: &Profile,
+) -> Result<(), Error> {
     let signer = profile
         .signer()
         .map_err(|e| Error::Usage(format!("signer: {e}")))?;
-    // Receipt carries the canonical iroh:// URL form; round-trip through
-    // EndpointId so a malformed string from the node fails loudly here
-    // rather than getting signed into the COB.
+    // Receipt carries the endpoint URL; round-trip
+    // through EndpointId so a malformed string from the node fails
+    // loudly here rather than getting signed into the COB.
     let url = receipt
         .endpoint_id
         .parse::<EndpointId>()
@@ -421,7 +442,6 @@ pub(crate) fn seed_artifact(
             id: release_id,
             err,
         })?;
-    eprintln!("Added iroh location to release {release_id}");
     Ok(())
 }
 
