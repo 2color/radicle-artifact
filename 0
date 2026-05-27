@@ -1,1 +1,1 @@
-{"base":"1469e0c33e6eea7e1b3c4a2ff605fcaaf997ba6b","description":"chore: fix doctests errors","oid":"cf6314a461b08a401991c7fdc8931f622328efe2","type":"revision"}
+{"base":"1469e0c33e6eea7e1b3c4a2ff605fcaaf997ba6b","description":"ci: add cargo doc to buildkite pipeline","oid":"7eb20942b636e50cc4d8b9aefe1feb4fb6a20566","type":"revision"}
