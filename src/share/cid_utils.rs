@@ -75,22 +75,6 @@ pub fn cid_to_blake3_hash(cid: &Cid) -> Result<iroh_blobs::Hash, Error> {
     Ok(iroh_blobs::Hash::from_bytes(digest))
 }
 
-/// Verify that `data` matches the expected CID (blake3, raw codec 0x55).
-pub fn verify_cid(data: &[u8], expected: &Cid) -> Result<(), Error> {
-    let digest = blake3::hash(data);
-    let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes())
-        .map_err(|e| Error::Cid(format!("multihash wrap: {e}")))?;
-    let actual = Cid::new_v1(RAW_CODEC, mh);
-
-    if actual != *expected {
-        return Err(Error::CidMismatch {
-            expected: expected.to_string(),
-            actual: actual.to_string(),
-        });
-    }
-    Ok(())
-}
-
 /// Compute the CID of a file on disk.
 ///
 /// Streams the file through a BLAKE3 hasher to avoid loading it into memory.
@@ -225,23 +209,6 @@ mod tests {
         let digest = blake3::hash(data);
         let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
         Cid::new_v1(BLAKE3_HASHSEQ_CODEC, mh)
-    }
-
-    #[test]
-    fn verify_cid_matches() {
-        let data = b"hello world";
-        let cid = blob_cid(data);
-        assert!(verify_cid(data, &cid).is_ok());
-    }
-
-    #[test]
-    fn verify_cid_mismatch() {
-        let data = b"hello world";
-        let wrong_cid = blob_cid(b"wrong");
-        assert!(matches!(
-            verify_cid(data, &wrong_cid),
-            Err(Error::CidMismatch { .. })
-        ));
     }
 
     #[test]

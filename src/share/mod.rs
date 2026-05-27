@@ -29,8 +29,8 @@ pub mod keys;
 // Re-export key types for convenience.
 pub use cid_utils::{
     artifact_kind, blake3_hash_to_cid, canonical_walk, cid_to_blake3_hash, compute_blob_cid,
-    compute_content_id, verify_cid, verify_cid_file, ArtifactKind, BLAKE3_HASHSEQ_CODEC,
-    HASH_CODE_BLAKE3, RAW_CODEC,
+    compute_content_id, verify_cid_file, ArtifactKind, BLAKE3_HASHSEQ_CODEC, HASH_CODE_BLAKE3,
+    RAW_CODEC,
 };
 pub use fetch::{download, download_collection, Location};
 pub use iroh::EndpointConfig;
