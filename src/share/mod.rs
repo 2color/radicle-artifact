@@ -24,6 +24,7 @@ use std::io;
 pub mod cid_utils;
 pub mod endpoint;
 pub mod fetch;
+pub mod keys;
 
 // Re-export key types for convenience.
 pub use cid_utils::{

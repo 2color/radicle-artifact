@@ -18,7 +18,7 @@ use multibase::Base;
 use radicle::crypto::ssh::keystore::Keystore;
 use url::Url;
 
-use crate::share::Error;
+use super::Error;
 
 /// Codec for the URL host slot: RFC 4648 base32, lowercase, no padding.
 const HOST_BASE: Base = Base::Base32Lower;
@@ -62,8 +62,7 @@ impl EndpointId {
     ///
     /// Returns `Ok(None)` for a bare `iroh://` (no host) so callers can
     /// fall back to deriving the endpoint id from the location author's
-    /// DID. Returns `Err` if the scheme is not `iroh` or the host fails
-    /// to decode.
+    /// DID.
     pub fn from_url(url: &Url) -> Result<Option<Self>, Error> {
         if url.scheme() != Self::URL_SCHEME {
             return Err(Error::Iroh(format!(
@@ -73,7 +72,7 @@ impl EndpointId {
             )));
         }
         match url.host_str() {
-            Some(host) if !host.is_empty() => decode_host(host).map(Some),
+            Some(host) if !host.is_empty() => Self::from_base32(host).map(Some),
             _ => Ok(None),
         }
     }
@@ -82,22 +81,22 @@ impl EndpointId {
     pub fn is_endpoint_url(url: &Url) -> bool {
         url.scheme() == Self::URL_SCHEME
     }
-}
 
-/// Decode an `iroh://` URL host slot back into an endpoint id.
-fn decode_host(host: &str) -> Result<EndpointId, Error> {
-    let bytes = HOST_BASE
-        .decode(host)
-        .map_err(|e| Error::Iroh(format!("invalid base32 endpoint id '{host}': {e}")))?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
-        Error::Iroh(format!(
-            "endpoint id must decode to 32 bytes, got {}",
-            v.len()
-        ))
-    })?;
-    let inner = iroh::EndpointId::from_bytes(&arr)
-        .map_err(|e| Error::Iroh(format!("invalid endpoint id bytes: {e}")))?;
-    Ok(EndpointId(inner))
+    /// Decode the base32 encoded endpoint ID.
+    fn from_base32(host: &str) -> Result<Self, Error> {
+        let bytes = HOST_BASE
+            .decode(host)
+            .map_err(|e| Error::Iroh(format!("invalid base32 endpoint id '{host}': {e}")))?;
+        let arr: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+            Error::Iroh(format!(
+                "endpoint id must decode to 32 bytes, got {}",
+                v.len()
+            ))
+        })?;
+        let inner = iroh::EndpointId::from_bytes(&arr)
+            .map_err(|e| Error::Iroh(format!("invalid endpoint id bytes: {e}")))?;
+        Ok(Self(inner))
+    }
 }
 
 impl From<iroh::EndpointId> for EndpointId {

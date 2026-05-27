@@ -100,7 +100,7 @@ fn open_log_file(home: &Path) -> Result<fs::File, LifecycleError> {
 /// Resolve the keystore passphrase for starting the daemon.
 ///
 /// Returns `Ok(None)` for non-encrypted keystores (the caller passes
-/// `None` to [`crate::seeder::keys::radicle_secret_to_iroh`]). For
+/// `None` to [`crate::share::keys::radicle_secret_to_iroh`]). For
 /// encrypted keystores: prefer `RAD_PASSPHRASE`, fall back to an
 /// interactive prompt — fails when stderr is not a terminal.
 pub fn resolve_passphrase(keystore: &Keystore) -> Result<Option<Passphrase>, LifecycleError> {

@@ -20,8 +20,8 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
-use radicle_artifact::seeder::keys::EndpointId;
 use radicle_artifact::share;
+use radicle_artifact::share::keys::EndpointId;
 use radicle_artifact::*;
 use url::Url;
 

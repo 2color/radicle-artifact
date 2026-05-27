@@ -105,7 +105,8 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let endpoint_id = seeder::keys::EndpointId::from(seeder.router.endpoint().id()).to_string();
+    let endpoint_id =
+        crate::share::keys::EndpointId::from(seeder.router.endpoint().id()).to_string();
     let store: FsStore = seeder.blobs.clone();
 
     tracing::info!(
@@ -466,7 +467,8 @@ mod tests {
 
             // Pin the secret so the test is reproducible.
             let secret = iroh::SecretKey::from_bytes(&[1u8; 32]);
-            let expected_endpoint_id = seeder::keys::EndpointId::from(secret.public()).to_string();
+            let expected_endpoint_id =
+                crate::share::keys::EndpointId::from(secret.public()).to_string();
 
             // Run the node on a tokio task; capture the join handle so
             // we can assert clean exit.

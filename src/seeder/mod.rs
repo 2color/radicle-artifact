@@ -28,8 +28,6 @@ use crate::share::cid_utils::{self, ArtifactKind};
 use crate::share::endpoint::EndpointPreset;
 use crate::share::Error;
 
-pub mod keys;
-
 /// How imported bytes are placed in the store.
 ///
 /// Wraps [`iroh_blobs::api::blobs::ImportMode`] with a serde-friendly,
@@ -84,7 +82,7 @@ pub struct Seeder {
 /// reachable the moment this returns.
 ///
 /// The caller supplies the iroh `SecretKey` — typically derived from the
-/// user's radicle keystore via [`keys::radicle_secret_to_iroh`]. This
+/// user's radicle keystore via [`crate::share::keys::radicle_secret_to_iroh`]. This
 /// module never reads the keystore directly.
 pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, Error> {
     let dir = home.join(ARTIFACTS_DIR);

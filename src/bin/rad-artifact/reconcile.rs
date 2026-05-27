@@ -29,7 +29,7 @@ use radicle::{
 };
 use radicle_artifact::client::{self, Client};
 use radicle_artifact::protocol::{Command as NodeMsg, SeededEntry, Status};
-use radicle_artifact::seeder::keys::EndpointId;
+use radicle_artifact::share::keys::EndpointId;
 use radicle_artifact::Cid;
 use thiserror::Error;
 use url::Url;
@@ -466,7 +466,7 @@ mod tests {
     use std::collections::HashSet;
     use std::str::FromStr;
 
-    use radicle_artifact::seeder::keys::EndpointId;
+    use radicle_artifact::share::keys::EndpointId;
     use radicle_artifact::share::{blake3_hash_to_cid, ArtifactKind};
     use radicle_artifact::{Cid, ReleaseId};
     use url::Url;

@@ -23,8 +23,8 @@ use radicle_artifact::node;
 use radicle_artifact::protocol::{
     Command as NodeMsg, ImportMode, SeedReceipt, SeededEntry, Status, UnseedReceipt,
 };
-use radicle_artifact::seeder::keys::{radicle_secret_to_iroh, EndpointId};
 use radicle_artifact::share;
+use radicle_artifact::share::keys::{radicle_secret_to_iroh, EndpointId};
 use radicle_artifact::{Cid, ReleaseId};
 use thiserror::Error;
 use url::Url;
