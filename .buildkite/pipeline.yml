@@ -45,3 +45,20 @@ steps:
     command: cargo test --all-features
     plugins:
       - *docker
+
+  - wait: ~
+
+  - label: ":books: doc"
+    command: cargo doc --no-deps --all-features
+    plugins:
+      ## we don't use the template because of the added RUSTDOCFLAGS
+      ## which fails the step of doc problems
+      - docker#v5.11.0:
+          image: "$RUST_IMAGE"
+          environment:
+            - CARGO_TERM_COLOR
+            - CARGO_HOME=/cache/cargo
+            - CARGO_TARGET_DIR=/cache/target
+            - RUSTDOCFLAGS=-D warnings
+          volumes:
+            - "rad-artifact-cache:/cache"
