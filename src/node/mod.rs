@@ -39,8 +39,10 @@ use crate::share::cid_utils::ArtifactKind;
 use crate::share::Error as ShareError;
 
 /// How long shutdown waits for in-flight handlers before forcing the
-/// router down anyway.
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// router down anyway. Sized to outlast a large collection import so a
+/// shutdown mid-seed doesn't abort the write; a genuinely stuck handler
+/// still can't pin us past this bound.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long [`iroh::protocol::Router::shutdown`] gets before we give up
 /// and return.
