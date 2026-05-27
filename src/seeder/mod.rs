@@ -12,6 +12,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
 use cid::Cid;
 use iroh::protocol::Router;
@@ -65,6 +66,9 @@ pub const STORE_DIR: &str = "store";
 /// Tag prefix marking a CID/repo pair as actively seeded.
 const SEEDED_PREFIX: &str = "seeded/";
 
+/// Best-effort bound on waiting for a relay connection during bootstrap.
+const ONLINE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A running iroh-blobs seeder: an `FsStore` plus the iroh `Router` that
 /// accepts blob fetches against it.
 pub struct Seeder {
@@ -98,6 +102,17 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
         .bind()
         .await
         .map_err(|e| Error::Iroh(format!("endpoint bind: {e}")))?;
+
+    // bind() only guarantees a local socket; until a relay is picked,
+    // peers resolving our endpoint id can't reach us. Wait (best-effort,
+    // bounded) so we don't announce locations the network can't route to
+    // yet. online() can block indefinitely when offline, so cap it.
+    if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
+        .await
+        .is_err()
+    {
+        tracing::warn!("endpoint not relay-connected after {ONLINE_TIMEOUT:?}; continuing anyway");
+    }
 
     let blobs_protocol = BlobsProtocol::new(&blobs, None);
     let router = Router::builder(endpoint)
