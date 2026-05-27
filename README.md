@@ -121,6 +121,12 @@ Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as lo
 
 `<REVISION>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**.
 
+These global options apply to every command:
+
+- `--repository <RID>` (or `-r`) targets a specific repo (defaults to cwd).
+- `--no-sync` skips the network announcement after writes.
+- `--no-input` disables interactive prompts (for scripts and CI).
+
 ### COB-facing commands
 
 ```
@@ -158,10 +164,6 @@ rad-artifact node logs [--follow] [-n <LINES>]                   # tail <home>/a
 rad-artifact reconcile [--all-repos] [--retract-orphaned <CID>] [--retract-orphaned-self]  # fix COB drift
 ```
 
-Use `--repository <RID>` to target a specific repo (defaults to cwd).
-Use `--no-sync` to skip network announcement after writes.
-Use `--no-input` to disable interactive prompts (for scripts and CI).
-
 ## Seeding via the local node
 
 Seeding involves running a daemon that holds a persistent iroh-blobs store that serves the files over iroh connection. Start it once and it survives shell exits and terminal closes:
@@ -173,11 +175,6 @@ Node started (socket: /Users/you/.radicle/artifacts/control.sock)
 $ rad-artifact seed ./dist/linux-amd64.tar.gz
 Seeded baf...abc (12.4 MiB, new tagged)
 Added iroh location to release abc1234
-
-$ rad-artifact node status
-Node          AS3WGSDOX5RKLZG46G2GDUMHWJ43L6FK5DEYTQ6HQKWJVRDSF5OQ (started 14m ago)
-Seeded        1 artifact · 12.4 MiB
-Disk          12.6 MiB on disk
 ```
 
 The daemon stores blobs under `<home>/artifacts/store/` (persistent iroh-blobs FsStore), tracks what to seed via `seeded/{rid}/{cid}` tags, and writes a JSON log to `<home>/artifacts/node.log` (rotated on each start). The control socket lives at `<home>/artifacts/control.sock` (mode 0600); set `RAD_ARTIFACT_SOCKET` to override.

@@ -50,7 +50,7 @@ pub struct Cli {
     pub retract_orphaned: Vec<Cid>,
     /// Retract every location under our DID that no longer reflects
     /// what the local node is seeding from its current endpoint:
-    /// both orphaned-self entries (current endpoint, CID not seeded)
+    /// both orphaned-self entries (current endpoint, CID not in store)
     /// and stale-endpoint entries (URL pinned to a previous or
     /// undecodable endpoint id). Use after reviewing a previous
     /// `reconcile` run.
