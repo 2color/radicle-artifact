@@ -31,7 +31,7 @@ use n0_future::StreamExt;
 use url::Url;
 
 use super::cid_utils::{self, ArtifactKind};
-use super::endpoint::EndpointPreset;
+use super::iroh::EndpointPreset;
 use super::keys::EndpointId;
 use super::Error;
 

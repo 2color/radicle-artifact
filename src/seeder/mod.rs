@@ -25,7 +25,7 @@ use radicle::identity::RepoId;
 use serde::{Deserialize, Serialize};
 
 use crate::share::cid_utils::{self, ArtifactKind};
-use crate::share::endpoint::EndpointPreset;
+use crate::share::iroh::EndpointPreset;
 use crate::share::Error;
 
 /// How imported bytes are placed in the store.

@@ -22,8 +22,8 @@
 use std::io;
 
 pub mod cid_utils;
-pub mod endpoint;
 pub mod fetch;
+pub mod iroh;
 pub mod keys;
 
 // Re-export key types for convenience.
@@ -32,8 +32,8 @@ pub use cid_utils::{
     compute_content_id, verify_cid, verify_cid_file, ArtifactKind, BLAKE3_HASHSEQ_CODEC,
     HASH_CODE_BLAKE3, RAW_CODEC,
 };
-pub use endpoint::EndpointPreset;
 pub use fetch::{download, download_collection, Location};
+pub use iroh::EndpointPreset;
 
 /// Errors from sharing operations.
 #[derive(Debug, thiserror::Error)]
