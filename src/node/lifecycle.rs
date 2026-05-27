@@ -129,14 +129,17 @@ pub fn resolve_passphrase(keystore: &Keystore) -> Result<Option<Passphrase>, Lif
 ///
 /// The child inherits no stdin, gets stdout/stderr redirected to
 /// `<home>/artifacts/node.log`, and receives `RAD_PASSPHRASE` when
-/// `passphrase` is `Some`. The child handle is dropped immediately so
-/// the parent does not wait on the daemon — once this function returns
-/// the child runs independently.
+/// `passphrase` is `Some`.
+///
+/// Returns the child handle so the caller can kill it if the node never
+/// comes online (otherwise a child stuck mid-bind would be orphaned).
+/// On a healthy start the caller drops the handle and the daemon keeps
+/// running — on parent exit it reparents to init, which reaps it.
 pub fn spawn_detached(
     home: &Path,
     passphrase: Option<&Passphrase>,
     force: bool,
-) -> Result<(), LifecycleError> {
+) -> Result<std::process::Child, LifecycleError> {
     let exe = std::env::current_exe()?;
     let log = open_log_file(home)?;
     // The Command takes ownership of the writer; clone the fd so both
@@ -154,8 +157,7 @@ pub fn spawn_detached(
     if let Some(p) = passphrase {
         cmd.env(PASSPHRASE_ENV, p.as_str());
     }
-    cmd.spawn()?;
-    Ok(())
+    Ok(cmd.spawn()?)
 }
 
 /// Poll the control socket until the node answers a [`Client::is_running`]

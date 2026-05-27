@@ -222,9 +222,13 @@ fn start(cmd: Start, profile: &Profile) -> Result<(), Error> {
 
     let passphrase = node::lifecycle::resolve_passphrase(&profile.keystore)?;
     node::lifecycle::rotate_log(home)?;
-    node::lifecycle::spawn_detached(home, passphrase.as_ref(), cmd.force)?;
+    let mut child = node::lifecycle::spawn_detached(home, passphrase.as_ref(), cmd.force)?;
 
     if !node::lifecycle::wait_until_running(&socket, node::lifecycle::STARTUP_TIMEOUT) {
+        // The child never answered: it may be wedged mid-bind. Kill and
+        // reap it so we don't leave an orphan holding the socket/keys.
+        let _ = child.kill();
+        let _ = child.wait();
         return Err(Error::StartupTimeout(node::lifecycle::STARTUP_TIMEOUT, log));
     }
 
