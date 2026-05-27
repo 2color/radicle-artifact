@@ -44,6 +44,11 @@ use crate::share::Error as ShareError;
 /// still can't pin us past this bound.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// How long a connection may sit without sending its command line before
+/// we drop it. Bounds idle/half-open clients so they can't pin a handler
+/// task and fd indefinitely.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How long [`iroh::protocol::Router::shutdown`] gets before we give up
 /// and return.
 const ROUTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -204,7 +209,12 @@ async fn handle_connection(
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     let mut line = String::new();
-    let n = reader.read_line(&mut line).await?;
+    // Bound the wait for the command line so a connected-but-silent
+    // client can't pin this handler (and its fd) forever.
+    let n = match tokio::time::timeout(READ_TIMEOUT, reader.read_line(&mut line)).await {
+        Ok(res) => res?,
+        Err(_) => return Ok(()),
+    };
     if n == 0 {
         return Ok(());
     }
