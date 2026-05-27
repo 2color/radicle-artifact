@@ -1882,7 +1882,7 @@ mod command {
         /// advertises it, or a location under our DID points at a CID the
         /// node no longer seeds, or at a previous endpoint id. This
         /// command inspects that drift, auto-adds missing locations, and
-        /// (with the appropriate flag) retracts the stale ones.
+        /// (with the appropriate flag) removes the stale ones.
         Reconcile(crate::reconcile::Cli),
         /// Control the local rad-artifact seeder node.
         Node(crate::node::Cli),

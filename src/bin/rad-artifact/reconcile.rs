@@ -8,14 +8,14 @@
 //!   the most recent matching release.
 //! - **OrphanedSelf**: a `iroh://{current_endpoint}` (or bare `iroh://`,
 //!   which resolves to our current endpoint) location under our DID
-//!   exists for a CID we are *not* seeding. Flagged; retracted either
-//!   per-CID via `--retract-orphaned <CID>` or in bulk via
-//!   `--retract-orphaned-self`.
+//!   exists for a CID we are *not* seeding. Flagged; removed either
+//!   per-CID via `--remove-orphaned <CID>` or in bulk via
+//!   `--remove-orphaned-self`.
 //! - **StaleEndpoint**: an `iroh://{other_endpoint}` location under our
 //!   DID — i.e. one of our previous keys, or a malformed/legacy-encoded
 //!   endpoint id that no longer decodes (e.g. a hex host left over from
-//!   a previous encoding). Reported in summary; retracted in bulk by
-//!   `--retract-orphaned-self`.
+//!   a previous encoding). Reported in summary; removed in bulk by
+//!   `--remove-orphaned-self`.
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -44,18 +44,18 @@ pub struct Cli {
     /// the current one.
     #[clap(long)]
     pub all_repos: bool,
-    /// Retract our `iroh://{current_endpoint}` location for this CID,
+    /// Remove our `iroh://{current_endpoint}` location for this CID,
     /// which the node is no longer seeding. Repeatable.
-    #[clap(long = "retract-orphaned", value_name = "CID")]
-    pub retract_orphaned: Vec<Cid>,
-    /// Retract every location under our DID that no longer reflects
+    #[clap(long = "remove-orphaned", value_name = "CID")]
+    pub remove_orphaned: Vec<Cid>,
+    /// Remove every location under our DID that no longer reflects
     /// what the local node is seeding from its current endpoint:
     /// both orphaned-self entries (current endpoint, CID not in store)
     /// and stale-endpoint entries (URL pinned to a previous or
     /// undecodable endpoint id). Use after reviewing a previous
     /// `reconcile` run.
-    #[clap(long, conflicts_with = "retract_orphaned")]
-    pub retract_orphaned_self: bool,
+    #[clap(long, conflicts_with = "remove_orphaned")]
+    pub remove_orphaned_self: bool,
 }
 
 /// Reconcile failures.
@@ -98,7 +98,7 @@ struct DanglingRow {
 #[derive(Default, Debug)]
 struct RepoReport {
     added: u32,
-    retracted: u32,
+    removed: u32,
     orphaned_self_skipped: Vec<LocationRow>,
     stale_endpoint_skipped: Vec<LocationRow>,
     dangling: Vec<DanglingRow>,
@@ -140,7 +140,7 @@ struct Classified {
 /// - Bare `iroh://` (no host) resolves to our current endpoint because
 ///   the host falls back to the location author's DID, which is us.
 /// - A host that fails to decode is treated as stale: it isn't our
-///   current endpoint id and belongs in the same retraction bucket as
+///   current endpoint id and belongs in the same removal bucket as
 ///   a foreign one.
 fn classify_locations(
     endpoint_id: &str,
@@ -209,13 +209,13 @@ fn find_missing(
 }
 
 /// Carries everything `reconcile_one` needs to inspect a single repo
-/// and apply the chosen retraction policy.
+/// and apply the chosen removal policy.
 struct ReconcileCtx<'a> {
     client: &'a Client,
     endpoint_id: &'a str,
     local_did: &'a Did,
-    retract_orphaned: &'a HashSet<Cid>,
-    retract_orphaned_self: bool,
+    remove_orphaned: &'a HashSet<Cid>,
+    remove_orphaned_self: bool,
 }
 
 /// Entry point for `rad-artifact reconcile`.
@@ -244,13 +244,13 @@ pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result
         vec![repo.id]
     };
 
-    let retract_orphaned: HashSet<Cid> = cli.retract_orphaned.iter().copied().collect();
+    let remove_orphaned: HashSet<Cid> = cli.remove_orphaned.iter().copied().collect();
     let ctx = ReconcileCtx {
         client: &client,
         endpoint_id: &endpoint_id,
         local_did: &local_did,
-        retract_orphaned: &retract_orphaned,
-        retract_orphaned_self: cli.retract_orphaned_self,
+        remove_orphaned: &remove_orphaned,
+        remove_orphaned_self: cli.remove_orphaned_self,
     };
     let mut total = RepoReport::default();
     let mut failed: usize = 0;
@@ -267,7 +267,7 @@ pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result
         match report {
             Ok(report) => {
                 total.added += report.added;
-                total.retracted += report.retracted;
+                total.removed += report.removed;
                 total
                     .orphaned_self_skipped
                     .extend(report.orphaned_self_skipped);
@@ -358,7 +358,7 @@ fn reconcile_one(
     let MissingScan { missing, dangling } =
         find_missing(&seeded, &current_endpoint_have, &all_artifacts);
 
-    // Apply: additions are always auto; retractions are gated.
+    // Apply: additions are always auto; removals are gated.
     let signer = profile
         .signer()
         .map_err(|e| Error::Node(node::Error::Usage(format!("signer: {e}"))))?;
@@ -403,19 +403,19 @@ fn reconcile_one(
     }
 
     for (release_id, cid, url) in orphaned_self {
-        if ctx.retract_orphaned_self || ctx.retract_orphaned.contains(&cid) {
+        if ctx.remove_orphaned_self || ctx.remove_orphaned.contains(&cid) {
             let mut release_mut = releases
                 .get_mut(&release_id)
                 .map_err(|e| Error::Node(node::Error::Find(e)))?;
             match release_mut.remove_location(cid, url.clone(), &signer) {
                 Ok(_) => {
                     eprintln!(
-                        "retracted orphaned-self: rid={rid} release={release_id} cid={cid} url={url}"
+                        "removed orphaned-self: rid={rid} release={release_id} cid={cid} url={url}"
                     );
-                    report.retracted += 1;
+                    report.removed += 1;
                 }
                 Err(err) => eprintln!(
-                    "warning: failed to retract rid={rid} release={release_id} cid={cid} url={url}: {err}"
+                    "warning: failed to remove rid={rid} release={release_id} cid={cid} url={url}: {err}"
                 ),
             }
         } else {
@@ -431,19 +431,19 @@ fn reconcile_one(
     }
 
     for (release_id, cid, url) in stale_endpoint {
-        if ctx.retract_orphaned_self {
+        if ctx.remove_orphaned_self {
             let mut release_mut = releases
                 .get_mut(&release_id)
                 .map_err(|e| Error::Node(node::Error::Find(e)))?;
             match release_mut.remove_location(cid, url.clone(), &signer) {
                 Ok(_) => {
                     eprintln!(
-                        "retracted stale-endpoint: rid={rid} release={release_id} cid={cid} url={url}"
+                        "removed stale-endpoint: rid={rid} release={release_id} cid={cid} url={url}"
                     );
-                    report.retracted += 1;
+                    report.removed += 1;
                 }
                 Err(err) => eprintln!(
-                    "warning: failed to retract rid={rid} release={release_id} cid={cid} url={url}: {err}"
+                    "warning: failed to remove rid={rid} release={release_id} cid={cid} url={url}: {err}"
                 ),
             }
         } else {
@@ -461,7 +461,7 @@ fn reconcile_one(
 
 fn print_summary(r: &RepoReport) {
     if r.added == 0
-        && r.retracted == 0
+        && r.removed == 0
         && r.orphaned_self_skipped.is_empty()
         && r.stale_endpoint_skipped.is_empty()
         && r.dangling.is_empty()
@@ -472,13 +472,13 @@ fn print_summary(r: &RepoReport) {
     if r.added > 0 {
         eprintln!("Reconcile: added {} missing location(s)", r.added);
     }
-    if r.retracted > 0 {
-        eprintln!("Reconcile: retracted {} stale location(s)", r.retracted);
+    if r.removed > 0 {
+        eprintln!("Reconcile: removed {} stale location(s)", r.removed);
     }
     if !r.orphaned_self_skipped.is_empty() {
         eprintln!();
         eprintln!(
-            "Reconcile: {} orphaned-self location(s) left in place — pass --retract-orphaned <CID> (or --retract-orphaned-self for all) to retract:",
+            "Reconcile: {} orphaned-self location(s) left in place — pass --remove-orphaned <CID> (or --remove-orphaned-self for all) to remove:",
             r.orphaned_self_skipped.len()
         );
         print_grouped_by_rid(&r.orphaned_self_skipped);
@@ -486,7 +486,7 @@ fn print_summary(r: &RepoReport) {
     if !r.stale_endpoint_skipped.is_empty() {
         eprintln!();
         eprintln!(
-            "Reconcile: {} stale-endpoint location(s) left in place — pass --retract-orphaned-self to retract (also covers orphaned-self):",
+            "Reconcile: {} stale-endpoint location(s) left in place — pass --remove-orphaned-self to remove (also covers orphaned-self):",
             r.stale_endpoint_skipped.len()
         );
         print_grouped_by_rid(&r.stale_endpoint_skipped);
@@ -638,7 +638,7 @@ mod tests {
     fn undecodable_host_is_stale() {
         // Regression: hosts that fail base32 decoding (e.g. legacy hex
         // endpoint ids) must go to the stale bucket so
-        // --retract-orphaned-self can clean them up.
+        // --remove-orphaned-self can clean them up.
         let our_ep = test_endpoint(1);
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
@@ -679,7 +679,7 @@ mod tests {
     fn mixed_urls_on_same_cid_split_into_buckets() {
         // One CID with two URLs: one current, one stale. The current
         // URL marks the CID already-advertised; the stale URL still
-        // goes to the stale bucket so it can be retracted independently.
+        // goes to the stale bucket so it can be removed independently.
         let our_ep = test_endpoint(1);
         let other_ep = test_endpoint(2);
         let cid = test_cid(1);

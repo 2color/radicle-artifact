@@ -28,7 +28,7 @@ A Seeded Tag whose CID no Release references — so no Location can anchor to it
 _Avoid_: orphan tag (the design doc overloads "orphan" for unrelated cases).
 
 **Orphaned Location** (a.k.a. orphaned-self):
-A Location under our own DID, pinned to our current endpoint, for a CID the node is no longer seeding — it points peers at us for bytes we don't have. The mirror image of a Dangling Tag, and what `--retract-orphaned[-self]` removes.
+A Location under our own DID, pinned to our current endpoint, for a CID the node is no longer seeding — it points peers at us for bytes we don't have. The mirror image of a Dangling Tag, and what `--remove-orphaned[-self]` removes.
 _Avoid_: stale location (a Stale Endpoint is the distinct case where the URL is pinned to a _previous_ or undecodable endpoint).
 
 ## Relationships
