@@ -230,27 +230,43 @@ pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result
         retract_orphaned_self: cli.retract_orphaned_self,
     };
     let mut total = RepoReport::default();
+    let mut failed: usize = 0;
 
     for rid in target_rids {
-        let repo = profile
+        let report = profile
             .storage
             .repository(rid)
             .map_err(|e| Error::Repository {
                 rid,
                 err: e.to_string(),
-            })?;
-        let report = reconcile_one(rid, &repo, &ctx, profile)?;
-        total.added += report.added;
-        total.retracted += report.retracted;
-        total
-            .orphaned_self_skipped
-            .extend(report.orphaned_self_skipped);
-        total
-            .stale_endpoint_skipped
-            .extend(report.stale_endpoint_skipped);
+            })
+            .and_then(|repo| reconcile_one(rid, &repo, &ctx, profile));
+        match report {
+            Ok(report) => {
+                total.added += report.added;
+                total.retracted += report.retracted;
+                total
+                    .orphaned_self_skipped
+                    .extend(report.orphaned_self_skipped);
+                total
+                    .stale_endpoint_skipped
+                    .extend(report.stale_endpoint_skipped);
+            }
+            // In a bulk run one broken repo (e.g. no releases COB) must
+            // not block the rest; surface it and carry on. A single
+            // explicit target still fails fast.
+            Err(e) if cli.all_repos => {
+                failed += 1;
+                eprintln!("warning: skipping {rid}: {e}");
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     print_summary(&total);
+    if failed > 0 {
+        eprintln!("{failed} repo(s) could not be reconciled (see warnings above)");
+    }
     Ok(())
 }
 
