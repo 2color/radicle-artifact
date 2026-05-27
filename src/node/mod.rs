@@ -122,11 +122,14 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
         "rad-artifact node ready"
     );
 
-    let (shutdown_tx, _) = broadcast::channel::<()>(8);
+    // Subscribe before installing the signal handler: a signal that
+    // arrives during startup must land in a live receiver, otherwise the
+    // broadcast (which doesn't buffer for absent receivers) drops it and
+    // the accept loop never sees the shutdown.
+    let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(8);
     spawn_signal_handler(shutdown_tx.clone());
 
     let in_flight = Arc::new(AtomicUsize::new(0));
-    let mut shutdown_rx = shutdown_tx.subscribe();
 
     loop {
         tokio::select! {
