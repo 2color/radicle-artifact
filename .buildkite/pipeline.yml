@@ -1,0 +1,47 @@
+# CI for radicle-artifact. Steps run in a pinned Rust container (the version
+# tracks `rust-version` in Cargo.toml — bump both together) and one at a time,
+# sharing a single cache volume.
+#
+# The cache lives outside the checkout (Buildkite's git clean would wipe
+# anything inside it) and holds both the cargo registry and build output.
+# Because steps run sequentially, nothing contends on it.
+
+env:
+  RUST_IMAGE: "rust:1.91"
+  CARGO_TERM_COLOR: "always"
+
+_docker: &docker
+  docker#v5.11.0:
+    image: "$RUST_IMAGE"
+    environment:
+      - CARGO_TERM_COLOR
+      - CARGO_HOME=/cache/cargo
+      - CARGO_TARGET_DIR=/cache/target
+    volumes:
+      - "rad-artifact-cache:/cache"
+
+steps:
+  - label: ":rustfmt: fmt"
+    command:
+      - rustup component add rustfmt
+      - cargo fmt --all -- --check
+    plugins:
+      - *docker
+
+  - wait: ~
+
+  - label: ":clippy: clippy"
+    command:
+      - rustup component add clippy
+      - cargo clippy --all-targets --all-features -- -D warnings
+    plugins:
+      - *docker
+
+  - wait: ~
+
+  - label: ":cargo: test"
+    # Plain `cargo test` includes doctests; don't add --all-targets, which
+    # silently excludes them.
+    command: cargo test --all-features
+    plugins:
+      - *docker
