@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::share::cid_utils::ArtifactKind;
+use crate::share::keys::EndpointId;
 
 pub use crate::seeder::ImportMode;
 
@@ -114,8 +115,8 @@ pub struct SeedReceipt {
     pub rid: String,
     /// Echo of the requested CID.
     pub cid: String,
-    /// Lowercase base32 (RFC 4648, no padding) endpoint id the node is serving on.
-    pub endpoint_id: String,
+    /// Endpoint id the node is serving on, as a canonical `iroh://<base32>` URL.
+    pub endpoint_id: EndpointId,
     /// Logical size of the imported artifact in bytes.
     pub bytes: u64,
     /// `true` if this call newly tagged the pair; `false` if it was
@@ -148,10 +149,10 @@ pub struct SeededEntry {
 /// per-field source recipes; in v1 only the obvious fields are wired and
 /// the rest default to zero.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Status {
-    /// Lowercase base32 (RFC 4648, no padding) endpoint id.
-    pub endpoint_id: String,
+    /// Endpoint id the node is serving on, as a canonical `iroh://<base32>` URL.
+    pub endpoint_id: EndpointId,
     /// Unix timestamp (seconds) when the node bound its socket.
     pub started_at_unix: i64,
     /// Aggregated tag-level stats.
@@ -317,10 +318,11 @@ mod tests {
 
     #[test]
     fn wire_snapshot_receipts() {
+        let endpoint_id = sample_endpoint_id();
         let seed = SeedReceipt {
             rid: "r".into(),
             cid: "c".into(),
-            endpoint_id: "ABCDE".into(),
+            endpoint_id,
             bytes: 42,
             was_new: true,
         };
@@ -329,11 +331,16 @@ mod tests {
             json!({
                 "rid": "r",
                 "cid": "c",
-                "endpoint_id": "ABCDE",
+                // Serialized as the canonical iroh:// URL form.
+                "endpoint_id": endpoint_id.to_string(),
                 "bytes": 42,
                 "was_new": true,
             })
         );
+        // Round-trips back to the same typed value.
+        let back: SeedReceipt =
+            serde_json::from_value(serde_json::to_value(&seed).unwrap()).unwrap();
+        assert_eq!(back, seed);
 
         let unseed = UnseedReceipt {
             rid: "r".into(),
@@ -355,13 +362,27 @@ mod tests {
         );
     }
 
+    /// Fixed endpoint id for wire snapshots; derived from a pinned secret.
+    fn sample_endpoint_id() -> EndpointId {
+        iroh::SecretKey::from_bytes(&[7u8; 32]).public().into()
+    }
+
     #[test]
-    fn wire_snapshot_status_default() {
-        let st = Status::default();
+    fn wire_snapshot_status_zeroed() {
+        let endpoint_id = sample_endpoint_id();
+        let st = Status {
+            endpoint_id,
+            started_at_unix: 0,
+            seeded: SeededStats::default(),
+            disk: DiskStats::default(),
+            connections: ConnectionStats::default(),
+            traffic: TrafficStats::default(),
+            warnings: Warnings::default(),
+        };
         assert_eq!(
             serde_json::to_value(&st).unwrap(),
             json!({
-                "endpoint_id": "",
+                "endpoint_id": endpoint_id.to_string(),
                 "started_at_unix": 0,
                 "seeded": {"count": 0, "bytes_logical": 0},
                 "disk": {"store_bytes": 0, "seeded_bytes_logical": 0},

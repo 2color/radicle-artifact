@@ -143,15 +143,16 @@ struct Classified {
 ///   current endpoint id and belongs in the same removal bucket as
 ///   a foreign one.
 fn classify_locations(
-    endpoint_id: &str,
+    endpoint_id: EndpointId,
     seeded: &HashSet<Cid>,
     locations: impl IntoIterator<Item = OurLocation>,
 ) -> Classified {
     let mut out = Classified::default();
     for loc in locations {
         let eid = match EndpointId::from_url(&loc.url) {
-            Ok(Some(eid)) => eid.to_string(),
-            Ok(None) => endpoint_id.to_string(),
+            Ok(Some(eid)) => eid,
+            // Bare iroh:// falls back to the location author's DID, which is us.
+            Ok(None) => endpoint_id,
             Err(_) => {
                 out.stale_endpoint.push((loc.release_id, loc.cid, loc.url));
                 continue;
@@ -212,7 +213,7 @@ fn find_missing(
 /// and apply the chosen removal policy.
 struct ReconcileCtx<'a> {
     client: &'a Client,
-    endpoint_id: &'a str,
+    endpoint_id: EndpointId,
     local_did: &'a Did,
     remove_orphaned: &'a HashSet<Cid>,
     remove_orphaned_self: bool,
@@ -247,7 +248,7 @@ pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result
     let remove_orphaned: HashSet<Cid> = cli.remove_orphaned.iter().copied().collect();
     let ctx = ReconcileCtx {
         client: &client,
-        endpoint_id: &endpoint_id,
+        endpoint_id,
         local_did: &local_did,
         remove_orphaned: &remove_orphaned,
         remove_orphaned_self: cli.remove_orphaned_self,
@@ -374,18 +375,8 @@ fn reconcile_one(
     };
 
     for (release_id, cid) in missing {
-        // ctx.endpoint_id carries the canonical iroh:// URL form from the
-        // node; round-trip through EndpointId so a malformed value fails
-        // here rather than getting signed into the COB.
-        let url = ctx
-            .endpoint_id
-            .parse::<EndpointId>()
-            .map_err(|e| {
-                Error::Node(node::Error::Usage(format!(
-                    "invalid endpoint id from node: {e}"
-                )))
-            })?
-            .to_url();
+        // ctx.endpoint_id is already validated; build its canonical URL.
+        let url = ctx.endpoint_id.to_url();
         let mut release_mut = releases
             .get_mut(&release_id)
             .map_err(|e| Error::Node(node::Error::Find(e)))?;
@@ -582,7 +573,7 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let out = classify_locations(
-            &our_ep.to_string(),
+            our_ep,
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
@@ -601,7 +592,7 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let out = classify_locations(
-            &our_ep.to_string(),
+            our_ep,
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
@@ -621,7 +612,7 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let out = classify_locations(
-            &our_ep.to_string(),
+            our_ep,
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
@@ -643,7 +634,7 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let out = classify_locations(
-            &our_ep.to_string(),
+            our_ep,
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
@@ -662,7 +653,7 @@ mod tests {
         let cid = test_cid(1);
         let seeded: HashSet<Cid> = HashSet::new();
         let out = classify_locations(
-            &our_ep.to_string(),
+            our_ep,
             &seeded,
             [OurLocation {
                 release_id: test_release(1),
@@ -686,7 +677,7 @@ mod tests {
         let seeded: HashSet<Cid> = [cid].into_iter().collect();
         let rel = test_release(1);
         let out = classify_locations(
-            &our_ep.to_string(),
+            our_ep,
             &seeded,
             [
                 OurLocation {

@@ -16,6 +16,7 @@ use std::str::FromStr;
 
 use multibase::Base;
 use radicle::crypto::ssh::keystore::Keystore;
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 
 use super::Error;
@@ -138,6 +139,22 @@ impl FromStr for EndpointId {
         let url = Url::parse(s).map_err(|e| Error::Iroh(format!("invalid URL '{s}': {e}")))?;
         Self::from_url(&url)?
             .ok_or_else(|| Error::Iroh(format!("URL '{s}' has no endpoint id host")))
+    }
+}
+
+// Wire form is the canonical `iroh://<base32>` URL string, matching
+// `Display`/`FromStr`. Deserialization validates, so a malformed endpoint
+// id fails at the protocol decode boundary rather than downstream.
+impl Serialize for EndpointId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for EndpointId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(de::Error::custom)
     }
 }
 

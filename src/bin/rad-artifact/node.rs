@@ -427,14 +427,9 @@ fn register_location(
     let signer = profile
         .signer()
         .map_err(|e| Error::Usage(format!("signer: {e}")))?;
-    // Receipt carries the endpoint URL; round-trip
-    // through EndpointId so a malformed string from the node fails
-    // loudly here rather than getting signed into the COB.
-    let url = receipt
-        .endpoint_id
-        .parse::<EndpointId>()
-        .map_err(|e| Error::Usage(format!("invalid endpoint id from node: {e}")))?
-        .to_url();
+    // Receipt's endpoint_id is already a validated EndpointId; the
+    // protocol decode would have rejected a malformed value.
+    let url = receipt.endpoint_id.to_url();
     let mut release_mut = releases.get_mut(&release_id).map_err(Error::Find)?;
     release_mut
         .add_location(cid, url, &signer)

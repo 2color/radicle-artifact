@@ -36,6 +36,7 @@ use crate::protocol::{
 };
 use crate::seeder::{self, ARTIFACTS_DIR};
 use crate::share::cid_utils::ArtifactKind;
+use crate::share::keys::EndpointId;
 use crate::share::Error as ShareError;
 
 /// How long shutdown waits for in-flight handlers before forcing the
@@ -112,12 +113,11 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let endpoint_id =
-        crate::share::keys::EndpointId::from(seeder.router.endpoint().id()).to_string();
+    let endpoint_id = EndpointId::from(seeder.router.endpoint().id());
     let store: FsStore = seeder.blobs.clone();
 
     tracing::info!(
-        endpoint_id = endpoint_id.as_str(),
+        endpoint_id = %endpoint_id,
         socket = %socket_path.display(),
         "rad-artifact node ready"
     );
@@ -147,7 +147,6 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
                     }
                 };
                 let store = store.clone();
-                let endpoint_id = endpoint_id.clone();
                 let shutdown_tx = shutdown_tx.clone();
                 let in_flight = in_flight.clone();
                 in_flight.fetch_add(1, Ordering::SeqCst);
@@ -156,7 +155,7 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
                         stream,
                         &store,
                         started_at_unix,
-                        &endpoint_id,
+                        endpoint_id,
                         &shutdown_tx,
                     )
                     .await
@@ -206,7 +205,7 @@ async fn handle_connection(
     stream: UnixStream,
     store: &FsStore,
     started_at_unix: i64,
-    endpoint_id: &str,
+    endpoint_id: EndpointId,
     shutdown_tx: &broadcast::Sender<()>,
 ) -> io::Result<()> {
     let (read, mut write) = stream.into_split();
@@ -237,7 +236,7 @@ async fn dispatch(
     cmd: Command,
     store: &FsStore,
     started_at_unix: i64,
-    endpoint_id: &str,
+    endpoint_id: EndpointId,
     shutdown_tx: &broadcast::Sender<()>,
 ) -> String {
     match cmd {
@@ -272,7 +271,7 @@ async fn seed_response(
     path: &Path,
     kind: ArtifactKind,
     mode: ImportMode,
-    endpoint_id: &str,
+    endpoint_id: EndpointId,
 ) -> String {
     let rid = match RepoId::from_str(rid_s) {
         Ok(v) => v,
@@ -308,7 +307,7 @@ async fn seed_response(
     let receipt = SeedReceipt {
         rid: rid.to_string(),
         cid: cid.to_string(),
-        endpoint_id: endpoint_id.to_string(),
+        endpoint_id,
         bytes,
         was_new: !was_already,
     };
@@ -381,7 +380,7 @@ async fn list_seeded_response(store: &FsStore, rid_s: &str) -> String {
 
 async fn build_status(
     store: &FsStore,
-    endpoint_id: &str,
+    endpoint_id: EndpointId,
     started_at_unix: i64,
 ) -> Result<Status, ShareError> {
     let pairs = seeder::all_seeded(store).await?;
@@ -393,7 +392,7 @@ async fn build_status(
     // Phase 2 leaves connection/traffic counters at zero; the
     // iroh-metrics wiring lands with the CLI in phase 3.
     Ok(Status {
-        endpoint_id: endpoint_id.to_string(),
+        endpoint_id,
         started_at_unix,
         seeded: crate::protocol::SeededStats {
             count,
@@ -403,7 +402,9 @@ async fn build_status(
             store_bytes: 0,
             seeded_bytes_logical: bytes_logical,
         },
-        ..Status::default()
+        connections: crate::protocol::ConnectionStats::default(),
+        traffic: crate::protocol::TrafficStats::default(),
+        warnings: crate::protocol::Warnings::default(),
     })
 }
 
@@ -482,8 +483,7 @@ mod tests {
 
             // Pin the secret so the test is reproducible.
             let secret = iroh::SecretKey::from_bytes(&[1u8; 32]);
-            let expected_endpoint_id =
-                crate::share::keys::EndpointId::from(secret.public()).to_string();
+            let expected_endpoint_id = EndpointId::from(secret.public());
 
             // Run the node on a tokio task; capture the join handle so
             // we can assert clean exit.
