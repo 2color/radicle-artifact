@@ -87,12 +87,21 @@ struct LocationRow {
     url: Url,
 }
 
+/// A seeded tag with no release referencing its CID. Has no release or
+/// URL, unlike [`LocationRow`].
+#[derive(Debug)]
+struct DanglingRow {
+    rid: RepoId,
+    cid: Cid,
+}
+
 #[derive(Default, Debug)]
 struct RepoReport {
     added: u32,
     retracted: u32,
     orphaned_self_skipped: Vec<LocationRow>,
     stale_endpoint_skipped: Vec<LocationRow>,
+    dangling: Vec<DanglingRow>,
 }
 
 /// One iroh:// URL under our DID, flattened out of the release/artifact
@@ -160,15 +169,28 @@ fn classify_locations(
     out
 }
 
+/// Result of [`find_missing`]: seeded CIDs split by whether any release
+/// can anchor a location for them.
+#[derive(Default, Debug)]
+struct MissingScan {
+    /// Seeded CIDs we don't yet advertise, paired with the most recent
+    /// release that contains them — a location can be added there.
+    missing: Vec<(radicle_artifact::ReleaseId, Cid)>,
+    /// Seeded CIDs that no release references at all. We have no anchor
+    /// for a location, so these are reported as dangling tags rather
+    /// than silently dropped.
+    dangling: Vec<Cid>,
+}
+
 /// For every seeded CID that we don't already advertise from the
 /// current endpoint, pick the most recent release that contains the
-/// CID. Releases without the CID are skipped.
+/// CID. CIDs no release references go to `dangling`.
 fn find_missing(
     seeded: &HashSet<Cid>,
     current_have: &HashSet<Cid>,
     artifacts: &[ReleaseArtifact],
-) -> Vec<(radicle_artifact::ReleaseId, Cid)> {
-    let mut missing = Vec::new();
+) -> MissingScan {
+    let mut scan = MissingScan::default();
     for cid in seeded {
         if current_have.contains(cid) {
             continue;
@@ -178,11 +200,12 @@ fn find_missing(
             .filter(|r| &r.cid == cid)
             .max_by_key(|r| r.timestamp)
             .map(|r| r.release_id);
-        if let Some(release_id) = target {
-            missing.push((release_id, *cid));
+        match target {
+            Some(release_id) => scan.missing.push((release_id, *cid)),
+            None => scan.dangling.push(*cid),
         }
     }
-    missing
+    scan
 }
 
 /// Carries everything `reconcile_one` needs to inspect a single repo
@@ -251,6 +274,7 @@ pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result
                 total
                     .stale_endpoint_skipped
                     .extend(report.stale_endpoint_skipped);
+                total.dangling.extend(report.dangling);
             }
             // In a bulk run one broken repo (e.g. no releases COB) must
             // not block the rest; surface it and carry on. A single
@@ -331,13 +355,23 @@ fn reconcile_one(
         orphaned_self,
         stale_endpoint,
     } = classify_locations(ctx.endpoint_id, &seeded, our_locations);
-    let missing = find_missing(&seeded, &current_endpoint_have, &all_artifacts);
+    let MissingScan { missing, dangling } =
+        find_missing(&seeded, &current_endpoint_have, &all_artifacts);
 
     // Apply: additions are always auto; retractions are gated.
     let signer = profile
         .signer()
         .map_err(|e| Error::Node(node::Error::Usage(format!("signer: {e}"))))?;
-    let mut report = RepoReport::default();
+
+    // Dangling tags have no release to anchor a location to; report them
+    // so the user can reclaim the bytes with `rad-artifact unseed <cid>`.
+    let mut report = RepoReport {
+        dangling: dangling
+            .into_iter()
+            .map(|cid| DanglingRow { rid, cid })
+            .collect(),
+        ..Default::default()
+    };
 
     for (release_id, cid) in missing {
         // ctx.endpoint_id carries the canonical iroh:// URL form from the
@@ -430,6 +464,7 @@ fn print_summary(r: &RepoReport) {
         && r.retracted == 0
         && r.orphaned_self_skipped.is_empty()
         && r.stale_endpoint_skipped.is_empty()
+        && r.dangling.is_empty()
     {
         eprintln!("Reconcile: no drift.");
         return;
@@ -455,6 +490,29 @@ fn print_summary(r: &RepoReport) {
             r.stale_endpoint_skipped.len()
         );
         print_grouped_by_rid(&r.stale_endpoint_skipped);
+    }
+    if !r.dangling.is_empty() {
+        eprintln!();
+        eprintln!(
+            "Reconcile: {} dangling tag(s) — seeded but no release references them; run `rad-artifact unseed <cid>` to reclaim:",
+            r.dangling.len()
+        );
+        print_dangling_by_rid(&r.dangling);
+    }
+}
+
+/// Print dangling tags grouped by RID, each CID on its own indented line.
+fn print_dangling_by_rid(rows: &[DanglingRow]) {
+    use std::collections::BTreeMap;
+    let mut by_rid: BTreeMap<String, Vec<&DanglingRow>> = BTreeMap::new();
+    for row in rows {
+        by_rid.entry(row.rid.to_string()).or_default().push(row);
+    }
+    for (rid, items) in &by_rid {
+        eprintln!("  {rid}");
+        for row in items {
+            eprintln!("    cid: {}", row.cid);
+        }
     }
 }
 
@@ -488,6 +546,8 @@ mod tests {
     use url::Url;
 
     use super::{classify_locations, find_missing, OurLocation, ReleaseArtifact};
+
+    // `find_missing` returns `MissingScan { missing, dangling }`.
 
     /// Production-faithful CID: BLAKE3 multihash, raw codec, derived
     /// from a single distinguishing byte.
@@ -667,8 +727,9 @@ mod tests {
                 cid,
             },
         ];
-        let m = find_missing(&seeded, &have, &artifacts);
-        assert_eq!(m, vec![(newer, cid)]);
+        let scan = find_missing(&seeded, &have, &artifacts);
+        assert_eq!(scan.missing, vec![(newer, cid)]);
+        assert!(scan.dangling.is_empty());
     }
 
     #[test]
@@ -681,14 +742,16 @@ mod tests {
             timestamp: 100,
             cid,
         }];
-        let m = find_missing(&seeded, &have, &artifacts);
-        assert!(m.is_empty());
+        let scan = find_missing(&seeded, &have, &artifacts);
+        assert!(scan.missing.is_empty());
+        assert!(scan.dangling.is_empty());
     }
 
     #[test]
-    fn seeded_cid_with_no_matching_release_is_skipped() {
+    fn seeded_cid_with_no_matching_release_is_dangling() {
         // Seeded CID isn't present in any release, so reconcile has no
-        // anchor for a missing-location add. Drop it.
+        // anchor for a missing-location add. Report it as dangling
+        // rather than dropping it silently.
         let seeded_cid = test_cid(1);
         let other_cid = test_cid(2);
         let seeded: HashSet<Cid> = [seeded_cid].into_iter().collect();
@@ -698,7 +761,28 @@ mod tests {
             timestamp: 100,
             cid: other_cid,
         }];
-        let m = find_missing(&seeded, &have, &artifacts);
-        assert!(m.is_empty());
+        let scan = find_missing(&seeded, &have, &artifacts);
+        assert!(scan.missing.is_empty());
+        assert_eq!(scan.dangling, vec![seeded_cid]);
+    }
+
+    #[test]
+    fn missing_and_dangling_split_correctly() {
+        // One seeded CID lives in a release (missing-location add), the
+        // other lives in none (dangling). They must route to different
+        // buckets.
+        let anchored = test_cid(1);
+        let orphan = test_cid(2);
+        let release = test_release(1);
+        let seeded: HashSet<Cid> = [anchored, orphan].into_iter().collect();
+        let have: HashSet<Cid> = HashSet::new();
+        let artifacts = vec![ReleaseArtifact {
+            release_id: release,
+            timestamp: 100,
+            cid: anchored,
+        }];
+        let scan = find_missing(&seeded, &have, &artifacts);
+        assert_eq!(scan.missing, vec![(release, anchored)]);
+        assert_eq!(scan.dangling, vec![orphan]);
     }
 }
