@@ -1360,7 +1360,7 @@ mod prompt {
     }
 
     /// Render candidates as a leading-newline-indented list for
-    /// embedding after "pass --release <id>" in the ambiguous-release
+    /// embedding after "pass --release `<id>`" in the ambiguous-release
     /// error. Rows reuse the interactive picker's row format.
     pub(super) fn format_candidate_list(
         candidates: &[(ReleaseId, Release)],
@@ -2010,7 +2010,7 @@ Examples:
         /// Git revision (commit, tag, or abbreviated OID). Required with --cid.
         #[clap(requires = "cid")]
         pub revision: Option<String>,
-        /// Content identifier of the artifact to fetch. Required with <REVISION>.
+        /// Content identifier of the artifact to fetch. Required with `<REVISION>`.
         #[clap(long, requires = "revision")]
         pub cid: Option<radicle_artifact::Cid>,
         /// Output file path. Defaults to the artifact name in the current directory.
@@ -2040,9 +2040,9 @@ Examples:
     /// Add an artifact to a release, creating the release if needed.
     ///
     /// The artifact is identified by a content identifier (CID). Pass a
-    /// local <PATH> to compute the CID from the file or directory
+    /// local `<PATH>` to compute the CID from the file or directory
     /// contents, or use --cid to register a precomputed CID for an
-    /// artifact you don't have locally. Exactly one of <PATH> or --cid
+    /// artifact you don't have locally. Exactly one of `<PATH>` or --cid
     /// must be provided.
     ///
     /// The release revision and artifact name are prompted interactively
@@ -2074,7 +2074,7 @@ Examples:
         /// (0x55), directories use the blake3-hashseq codec (0x80).
         pub path: Option<std::path::PathBuf>,
         /// Precomputed CID. Use when the artifact bytes aren't available
-        /// locally. Conflicts with <PATH>.
+        /// locally. Conflicts with `<PATH>`.
         #[clap(long)]
         pub cid: Option<Cid>,
         /// Git revision (commit, tag, or abbreviated OID) of the release.
@@ -2148,7 +2148,7 @@ Examples:
     /// obtained the same CID. Idempotent — attesting twice is a no-op.
     ///
     /// Without arguments, interactively lists releases and artifacts to
-    /// pick from. Pass both <REVISION> and --cid to skip the prompts.
+    /// pick from. Pass both `<REVISION>` and --cid to skip the prompts.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
@@ -2164,11 +2164,11 @@ Examples:
         #[clap(requires = "cid")]
         pub revision: Option<String>,
         /// Existing release id. Skips commit/tag resolution. Required
-        /// with --cid unless <revision> is given.
+        /// with --cid unless `<revision>` is given.
         #[clap(long, requires = "cid")]
         pub release: Option<String>,
         /// Content identifier for the artifact to attest. Required with
-        /// a target (<revision> or --release).
+        /// a target (`<revision>` or --release).
         #[clap(long, requires = "target")]
         pub cid: Option<Cid>,
         /// Also consider releases authored by users who are not
@@ -2187,7 +2187,7 @@ Examples:
     /// attestation from the same DID.
     ///
     /// Without arguments, interactively lists releases and artifacts to
-    /// pick from and prompts for a reason. Pass both <REVISION> and --cid
+    /// pick from and prompts for a reason. Pass both `<REVISION>` and --cid
     /// to skip the release/artifact prompts; -m is still optional and
     /// will be prompted if omitted at a terminal.
     #[derive(Parser)]
@@ -2205,11 +2205,11 @@ Examples:
         #[clap(requires = "cid")]
         pub revision: Option<String>,
         /// Existing release id. Skips commit/tag resolution. Required
-        /// with --cid unless <revision> is given.
+        /// with --cid unless `<revision>` is given.
         #[clap(long, requires = "cid")]
         pub release: Option<String>,
         /// Content identifier for the artifact to redact. Required with
-        /// a target (<revision> or --release).
+        /// a target (`<revision>` or --release).
         #[clap(long, requires = "target")]
         pub cid: Option<Cid>,
         /// Reason for the redaction.
@@ -2226,7 +2226,7 @@ Examples:
     ///
     /// Only the artifact's author or a current repository delegate can
     /// set metadata. By default the value is stored as a JSON string;
-    /// pass --json to parse <VALUE> as JSON instead. The keyspace is
+    /// pass --json to parse `<VALUE>` as JSON instead. The keyspace is
     /// shared across contributors (last-writer-wins).
     ///
     /// Without --revision/--release and --cid, interactively lists
@@ -2257,7 +2257,7 @@ Examples:
         /// (--revision or --release).
         #[clap(long, requires = "target")]
         pub cid: Option<Cid>,
-        /// Parse <VALUE> as JSON. Without this flag the value is stored
+        /// Parse `<VALUE>` as JSON. Without this flag the value is stored
         /// as a JSON string.
         #[clap(long)]
         pub json: bool,
@@ -2317,7 +2317,7 @@ Examples:
     /// Without arguments, interactively lists releases and artifacts to
     /// pick from, then prompts for the URL to remove from the locations
     /// you previously announced. Pass --revision/--release and --cid
-    /// (and optionally <URL>) to skip the prompts.
+    /// (and optionally `<URL>`) to skip the prompts.
     #[derive(Parser)]
     #[clap(
         group = clap::ArgGroup::new("target").args(["revision", "release"]),
@@ -2401,7 +2401,7 @@ Examples:
         /// Conflicts with --release.
         pub revision: Option<String>,
         /// Existing release id. Skips commit/tag resolution and
-        /// disambiguation. Conflicts with <revision>.
+        /// disambiguation. Conflicts with `<revision>`.
         #[clap(long)]
         pub release: Option<String>,
     }
