@@ -6,8 +6,8 @@
 //!
 //! [`EndpointId`] is the project's wire-form newtype around [`iroh::EndpointId`].
 //! Its canonical text form — used by `Display`, `FromStr`, `Status.endpoint_id`
-//! over IPC, node logs, and COB locations — is the `iroh://<base32>` URL.
-//! The host slot is RFC 4648 base32 (lowercase, no padding); the `iroh://`
+//! over IPC, node logs, and COB locations — is the `radiroh://<base32>` URL.
+//! The host slot is RFC 4648 base32 (lowercase, no padding); the `radiroh://`
 //! scheme disambiguates the encoding from iroh's own `Display`, which uses
 //! a different alphabet and must never appear in user-facing output.
 
@@ -27,7 +27,7 @@ const HOST_BASE: Base = Base::Base32Lower;
 /// Project endpoint identifier.
 ///
 /// Newtype wrapper around [`iroh::EndpointId`] whose `Display` / `FromStr`
-/// use the `iroh://<base32>` URL form — the canonical text representation
+/// use the `radiroh://<base32>` URL form — the canonical text representation
 /// across the codebase (IPC, logs, COB locations, CLI output). Convert to
 /// the underlying iroh type only at the iroh-blobs API boundary via
 /// [`EndpointId::into_inner`].
@@ -36,7 +36,12 @@ pub struct EndpointId(iroh::EndpointId);
 
 impl EndpointId {
     /// URL scheme of the canonical text form.
-    pub const URL_SCHEME: &'static str = "iroh";
+    pub const URL_SCHEME: &'static str = "radiroh";
+
+    /// Legacy URL scheme retained only so `rad-artifact reconcile` can
+    /// sweep pre-`radiroh://` locations out of COBs under our DID. Not
+    /// accepted on read by [`EndpointId::from_url`].
+    const LEGACY_URL_SCHEME: &'static str = "iroh";
 
     /// Borrow the underlying iroh endpoint id (for iroh-blobs APIs).
     pub fn as_inner(&self) -> &iroh::EndpointId {
@@ -48,7 +53,7 @@ impl EndpointId {
         self.0
     }
 
-    /// Build the canonical `iroh://<base32>` URL representation.
+    /// Build the canonical `radiroh://<base32>` URL representation.
     pub fn to_url(&self) -> Url {
         // Infallible: scheme + base32 host always parses.
         Url::parse(&format!(
@@ -56,14 +61,15 @@ impl EndpointId {
             Self::URL_SCHEME,
             HOST_BASE.encode(self.0.as_bytes())
         ))
-        .expect("iroh:// URL with valid base32 host always parses")
+        .expect("radiroh:// URL with valid base32 host always parses")
     }
 
-    /// Parse an `iroh://<id>` URL into an endpoint id.
+    /// Parse a `radiroh://<id>` URL into an endpoint id.
     ///
-    /// Returns `Ok(None)` for a bare `iroh://` (no host) so callers can
-    /// fall back to deriving the endpoint id from the location author's
-    /// DID.
+    /// Returns `Ok(None)` for a bare `radiroh://` (no host) so callers
+    /// can fall back to deriving the endpoint id from the location
+    /// author's DID. Legacy `iroh://` URLs are rejected — use
+    /// [`EndpointId::is_legacy_endpoint_url`] to flag them for sweep.
     pub fn from_url(url: &Url) -> Result<Option<Self>, Error> {
         if url.scheme() != Self::URL_SCHEME {
             return Err(Error::Iroh(format!(
@@ -78,9 +84,19 @@ impl EndpointId {
         }
     }
 
-    /// `true` iff `url.scheme()` is the iroh URL scheme.
+    /// `true` iff `url.scheme()` is the canonical endpoint URL scheme
+    /// (`radiroh://`).
     pub fn is_endpoint_url(url: &Url) -> bool {
         url.scheme() == Self::URL_SCHEME
+    }
+
+    /// `true` iff `url.scheme()` is the pre-rename `iroh://` scheme.
+    ///
+    /// Used only by `rad-artifact reconcile` to sweep legacy locations
+    /// out of COBs under our DID. Production read/write paths must use
+    /// [`EndpointId::is_endpoint_url`].
+    pub fn is_legacy_endpoint_url(url: &Url) -> bool {
+        url.scheme() == Self::LEGACY_URL_SCHEME
     }
 
     /// Decode the base32 encoded endpoint ID.
@@ -134,7 +150,7 @@ impl fmt::Debug for EndpointId {
 impl FromStr for EndpointId {
     type Err = Error;
 
-    /// Parse the canonical `iroh://<base32>` URL form.
+    /// Parse the canonical `radiroh://<base32>` URL form.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let url = Url::parse(s).map_err(|e| Error::Iroh(format!("invalid URL '{s}': {e}")))?;
         Self::from_url(&url)?
@@ -142,7 +158,7 @@ impl FromStr for EndpointId {
     }
 }
 
-// Wire form is the canonical `iroh://<base32>` URL string, matching
+// Wire form is the canonical `radiroh://<base32>` URL string, matching
 // `Display`/`FromStr`. Deserialization validates, so a malformed endpoint
 // id fails at the protocol decode boundary rather than downstream.
 impl Serialize for EndpointId {
@@ -162,7 +178,7 @@ impl<'de> Deserialize<'de> for EndpointId {
 ///
 /// Both are ed25519 — the 32-byte key is used directly. This allows
 /// looking up iroh endpoints by the DID of the peer that registered
-/// an `iroh://` location in an artifact COB.
+/// a `radiroh://` location in an artifact COB.
 impl TryFrom<&radicle::identity::Did> for EndpointId {
     type Error = Error;
 
@@ -225,9 +241,9 @@ mod tests {
     fn display_is_endpoint_url() {
         let id = fixed_id();
         let s = id.to_string();
-        assert!(s.starts_with("iroh://"));
+        assert!(s.starts_with("radiroh://"));
         // The portion after the scheme is the base32 host.
-        assert!(!s["iroh://".len()..].is_empty());
+        assert!(!s["radiroh://".len()..].is_empty());
     }
 
     #[test]
@@ -259,7 +275,7 @@ mod tests {
 
     #[test]
     fn from_url_bare_is_none() {
-        let url = Url::parse("iroh://").unwrap();
+        let url = Url::parse("radiroh://").unwrap();
         assert_eq!(EndpointId::from_url(&url).unwrap(), None);
     }
 
@@ -272,16 +288,51 @@ mod tests {
     #[test]
     fn from_url_garbage_host_errors() {
         // '1' is not in the base32 alphabet (a-z + 2-7).
-        let url = Url::parse("iroh://abc123").unwrap();
+        let url = Url::parse("radiroh://abc123").unwrap();
         assert!(EndpointId::from_url(&url).is_err());
+    }
+
+    #[test]
+    fn from_url_rejects_legacy_iroh_scheme() {
+        // Hard-break regression: legacy `iroh://` URLs must not parse,
+        // so an accidental relaxation of the rename trips this test.
+        let bare = Url::parse("iroh://").unwrap();
+        assert!(EndpointId::from_url(&bare).is_err());
+        let id = fixed_id();
+        let with_host = Url::parse(&format!(
+            "iroh://{}",
+            HOST_BASE.encode(id.as_inner().as_bytes())
+        ))
+        .unwrap();
+        assert!(EndpointId::from_url(&with_host).is_err());
     }
 
     #[test]
     fn is_endpoint_url_only_matches_endpoint_scheme() {
         assert!(EndpointId::is_endpoint_url(
-            &Url::parse("iroh://abc").unwrap()
+            &Url::parse("radiroh://abc").unwrap()
         ));
         assert!(!EndpointId::is_endpoint_url(
+            &Url::parse("https://example.com").unwrap()
+        ));
+        // Legacy scheme is *not* an endpoint URL on read.
+        assert!(!EndpointId::is_endpoint_url(
+            &Url::parse("iroh://abc").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_legacy_endpoint_url_matches_only_iroh_scheme() {
+        assert!(EndpointId::is_legacy_endpoint_url(
+            &Url::parse("iroh://abc").unwrap()
+        ));
+        assert!(EndpointId::is_legacy_endpoint_url(
+            &Url::parse("iroh://").unwrap()
+        ));
+        assert!(!EndpointId::is_legacy_endpoint_url(
+            &Url::parse("radiroh://abc").unwrap()
+        ));
+        assert!(!EndpointId::is_legacy_endpoint_url(
             &Url::parse("https://example.com").unwrap()
         ));
     }
