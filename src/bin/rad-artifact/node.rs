@@ -290,14 +290,11 @@ fn status(cmd: StatusArgs, profile: &Profile) -> Result<(), Error> {
 
 fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Result<(), Error> {
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
-    let rid = repo.id.to_string();
+    let rid = repo.id;
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
     let entries = client
-        .call_blocking::<Vec<SeededEntry>>(
-            &NodeMsg::ListSeeded { rid: rid.clone() },
-            client::DEFAULT_TIMEOUT,
-        )
+        .call_blocking::<Vec<SeededEntry>>(&NodeMsg::ListSeeded { rid }, client::DEFAULT_TIMEOUT)
         .map_err(client_err)?;
     if cmd.json {
         let s = serde_json::to_string_pretty(&entries).map_err(Error::Json)?;
@@ -349,7 +346,7 @@ pub(crate) fn seed_artifact(
     };
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
-    let rid = repo.id.to_string();
+    let rid = repo.id;
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
 
@@ -459,7 +456,7 @@ pub(crate) fn unseed_artifact(
 ) -> Result<(), Error> {
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
-    let rid = repo.id.to_string();
+    let rid = repo.id;
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
 

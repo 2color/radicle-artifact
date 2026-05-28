@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use radicle::identity::RepoId;
 use serde::{Deserialize, Serialize};
 
 use crate::share::cid_utils::ArtifactKind;
@@ -33,7 +34,7 @@ pub enum Command {
     /// `seeded/{rid}/{cid}` tag.
     Seed {
         /// Repository the artifact belongs to.
-        rid: String,
+        rid: RepoId,
         /// Expected content identifier.
         cid: String,
         /// Path to the artifact on disk (file for blobs, directory for collections).
@@ -46,21 +47,21 @@ pub enum Command {
     /// Remove the `seeded/{rid}/{cid}` tag. Idempotent.
     Unseed {
         /// Repository the artifact belongs to.
-        rid: String,
+        rid: RepoId,
         /// Content identifier to stop seeding.
         cid: String,
     },
     /// Whether `(rid, cid)` is currently seeded.
     IsSeeding {
         /// Repository the artifact belongs to.
-        rid: String,
+        rid: RepoId,
         /// Content identifier to check.
         cid: String,
     },
     /// List CIDs seeded under `rid`.
     ListSeeded {
         /// Repository to enumerate.
-        rid: String,
+        rid: RepoId,
     },
     /// Ask the node to shut down gracefully.
     Shutdown,
@@ -112,7 +113,7 @@ pub enum ErrorCode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeedReceipt {
     /// Echo of the requested repository.
-    pub rid: String,
+    pub rid: RepoId,
     /// Echo of the requested CID.
     pub cid: String,
     /// Endpoint id the node is serving on, as a canonical `iroh://<base32>` URL.
@@ -128,7 +129,7 @@ pub struct SeedReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnseedReceipt {
     /// Echo of the requested repository.
-    pub rid: String,
+    pub rid: RepoId,
     /// Echo of the requested CID.
     pub cid: String,
     /// `true` if a tag was removed; `false` if no tag existed.
@@ -228,10 +229,18 @@ pub struct Warnings {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::str::FromStr;
 
     use serde_json::json;
 
     use super::*;
+
+    /// Real RepoId used as a wire-snapshot fixture.
+    const SAMPLE_RID: &str = "rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip";
+
+    fn sample_rid() -> RepoId {
+        RepoId::from_str(SAMPLE_RID).unwrap()
+    }
 
     /// Catch-all check that every top-level type round-trips through
     /// JSON and the encoding stays bit-for-bit stable. If you add a
@@ -248,7 +257,7 @@ mod tests {
     #[test]
     fn wire_snapshot_command_seed() {
         let cmd = Command::Seed {
-            rid: "rad:abc".into(),
+            rid: sample_rid(),
             cid: "bafy...".into(),
             path: PathBuf::from("/tmp/a"),
             kind: ArtifactKind::Blob,
@@ -259,7 +268,7 @@ mod tests {
             s,
             json!({
                 "command": "seed",
-                "rid": "rad:abc",
+                "rid": SAMPLE_RID,
                 "cid": "bafy...",
                 "path": "/tmp/a",
                 "kind": "blob",
@@ -271,27 +280,27 @@ mod tests {
     #[test]
     fn wire_snapshot_command_unseed_and_lookups() {
         let unseed = Command::Unseed {
-            rid: "r".into(),
+            rid: sample_rid(),
             cid: "c".into(),
         };
         assert_eq!(
             serde_json::to_value(&unseed).unwrap(),
-            json!({"command":"unseed", "rid":"r", "cid":"c"})
+            json!({"command":"unseed", "rid": SAMPLE_RID, "cid":"c"})
         );
 
         let is_seeding = Command::IsSeeding {
-            rid: "r".into(),
+            rid: sample_rid(),
             cid: "c".into(),
         };
         assert_eq!(
             serde_json::to_value(&is_seeding).unwrap(),
-            json!({"command":"is-seeding", "rid":"r", "cid":"c"})
+            json!({"command":"is-seeding", "rid": SAMPLE_RID, "cid":"c"})
         );
 
-        let list = Command::ListSeeded { rid: "r".into() };
+        let list = Command::ListSeeded { rid: sample_rid() };
         assert_eq!(
             serde_json::to_value(&list).unwrap(),
-            json!({"command":"list-seeded", "rid":"r"})
+            json!({"command":"list-seeded", "rid": SAMPLE_RID})
         );
 
         let shutdown = Command::Shutdown;
@@ -320,7 +329,7 @@ mod tests {
     fn wire_snapshot_receipts() {
         let endpoint_id = sample_endpoint_id();
         let seed = SeedReceipt {
-            rid: "r".into(),
+            rid: sample_rid(),
             cid: "c".into(),
             endpoint_id,
             bytes: 42,
@@ -329,7 +338,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&seed).unwrap(),
             json!({
-                "rid": "r",
+                "rid": SAMPLE_RID,
                 "cid": "c",
                 // Serialized as the canonical iroh:// URL form.
                 "endpoint_id": endpoint_id.to_string(),
@@ -343,13 +352,13 @@ mod tests {
         assert_eq!(back, seed);
 
         let unseed = UnseedReceipt {
-            rid: "r".into(),
+            rid: sample_rid(),
             cid: "c".into(),
             was_removed: false,
         };
         assert_eq!(
             serde_json::to_value(&unseed).unwrap(),
-            json!({"rid":"r","cid":"c","was_removed":false})
+            json!({"rid": SAMPLE_RID, "cid":"c","was_removed":false})
         );
 
         let entry = SeededEntry {

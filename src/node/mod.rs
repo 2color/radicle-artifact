@@ -249,10 +249,10 @@ async fn dispatch(
             path,
             kind,
             mode,
-        } => seed_response(store, &rid, &cid, &path, kind, mode, endpoint_id).await,
-        Command::Unseed { rid, cid } => unseed_response(store, &rid, &cid).await,
+        } => seed_response(store, rid, &cid, &path, kind, mode, endpoint_id).await,
+        Command::Unseed { rid, cid } => unseed_response(store, rid, &cid).await,
         Command::IsSeeding { rid, cid } => is_seeding_response(store, &rid, &cid).await,
-        Command::ListSeeded { rid } => list_seeded_response(store, &rid).await,
+        Command::ListSeeded { rid } => list_seeded_response(store, rid).await,
         Command::Shutdown => {
             // ack first, then broadcast so the loop tears down after the
             // response makes it to the wire
@@ -265,17 +265,13 @@ async fn dispatch(
 
 async fn seed_response(
     store: &FsStore,
-    rid_s: &str,
+    rid: RepoId,
     cid_s: &str,
     path: &Path,
     kind: ArtifactKind,
     mode: ImportMode,
     endpoint_id: EndpointId,
 ) -> String {
-    let rid = match RepoId::from_str(rid_s) {
-        Ok(v) => v,
-        Err(e) => return err_json::<SeedReceipt>(ErrorCode::Internal, format!("invalid rid: {e}")),
-    };
     let cid = match Cid::from_str(cid_s) {
         Ok(v) => v,
         Err(e) => return err_json::<SeedReceipt>(ErrorCode::Internal, format!("invalid cid: {e}")),
@@ -296,7 +292,7 @@ async fn seed_response(
     }
     let bytes = seeder::artifact_size(store, &rid, &cid).await;
     let receipt = SeedReceipt {
-        rid: rid.to_string(),
+        rid,
         cid: cid.to_string(),
         endpoint_id,
         bytes,
@@ -305,13 +301,7 @@ async fn seed_response(
     ok_json(receipt)
 }
 
-async fn unseed_response(store: &FsStore, rid_s: &str, cid_s: &str) -> String {
-    let rid = match RepoId::from_str(rid_s) {
-        Ok(v) => v,
-        Err(e) => {
-            return err_json::<UnseedReceipt>(ErrorCode::Internal, format!("invalid rid: {e}"))
-        }
-    };
+async fn unseed_response(store: &FsStore, rid: RepoId, cid_s: &str) -> String {
     let cid = match Cid::from_str(cid_s) {
         Ok(v) => v,
         Err(e) => {
@@ -326,34 +316,24 @@ async fn unseed_response(store: &FsStore, rid_s: &str, cid_s: &str) -> String {
         return err_from_share::<UnseedReceipt>(e);
     }
     ok_json(UnseedReceipt {
-        rid: rid.to_string(),
+        rid,
         cid: cid.to_string(),
         was_removed: was_seeded,
     })
 }
 
-async fn is_seeding_response(store: &FsStore, rid_s: &str, cid_s: &str) -> String {
-    let rid = match RepoId::from_str(rid_s) {
-        Ok(v) => v,
-        Err(e) => return err_json::<bool>(ErrorCode::Internal, format!("invalid rid: {e}")),
-    };
+async fn is_seeding_response(store: &FsStore, rid: &RepoId, cid_s: &str) -> String {
     let cid = match Cid::from_str(cid_s) {
         Ok(v) => v,
         Err(e) => return err_json::<bool>(ErrorCode::Internal, format!("invalid cid: {e}")),
     };
-    match seeder::is_seeded(store, &rid, &cid).await {
+    match seeder::is_seeded(store, rid, &cid).await {
         Ok(v) => ok_json(v),
         Err(e) => err_from_share::<bool>(e),
     }
 }
 
-async fn list_seeded_response(store: &FsStore, rid_s: &str) -> String {
-    let rid = match RepoId::from_str(rid_s) {
-        Ok(v) => v,
-        Err(e) => {
-            return err_json::<Vec<SeededEntry>>(ErrorCode::Internal, format!("invalid rid: {e}"))
-        }
-    };
+async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
     let cids = match seeder::seeded_cids(store, &rid).await {
         Ok(v) => v,
         Err(e) => return err_from_share::<Vec<SeededEntry>>(e),
@@ -470,7 +450,6 @@ mod tests {
             let real_cid = cid_utils::compute_blob_cid(&blob_path).unwrap();
             let cid_str = real_cid.to_string();
             let rid = rid_a();
-            let rid_str = rid.to_string();
 
             // Pin the secret so the test is reproducible.
             let secret = iroh::SecretKey::from_bytes(&[1u8; 32]);
@@ -505,7 +484,7 @@ mod tests {
             // Seed (new).
             let receipt = client
                 .seed(
-                    &rid_str,
+                    rid,
                     &cid_str,
                     &blob_path,
                     ArtifactKind::Blob,
@@ -520,7 +499,7 @@ mod tests {
             // Seed again — idempotent: was_new false.
             let receipt2 = client
                 .seed(
-                    &rid_str,
+                    rid,
                     &cid_str,
                     &blob_path,
                     ArtifactKind::Blob,
@@ -536,7 +515,7 @@ mod tests {
             let bad_cid = fake_blob_cid(b"not the right preimage");
             let err = client
                 .seed(
-                    &rid_str,
+                    rid,
                     &bad_cid.to_string(),
                     &bad_path,
                     ArtifactKind::Blob,
@@ -552,10 +531,10 @@ mod tests {
             }
 
             // IsSeeding reflects the tag we set above.
-            assert!(client.is_seeding(&rid_str, &cid_str).await.unwrap());
+            assert!(client.is_seeding(rid, &cid_str).await.unwrap());
 
             // ListSeeded returns exactly the one entry.
-            let entries = client.list_seeded(&rid_str).await.unwrap();
+            let entries = client.list_seeded(rid).await.unwrap();
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].cid, cid_str);
             assert_eq!(entries[0].bytes, payload.len() as u64);
@@ -566,11 +545,11 @@ mod tests {
             assert_eq!(status.seeded.bytes_logical, payload.len() as u64);
 
             // Unseed once removes the tag; second call is idempotent.
-            let r1 = client.unseed(&rid_str, &cid_str).await.unwrap();
+            let r1 = client.unseed(rid, &cid_str).await.unwrap();
             assert!(r1.was_removed);
-            let r2 = client.unseed(&rid_str, &cid_str).await.unwrap();
+            let r2 = client.unseed(rid, &cid_str).await.unwrap();
             assert!(!r2.was_removed);
-            assert!(!client.is_seeding(&rid_str, &cid_str).await.unwrap());
+            assert!(!client.is_seeding(rid, &cid_str).await.unwrap());
 
             // Shutdown — the node acks then exits cleanly.
             client.shutdown().await.unwrap();

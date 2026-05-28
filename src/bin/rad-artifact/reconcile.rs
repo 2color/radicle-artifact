@@ -307,12 +307,7 @@ fn reconcile_one(
     // Ask the node what's tagged for this rid.
     let entries: Vec<SeededEntry> = ctx
         .client
-        .call_blocking(
-            &NodeMsg::ListSeeded {
-                rid: rid.to_string(),
-            },
-            Duration::from_secs(30),
-        )
+        .call_blocking(&NodeMsg::ListSeeded { rid }, Duration::from_secs(30))
         .map_err(|e| Error::Node(node::client_err(e)))?;
     let seeded: HashSet<Cid> = entries
         .into_iter()

@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use radicle::identity::RepoId;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -130,14 +131,14 @@ impl Client {
     /// Ask the node to seed `path` against `cid` in `rid`.
     pub async fn seed(
         &self,
-        rid: &str,
+        rid: RepoId,
         cid: &str,
         path: &Path,
         kind: ArtifactKind,
         mode: ImportMode,
     ) -> Result<SeedReceipt, ClientError> {
         let cmd = Command::Seed {
-            rid: rid.to_string(),
+            rid,
             cid: cid.to_string(),
             path: path.to_path_buf(),
             kind,
@@ -147,28 +148,26 @@ impl Client {
     }
 
     /// Ask the node to stop seeding `(rid, cid)`.
-    pub async fn unseed(&self, rid: &str, cid: &str) -> Result<UnseedReceipt, ClientError> {
+    pub async fn unseed(&self, rid: RepoId, cid: &str) -> Result<UnseedReceipt, ClientError> {
         let cmd = Command::Unseed {
-            rid: rid.to_string(),
+            rid,
             cid: cid.to_string(),
         };
         self.call(&cmd, DEFAULT_TIMEOUT).await
     }
 
     /// Whether the node currently has `(rid, cid)` tagged.
-    pub async fn is_seeding(&self, rid: &str, cid: &str) -> Result<bool, ClientError> {
+    pub async fn is_seeding(&self, rid: RepoId, cid: &str) -> Result<bool, ClientError> {
         let cmd = Command::IsSeeding {
-            rid: rid.to_string(),
+            rid,
             cid: cid.to_string(),
         };
         self.call(&cmd, DEFAULT_TIMEOUT).await
     }
 
     /// List CIDs seeded under `rid`.
-    pub async fn list_seeded(&self, rid: &str) -> Result<Vec<SeededEntry>, ClientError> {
-        let cmd = Command::ListSeeded {
-            rid: rid.to_string(),
-        };
+    pub async fn list_seeded(&self, rid: RepoId) -> Result<Vec<SeededEntry>, ClientError> {
+        let cmd = Command::ListSeeded { rid };
         self.call(&cmd, DEFAULT_TIMEOUT).await
     }
 
