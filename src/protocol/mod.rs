@@ -148,7 +148,7 @@ pub struct SeedReceipt {
     /// Echo of the requested CID.
     #[serde(with = "cid_string")]
     pub cid: Cid,
-    /// Endpoint id the node is serving on, as a canonical `iroh://<base32>` URL.
+    /// Endpoint id the node is serving on, as a canonical `radiroh://<base32>` URL.
     pub endpoint_id: EndpointId,
     /// Logical size of the imported artifact in bytes.
     pub bytes: u64,
@@ -186,7 +186,7 @@ pub struct SeededEntry {
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Status {
-    /// Endpoint id the node is serving on, as a canonical `iroh://<base32>` URL.
+    /// Endpoint id the node is serving on, as a canonical `radiroh://<base32>` URL.
     pub endpoint_id: EndpointId,
     /// Unix timestamp (seconds) when the node bound its socket.
     pub started_at_unix: i64,
@@ -389,7 +389,7 @@ mod tests {
             json!({
                 "rid": SAMPLE_RID,
                 "cid": cid.to_string(),
-                // Serialized as the canonical iroh:// URL form.
+                // Serialized as the canonical radiroh:// URL form.
                 "endpoint_id": endpoint_id.to_string(),
                 "bytes": 42,
                 "was_new": true,

@@ -92,7 +92,7 @@ pub struct Seed {
     /// Import by reference instead of copying bytes into the store.
     #[clap(long)]
     pub reference: bool,
-    /// Skip writing the iroh:// location to the COB.
+    /// Skip writing the radiroh:// location to the COB.
     #[clap(long)]
     pub no_announce: bool,
 }
@@ -328,7 +328,7 @@ fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(
 ///
 /// Computes the CID from `<PATH>`, sends the seed request to the
 /// running node, and (unless `no_announce`) writes the
-/// `iroh://{endpoint_id}` location to the target release.
+/// `radiroh://{endpoint_id}` location to the target release.
 pub(crate) fn seed_artifact(
     path: std::path::PathBuf,
     release_override: Option<String>,
@@ -413,7 +413,7 @@ pub(crate) fn seed_artifact(
     Ok(())
 }
 
-/// Sign the seed's `iroh://` location into the target release's COB.
+/// Sign the seed's `radiroh://` location into the target release's COB.
 fn register_location(
     releases: &mut Releases<'_, Repository>,
     release_id: ReleaseId,
@@ -445,7 +445,7 @@ fn unseed(cmd: Unseed, repo_override: Option<RepoId>, profile: &Profile) -> Resu
 /// `rad-artifact node unseed <CID>`.
 ///
 /// Sends the unseed request to the running node and retracts every
-/// `iroh://` location under our DID for the given CID. `release_override`
+/// `radiroh://` location under our DID for the given CID. `release_override`
 /// restricts the retraction to a single release id; otherwise every
 /// release containing the CID is scanned.
 pub(crate) fn unseed_artifact(
@@ -558,7 +558,7 @@ fn logs(cmd: Logs, profile: &Profile) -> Result<(), Error> {
 }
 
 fn print_status_pretty(s: &Status) {
-    // Print the full iroh:// URL — peers need to copy it verbatim, so
+    // Print the full radiroh:// URL — peers need to copy it verbatim, so
     // truncation here is hostile.
     let uptime = humanize_uptime(s.started_at_unix);
     println!("Node          {} (started {uptime})", s.endpoint_id);

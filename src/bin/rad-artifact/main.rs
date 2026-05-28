@@ -476,8 +476,8 @@ where
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
     };
-    // Validate iroh:// URLs up front so a typo in the endpoint id surfaces
-    // here, before it ends up signed into the COB. A bare iroh:// is allowed
+    // Validate radiroh:// URLs up front so a typo in the endpoint id surfaces
+    // here, before it ends up signed into the COB. A bare radiroh:// is allowed
     // and resolves to the author's DID-derived endpoint id at fetch time.
     if EndpointId::is_endpoint_url(&url) {
         EndpointId::from_url(&url).map_err(|e| error::Locate::Usage(e.to_string()))?;
@@ -1180,8 +1180,8 @@ fn run_unseed(
 
 /// Convert locations from one or more artifacts into fetch locations.
 ///
-/// For `iroh://<endpoint-id>` URLs, parses the endpoint id from the URL host.
-/// For bare `iroh://` URLs, derives the endpoint id from the DID that authored
+/// For `radiroh://<endpoint-id>` URLs, parses the endpoint id from the URL host.
+/// For bare `radiroh://` URLs, derives the endpoint id from the DID that authored
 /// the location (same Ed25519 key). Locations are deduplicated across
 /// artifacts — plain URLs collapse on URL equality, and iroh entries collapse
 /// on resolved endpoint id regardless of how many releases or DIDs contributed
@@ -1878,7 +1878,7 @@ mod command {
         ///
         /// Locations published in release COBs and the artifacts the local
         /// node is actually seeding can drift out of sync, e.g. the node
-        /// is seeding a CID but no `iroh://` location under our DID
+        /// is seeding a CID but no `radiroh://` location under our DID
         /// advertises it, or a location under our DID points at a CID the
         /// node no longer seeds, or at a previous endpoint id. This
         /// command inspects that drift, auto-adds missing locations, and
@@ -1973,8 +1973,8 @@ Examples:
     /// Alias for `rad-artifact node seed`.
     ///
     /// Computes the CID from the given path, asks the running node to
-    /// register `seeded/{rid}/{cid}`, and writes an
-    /// `iroh://{endpoint_id}` location to the COB unless
+    /// register `seeded/{rid}/{cid}`, and writes a
+    /// `radiroh://{endpoint_id}` location to the COB unless
     /// `--no-announce`. Requires a running node — start one with
     /// `rad-artifact node start`.
     #[derive(Parser)]
@@ -1997,7 +1997,7 @@ Examples:
         /// Import by reference instead of copying bytes into the store.
         #[clap(long)]
         pub reference: bool,
-        /// Skip writing the iroh:// location to the COB.
+        /// Skip writing the radiroh:// location to the COB.
         #[clap(long)]
         pub no_announce: bool,
     }
@@ -2005,7 +2005,7 @@ Examples:
     /// Alias for `rad-artifact node unseed`.
     ///
     /// Removes the `seeded/{rid}/{cid}` tag and retracts every
-    /// `iroh://` location under your DID for the given CID. With
+    /// `radiroh://` location under your DID for the given CID. With
     /// `--release`, the retraction is restricted to a single release.
     #[derive(Parser)]
     #[clap(after_long_help = "\
@@ -2101,7 +2101,7 @@ Examples:
     $ rad-artifact location add --revision v1.0 --cid baf...abc https://example.com/my-binary
 
   Register an iroh-blobs endpoint:
-    $ rad-artifact location add --revision v1.0 --cid baf...abc iroh://<endpoint-id>
+    $ rad-artifact location add --revision v1.0 --cid baf...abc radiroh://<endpoint-id>
 
   Target a specific release by id:
     $ rad-artifact location add --release <release-id> --cid baf...abc https://example.com/my-binary"
