@@ -3,19 +3,20 @@
 //!
 //! Three drift classes (per the design doc):
 //! - **MissingLocation**: the node is seeding a `(rid, cid)` pair but
-//!   no `iroh://{current_endpoint}` location for that CID exists in
+//!   no `radiroh://{current_endpoint}` location for that CID exists in
 //!   any release under our DID. Auto-fixed by writing the location to
 //!   the most recent matching release.
-//! - **OrphanedSelf**: a `iroh://{current_endpoint}` (or bare `iroh://`,
-//!   which resolves to our current endpoint) location under our DID
-//!   exists for a CID we are *not* seeding. Flagged; removed either
-//!   per-CID via `--remove-orphaned <CID>` or in bulk via
-//!   `--remove-orphaned-self`.
-//! - **StaleEndpoint**: an `iroh://{other_endpoint}` location under our
-//!   DID — i.e. one of our previous keys, or a malformed/legacy-encoded
+//! - **OrphanedSelf**: a `radiroh://{current_endpoint}` (or bare
+//!   `radiroh://`, which resolves to our current endpoint) location
+//!   under our DID exists for a CID we are *not* seeding. Flagged;
+//!   removed either per-CID via `--remove-orphaned <CID>` or in bulk
+//!   via `--remove-orphaned-self`.
+//! - **StaleEndpoint**: a `radiroh://{other_endpoint}` location under
+//!   our DID — i.e. one of our previous keys, or a malformed/legacy-encoded
 //!   endpoint id that no longer decodes (e.g. a hex host left over from
-//!   a previous encoding). Reported in summary; removed in bulk by
-//!   `--remove-orphaned-self`.
+//!   a previous encoding). Also catches pre-rename `iroh://` URLs, which
+//!   no longer parse as endpoint URLs. Reported in summary; removed in
+//!   bulk by `--remove-orphaned-self`.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -43,7 +44,7 @@ pub struct Cli {
     /// the current one.
     #[clap(long)]
     pub all_repos: bool,
-    /// Remove our `iroh://{current_endpoint}` location for this CID,
+    /// Remove our `radiroh://{current_endpoint}` location for this CID,
     /// which the node is no longer seeding. Repeatable.
     #[clap(long = "remove-orphaned", value_name = "CID")]
     pub remove_orphaned: Vec<Cid>,
@@ -103,8 +104,9 @@ struct RepoReport {
     dangling: Vec<DanglingRow>,
 }
 
-/// One iroh:// URL under our DID, flattened out of the release/artifact
-/// tree so classification can be unit-tested without a real COB.
+/// One endpoint URL under our DID, flattened out of the release/artifact
+/// tree so classification can be unit-tested without a real COB. Includes
+/// legacy `iroh://` URLs so the sweep can retract them.
 struct OurLocation {
     release_id: radicle_artifact::ReleaseId,
     cid: Cid,
@@ -134,13 +136,14 @@ struct Classified {
     stale_endpoint: Vec<(radicle_artifact::ReleaseId, Cid, Url)>,
 }
 
-/// Sort each iroh:// URL under our DID into one of the three buckets.
+/// Sort each endpoint URL under our DID into one of the three buckets.
 ///
-/// - Bare `iroh://` (no host) resolves to our current endpoint because
+/// - Bare `radiroh://` (no host) resolves to our current endpoint because
 ///   the host falls back to the location author's DID, which is us.
 /// - A host that fails to decode is treated as stale: it isn't our
 ///   current endpoint id and belongs in the same removal bucket as
-///   a foreign one.
+///   a foreign one. Legacy `iroh://` URLs land here too — `from_url`
+///   rejects the scheme, so they fall into the stale bucket for sweep.
 fn classify_locations(
     endpoint_id: EndpointId,
     seeded: &HashSet<Cid>,
@@ -150,8 +153,9 @@ fn classify_locations(
     for loc in locations {
         let eid = match EndpointId::from_url(&loc.url) {
             Ok(Some(eid)) => eid,
-            // Bare iroh:// falls back to the location author's DID, which is us.
+            // Bare radiroh:// falls back to the location author's DID, which is us.
             Ok(None) => endpoint_id,
+            // Undecodable host or a legacy `iroh://` scheme: treat as stale.
             Err(_) => {
                 out.stale_endpoint.push((loc.release_id, loc.cid, loc.url));
                 continue;
@@ -332,7 +336,12 @@ fn reconcile_one(
             let Some(urls) = artifact.locations_of(ctx.local_did) else {
                 continue;
             };
-            for url in urls.iter().filter(|u| EndpointId::is_endpoint_url(u)) {
+            // Legacy `iroh://` URLs are collected too so the sweep can
+            // retract them; classify_locations sorts them into stale_endpoint.
+            for url in urls
+                .iter()
+                .filter(|u| EndpointId::is_endpoint_url(u) || EndpointId::is_legacy_endpoint_url(u))
+            {
                 our_locations.push(OurLocation {
                     release_id: *release_id,
                     cid: *cid,
@@ -556,6 +565,13 @@ mod tests {
         Url::parse(&format!("{}://abc123", EndpointId::URL_SCHEME)).unwrap()
     }
 
+    /// A pre-rename `iroh://` URL with our own (correctly-encoded) host.
+    fn legacy_iroh_url(ep: EndpointId) -> Url {
+        // Same base32 host the old scheme used; only the scheme differs.
+        let host = ep.to_url().host_str().unwrap().to_string();
+        Url::parse(&format!("iroh://{host}")).unwrap()
+    }
+
     // --- classify_locations -------------------------------------------------
 
     #[test]
@@ -686,6 +702,58 @@ mod tests {
         assert!(out.current_endpoint_have.contains(&cid));
         assert!(out.orphaned_self.is_empty());
         assert_eq!(out.stale_endpoint.len(), 1);
+    }
+
+    #[test]
+    fn legacy_iroh_scheme_is_stale() {
+        // Migration sweep: a pre-rename `iroh://` URL under our DID no
+        // longer parses as an endpoint URL, so it lands in the stale
+        // bucket and --remove-orphaned-self retracts it.
+        let our_ep = test_endpoint(1);
+        let cid = test_cid(1);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let out = classify_locations(
+            our_ep,
+            &seeded,
+            [OurLocation {
+                release_id: test_release(1),
+                cid,
+                // Legacy URL pinned to our *own* current endpoint id: even
+                // though the host matches, the scheme is stale.
+                url: legacy_iroh_url(our_ep),
+            }],
+        );
+        assert!(!out.current_endpoint_have.contains(&cid));
+        assert!(out.orphaned_self.is_empty());
+        assert_eq!(out.stale_endpoint.len(), 1);
+    }
+
+    #[test]
+    fn legacy_only_cid_is_reported_missing() {
+        // After the sweep retracts a CID's only (legacy) location, the
+        // CID has no current-endpoint location, so find_missing reports
+        // it — that's the path that re-adds a fresh `radiroh://` URL.
+        let our_ep = test_endpoint(1);
+        let cid = test_cid(1);
+        let release = test_release(1);
+        let seeded: HashSet<Cid> = [cid].into_iter().collect();
+        let classified = classify_locations(
+            our_ep,
+            &seeded,
+            [OurLocation {
+                release_id: release,
+                cid,
+                url: legacy_iroh_url(our_ep),
+            }],
+        );
+        // Legacy URL did not count as a current-endpoint location.
+        let artifacts = vec![ReleaseArtifact {
+            release_id: release,
+            timestamp: 100,
+            cid,
+        }];
+        let scan = find_missing(&seeded, &classified.current_endpoint_have, &artifacts);
+        assert_eq!(scan.missing, vec![(release, cid)]);
     }
 
     // --- find_missing -------------------------------------------------------
