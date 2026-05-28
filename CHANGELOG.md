@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### ⭐️ Highlights
+
+#### Rename the location URL scheme to `radiroh://`
+
+The peer-to-peer location scheme is renamed from the invented, unowned `iroh://` to the Radicle-namespaced `radiroh://` (rad issue b93d542). Radicle owns this namespace, so we can specify what the URL means — both peer discovery and the iroh-blobs transfer protocol — without colliding with the iroh project. See [docs/uri-scheme.md](docs/uri-scheme.md) for the grammar.
+
+The host encoding is unchanged: the iroh endpoint id as lowercase base32, no padding (RFC 4648). A bare `radiroh://` still derives the endpoint id from the location author's DID.
+
+This is a **hard break**: legacy `iroh://` URLs are no longer read, and fetch ignores them. The store and these COB locations are pre-release, so there is no migration path. To clean up `iroh://` locations an earlier build wrote under your DID, run `rad-artifact reconcile --remove-orphaned-self` (which now sweeps them into the stale-endpoint bucket) followed by `rad-artifact reconcile` to re-add fresh `radiroh://` URLs.
+
 ## [0.14.0] - 2026-05-12
 
 ### ⭐️ Highlights
