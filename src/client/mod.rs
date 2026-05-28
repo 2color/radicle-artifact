@@ -99,7 +99,7 @@ impl Client {
         }
     }
 
-    /// Blocking variant of [`call`] for synchronous callers.
+    /// Blocking variant of [`Self::call`] for synchronous callers.
     ///
     /// Builds a single-threaded tokio runtime for the duration of the
     /// call. Cheap enough to use once per CLI invocation; do not call

@@ -113,7 +113,7 @@ pub fn verify_cid_file(path: &std::path::Path, expected: &Cid) -> Result<(), Err
 ///
 /// Skips symlinks, normalizes path separators to `/`, and sorts by name
 /// for deterministic ordering. This is the canonical walk used by
-/// [`compute_content_id`] and [`super::serve::add_collection`].
+/// [`compute_content_id`].
 pub fn canonical_walk(dir: &Path) -> Result<Vec<(String, PathBuf)>, io::Error> {
     let root_dir = dunce::canonicalize(dir)?;
     let mut entries = Vec::new();

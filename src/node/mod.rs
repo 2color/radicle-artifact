@@ -81,8 +81,8 @@ pub enum NodeError {
 /// 4. installs SIGTERM/SIGINT handlers and runs the accept loop
 ///
 /// On exit the function drains in-flight handlers (up to
-/// [`DRAIN_TIMEOUT`]) and shuts the iroh router down (capped by
-/// [`ROUTER_SHUTDOWN_TIMEOUT`]). The socket file is unlinked. Seeded
+/// `DRAIN_TIMEOUT`) and shuts the iroh router down (capped by
+/// `ROUTER_SHUTDOWN_TIMEOUT`). The socket file is unlinked. Seeded
 /// tags are intentionally left in place so a restart resumes the prior
 /// set.
 pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> {
