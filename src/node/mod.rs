@@ -287,15 +287,15 @@ async fn seed_response(
             format!("path not found: {}", path.display()),
         );
     }
-    let store_ref: &Store = store;
-    let was_already = match seeder::is_seeded(store_ref, &rid, &cid).await {
+
+    let was_already = match seeder::is_seeded(store, &rid, &cid).await {
         Ok(v) => v,
         Err(e) => return err_from_share::<SeedReceipt>(e),
     };
-    if let Err(e) = seeder::seed_artifact(store_ref, &rid, &cid, path, kind, mode).await {
+    if let Err(e) = seeder::seed_artifact(store, &rid, &cid, path, kind, mode).await {
         return err_from_share::<SeedReceipt>(e);
     }
-    let bytes = seeder::artifact_size(store_ref, &rid, &cid).await;
+    let bytes = seeder::artifact_size(store, &rid, &cid).await;
     let receipt = SeedReceipt {
         rid: rid.to_string(),
         cid: cid.to_string(),
