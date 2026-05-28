@@ -78,7 +78,7 @@ Release
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
-- **Locations** — plain URLs (`https://`, `ipfs://`, `magnet://`, [`rasl://`](https://dasl.ing/rasl.html), `iroh://`, etc.)
+- **Locations** — plain URLs (`https://`, `ipfs://`, `magnet://`, [`rasl://`](https://dasl.ing/rasl.html), `radiroh://`, etc.)
 - Each user can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
 
 ## Collaboration and trust model
@@ -152,7 +152,7 @@ rad-artifact node stop                                           # graceful shut
 rad-artifact node status [--json]                                # endpoint id, seeded count, disk, traffic
 rad-artifact node list [--json]                                  # list CIDs the node is seeding for this repo
 rad-artifact node seed <PATH> [--release <ID>] [--reference] [--no-announce]  # compute CID from PATH, seed, announce
-rad-artifact node unseed <CID> [--release <ID>]                  # stop seeding + retract our iroh:// locations
+rad-artifact node unseed <CID> [--release <ID>]                  # stop seeding + retract our radiroh:// locations
 rad-artifact node logs [--follow] [-n <LINES>]                   # tail <home>/artifacts/node.log
 ```
 
@@ -174,7 +174,7 @@ Node started (socket: /Users/you/.radicle/artifacts/control.sock)
 
 $ rad-artifact seed ./dist/linux-amd64.tar.gz
 Seeded baf...abc (12.4 MiB, new tagged)
-Added iroh location to release abc1234
+Added radiroh location to release abc1234
 ```
 
 The daemon stores blobs under `<home>/artifacts/store/` (persistent iroh-blobs FsStore), tracks what to seed via `seeded/{rid}/{cid}` tags, and writes a JSON log to `<home>/artifacts/node.log` (rotated on each start). The control socket lives at `<home>/artifacts/control.sock` (mode 0600); set `RAD_ARTIFACT_SOCKET` to override.
@@ -183,13 +183,17 @@ Log verbosity is controlled via `RUST_LOG`, which covers both this crate and iro
 
 The node never writes COB ops — every signed location write (`add_location`, `remove_location`) happens client-side. The daemon's identity (the iroh endpoint id) currently derives from the same Ed25519 secret as your radicle DID, so `RAD_PASSPHRASE` is required on start when the keystore is encrypted (or the parent CLI will prompt).
 
-`rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `iroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-removing — pass `--remove-orphaned <CID>` or `--remove-orphaned-self` explicitly when you want it gone. It also reports **dangling tags** — CIDs the node is seeding that no release references at all (so no location can anchor to them); reclaim them with `rad-artifact unseed <CID>`.
+`rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `radiroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-removing — pass `--remove-orphaned <CID>` or `--remove-orphaned-self` explicitly when you want it gone. It also reports **dangling tags** — CIDs the node is seeding that no release references at all (so no location can anchor to them); reclaim them with `rad-artifact unseed <CID>`.
 
-### `iroh://` location format
+### `radiroh://` location format
 
-Seeded artifacts are announced as `iroh://<endpoint-id>` URLs, where `<endpoint-id>` is the iroh endpoint id encoded as **lowercase base32 with no padding** (RFC 4648, `a-z` and `2-7`).
+Seeded artifacts are announced as `radiroh://<endpoint-id>` URLs, where `<endpoint-id>` is the iroh endpoint id encoded as **lowercase base32 with no padding** (RFC 4648, `a-z` and `2-7`). See [docs/uri-scheme.md](docs/uri-scheme.md) for the full grammar.
 
-Older releases recorded bare `iroh://` URLs and derived the endpoint id from the location author's DID. Those URLs are still readable, but every new write uses the explicit form so a future split between the radicle DID and the iroh identity is forward-compatible on the wire.
+A bare `radiroh://` (no host) derives the endpoint id from the location author's DID, since the radicle and iroh identities share the same Ed25519 key.
+
+#### Upgrading from `iroh://`
+
+The scheme was renamed from the unowned `iroh://` to the Radicle-namespaced `radiroh://` ([rad issue](https://radicle.network) b93d542). Legacy `iroh://` URLs are **no longer read** — fetch ignores them. If an earlier build wrote `iroh://` locations under your DID, sweep them with `rad-artifact reconcile --remove-orphaned-self`; a follow-up `rad-artifact reconcile` re-adds fresh `radiroh://` URLs for everything you're still seeding.
 
 ## How the COB is implemented
 

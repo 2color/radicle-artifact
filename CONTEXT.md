@@ -16,7 +16,7 @@ A named, content-addressed file or collection of files within a Release, identif
 The BLAKE3 content identifier of an Artifact's bytes.
 
 **Location**:
-A URL under a contributor's DID asserting where an Artifact can be fetched (typically `iroh://{endpoint}`).
+A URL under a contributor's DID asserting where an Artifact can be fetched (typically `radiroh://{endpoint}`).
 _Avoid_: source, mirror, provider.
 
 **Seeded Tag**:
