@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cid::Cid;
-use iroh_blobs::api::Store;
 use iroh_blobs::store::fs::FsStore;
 use radicle::identity::RepoId;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

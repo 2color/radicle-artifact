@@ -11,7 +11,6 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::str::FromStr;
 use std::time::Duration;
 
 use cid::Cid;
@@ -23,6 +22,7 @@ use iroh_blobs::store::fs::{options::Options as FsStoreOptions, FsStore};
 use iroh_blobs::store::GcConfig;
 use iroh_blobs::{BlobFormat, BlobsProtocol, Hash, HashAndFormat};
 use n0_future::StreamExt;
+use radicle::git::Oid;
 use radicle::identity::RepoId;
 use serde::{Deserialize, Serialize};
 
@@ -64,8 +64,12 @@ pub const ARTIFACTS_DIR: &str = "artifacts";
 /// Subdirectory of [`ARTIFACTS_DIR`] holding the FsStore.
 pub const STORE_DIR: &str = "store";
 
-/// Tag prefix marking a CID/repo pair as actively seeded.
-const SEEDED_PREFIX: &str = "seeded/";
+/// First byte of every `seeded` tag — distinguishes them from any
+/// future tag class we add. Binary, not UTF-8: see [`seeded_tag`].
+const SEEDED_TAG_V1: u8 = 0x01;
+
+/// Length of an [`Oid`] in bytes (Git-style SHA-1).
+const OID_LEN: usize = 20;
 
 /// Best-effort bound on waiting for a relay connection during bootstrap.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -140,9 +144,44 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
     Ok(Seeder { blobs, router })
 }
 
-/// Tag key for a `(rid, cid)` pair: `seeded/{rid}/{cid}`.
-fn seeded_tag(rid: &RepoId, cid: &Cid) -> String {
-    format!("{SEEDED_PREFIX}{rid}/{cid}")
+/// Binary tag key for a `(rid, cid)` pair.
+///
+/// Layout: `[SEEDED_TAG_V1][20-byte RID Oid][Cid binary form]`. The
+/// fixed-length RID makes prefix queries unambiguous —
+/// `[SEEDED_TAG_V1] ++ rid_bytes` matches exactly one repo's CIDs.
+fn seeded_tag(rid: &RepoId, cid: &Cid) -> Vec<u8> {
+    let cid_bytes = cid.to_bytes();
+    let mut out = Vec::with_capacity(1 + OID_LEN + cid_bytes.len());
+    out.push(SEEDED_TAG_V1);
+    out.extend_from_slice(rid_bytes(rid));
+    out.extend_from_slice(&cid_bytes);
+    out
+}
+
+/// Binary prefix matching every seeded tag for `rid`.
+fn seeded_rid_prefix(rid: &RepoId) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + OID_LEN);
+    out.push(SEEDED_TAG_V1);
+    out.extend_from_slice(rid_bytes(rid));
+    out
+}
+
+/// 20-byte Git-style Oid backing a `RepoId`.
+fn rid_bytes(rid: &RepoId) -> &[u8] {
+    AsRef::<[u8]>::as_ref(&**rid)
+}
+
+/// Inverse of [`seeded_tag`]: decode a tag name back into `(RepoId, Cid)`.
+fn parse_seeded_tag(name: &[u8]) -> Option<(RepoId, Cid)> {
+    let rest = name.strip_prefix(&[SEEDED_TAG_V1])?;
+    if rest.len() < OID_LEN {
+        return None;
+    }
+    let (rid_b, cid_b) = rest.split_at(OID_LEN);
+    let oid_arr: [u8; OID_LEN] = rid_b.try_into().ok()?;
+    let rid = RepoId::from(Oid::from_sha1(oid_arr));
+    let cid = Cid::try_from(cid_b).ok()?;
+    Some((rid, cid))
 }
 
 /// Build `AddPathOptions` for an absolute path under the requested mode.
@@ -256,7 +295,7 @@ pub async fn register_seeded(
     };
     store
         .tags()
-        .set(seeded_tag(rid, cid).as_bytes(), value)
+        .set(seeded_tag(rid, cid), value)
         .await
         .map_err(|e| Error::Iroh(format!("set seeded tag: {e}")))?;
     Ok(())
@@ -293,7 +332,7 @@ pub async fn seed_artifact(
 pub async fn unregister_seeded(store: &Store, rid: &RepoId, cid: &Cid) -> Result<(), Error> {
     store
         .tags()
-        .delete(seeded_tag(rid, cid).as_bytes())
+        .delete(seeded_tag(rid, cid))
         .await
         .map_err(|e| Error::Iroh(format!("delete seeded tag: {e}")))?;
     Ok(())
@@ -303,7 +342,7 @@ pub async fn unregister_seeded(store: &Store, rid: &RepoId, cid: &Cid) -> Result
 pub async fn is_seeded(store: &Store, rid: &RepoId, cid: &Cid) -> Result<bool, Error> {
     let info = store
         .tags()
-        .get(seeded_tag(rid, cid).as_bytes())
+        .get(seeded_tag(rid, cid))
         .await
         .map_err(|e| Error::Iroh(format!("get seeded tag: {e}")))?;
     Ok(info.is_some())
@@ -311,30 +350,31 @@ pub async fn is_seeded(store: &Store, rid: &RepoId, cid: &Cid) -> Result<bool, E
 
 /// Return every CID currently seeded under `rid`.
 ///
-/// Walks the `seeded/{rid}/` tag prefix. Decoding failures (corrupt tag
-/// names, unlikely since we write them ourselves) are skipped.
+/// Walks the `[SEEDED_TAG_V1][rid_bytes]` prefix. Decoding failures
+/// (corrupt tag names, unlikely since we write them ourselves) are
+/// skipped.
 pub async fn seeded_cids(store: &Store, rid: &RepoId) -> Result<HashSet<Cid>, Error> {
-    let prefix = format!("{SEEDED_PREFIX}{rid}/");
+    let prefix = seeded_rid_prefix(rid);
     let mut stream = store
         .tags()
-        .list_prefix(prefix.as_bytes())
+        .list_prefix(&prefix)
         .await
         .map_err(|e| Error::Iroh(format!("list seeded tags: {e}")))?;
 
     let mut out = HashSet::new();
     while let Some(item) = stream.next().await {
         let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
-        let name = String::from_utf8_lossy(info.name.as_ref());
-        if let Some(suffix) = name.strip_prefix(&prefix) {
-            if let Ok(cid) = Cid::from_str(suffix) {
-                out.insert(cid);
-            }
+        let Some(suffix) = info.name.as_ref().strip_prefix(prefix.as_slice()) else {
+            continue;
+        };
+        if let Ok(cid) = Cid::try_from(suffix) {
+            out.insert(cid);
         }
     }
     Ok(out)
 }
 
-/// Walk every `seeded/...` tag in the store, regardless of repo.
+/// Walk every seeded tag in the store, regardless of repo.
 ///
 /// Yields each `(rid, cid)` pair currently tagged as seeded. Tag names
 /// that don't parse cleanly are skipped — we own the writer, so this
@@ -342,24 +382,16 @@ pub async fn seeded_cids(store: &Store, rid: &RepoId) -> Result<HashSet<Cid>, Er
 pub async fn all_seeded(store: &Store) -> Result<Vec<(RepoId, Cid)>, Error> {
     let mut stream = store
         .tags()
-        .list_prefix(SEEDED_PREFIX.as_bytes())
+        .list_prefix([SEEDED_TAG_V1])
         .await
         .map_err(|e| Error::Iroh(format!("list seeded tags: {e}")))?;
 
     let mut out = Vec::new();
     while let Some(item) = stream.next().await {
         let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
-        let name = String::from_utf8_lossy(info.name.as_ref());
-        let Some(rest) = name.strip_prefix(SEEDED_PREFIX) else {
-            continue;
-        };
-        let Some((rid_s, cid_s)) = rest.split_once('/') else {
-            continue;
-        };
-        let (Ok(rid), Ok(cid)) = (RepoId::from_str(rid_s), Cid::from_str(cid_s)) else {
-            continue;
-        };
-        out.push((rid, cid));
+        if let Some(pair) = parse_seeded_tag(info.name.as_ref()) {
+            out.push(pair);
+        }
     }
     Ok(out)
 }
@@ -373,7 +405,7 @@ pub async fn artifact_size(store: &Store, rid: &RepoId, cid: &Cid) -> u64 {
     let Ok(kind) = cid_utils::artifact_kind(cid) else {
         return 0;
     };
-    let Ok(Some(tag)) = store.tags().get(seeded_tag(rid, cid).as_bytes()).await else {
+    let Ok(Some(tag)) = store.tags().get(seeded_tag(rid, cid)).await else {
         return 0;
     };
     match kind {
