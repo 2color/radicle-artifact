@@ -514,4 +514,55 @@ mod tests {
             assert!(!is_seeded(&store, &rid_a, &cid).await.unwrap());
         });
     }
+
+    /// `all_seeded` returns every `(rid, cid)` tagged across all repos,
+    /// exercising the `parse_seeded_tag` decode path that `seeded_cids`
+    /// alone doesn't cover.
+    #[test]
+    fn all_seeded_round_trip() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = FsStore::load(tmp.path()).await.unwrap();
+            let (rid_a, rid_b) = rid_pair();
+            let cid_x = blob_cid(b"x");
+            let cid_y = blob_cid(b"y");
+            let cid_z = blob_cid(b"z");
+            let hash = Hash::new(b"value");
+
+            let pairs = [
+                (rid_a, cid_x),
+                (rid_a, cid_y),
+                (rid_b, cid_x),
+                (rid_b, cid_z),
+            ];
+            for (rid, cid) in &pairs {
+                register_seeded(&store, rid, cid, hash).await.unwrap();
+            }
+
+            let got: HashSet<(RepoId, Cid)> =
+                all_seeded(&store).await.unwrap().into_iter().collect();
+            let want: HashSet<(RepoId, Cid)> = pairs.into_iter().collect();
+            assert_eq!(got, want);
+        });
+    }
+
+    /// Lock the binary tag-name layout: sentinel byte, 20-byte RID, then
+    /// the CID's canonical binary form. Also exercise the encode/decode
+    /// round-trip via `parse_seeded_tag`.
+    #[test]
+    fn seeded_tag_layout() {
+        let (rid, _) = rid_pair();
+        let cid = blob_cid(b"layout");
+        let tag = seeded_tag(&rid, &cid);
+
+        assert_eq!(tag.len(), 1 + OID_LEN + cid.to_bytes().len());
+        assert_eq!(tag[0], SEEDED_TAG_V1);
+        assert_eq!(&tag[1..1 + OID_LEN], AsRef::<[u8]>::as_ref(&*rid));
+        assert_eq!(Cid::try_from(&tag[1 + OID_LEN..]).unwrap(), cid);
+
+        let (rid_back, cid_back) = parse_seeded_tag(&tag).expect("decodes");
+        assert_eq!(rid_back, rid);
+        assert_eq!(cid_back, cid);
+    }
 }
