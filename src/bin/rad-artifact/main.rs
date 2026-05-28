@@ -476,6 +476,15 @@ where
         }
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
     };
+    // Reject the renamed legacy scheme up front rather than silently
+    // signing an unfetchable `iroh://` URL into the COB.
+    if EndpointId::is_legacy_endpoint_url(&url) {
+        return Err(error::Locate::Usage(
+            "the `iroh://` scheme was renamed to `radiroh://`; \
+             re-add this location with the new scheme"
+                .into(),
+        ));
+    }
     // Validate radiroh:// URLs up front so a typo in the endpoint id surfaces
     // here, before it ends up signed into the COB. A bare radiroh:// is allowed
     // and resolves to the author's DID-derived endpoint id at fetch time.
@@ -1117,15 +1126,17 @@ fn run_fetch(
     if locations.is_empty() {
         return Err(error::Share::NoLocationsForCid { cid }.into());
     }
-    let (http_count, iroh_count) =
+    // `Location::Url` covers any URL scheme (https, ipfs, legacy iroh, …),
+    // so label the bucket "url" rather than implying they're all https.
+    let (url_count, iroh_count) =
         locations
             .iter()
-            .fold((0usize, 0usize), |(h, i), loc| match loc {
-                share::Location::Url(_) => (h + 1, i),
-                share::Location::Iroh(_) => (h, i + 1),
+            .fold((0usize, 0usize), |(u, i), loc| match loc {
+                share::Location::Url(_) => (u + 1, i),
+                share::Location::Iroh(_) => (u, i + 1),
             });
     eprintln!(
-        "Trying {} location{} ({http_count} https, {iroh_count} iroh)...",
+        "Trying {} location{} ({url_count} url, {iroh_count} iroh)...",
         locations.len(),
         if locations.len() == 1 { "" } else { "s" },
     );
