@@ -1866,7 +1866,7 @@ mod test {
             .unwrap();
 
         let https_url = Url::parse("https://example.com/file.tar.gz").unwrap();
-        let iroh_url = Url::parse("iroh://abc123").unwrap();
+        let iroh_url = Url::parse("radiroh://abc123").unwrap();
         let http_url = Url::parse("http://mirror.example.com/file.tar.gz").unwrap();
         release
             .add_location(cid, https_url.clone(), &alice.signer)
@@ -1880,8 +1880,8 @@ mod test {
 
         let artifact = release.artifact(&cid).unwrap();
 
-        // Filter by "iroh" returns only the iroh URL.
-        let iroh_locations = artifact.locations_by_scheme("iroh");
+        // Filter by "radiroh" returns only the iroh URL.
+        let iroh_locations = artifact.locations_by_scheme("radiroh");
         assert_eq!(iroh_locations.len(), 1);
         assert_eq!(iroh_locations[0].0, &iroh_url);
         assert_eq!(iroh_locations[0].1, &Did::from(alice.signer.public_key()));
@@ -1916,8 +1916,8 @@ mod test {
             .add_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
-        // Both Alice and Bob add the same bare iroh:// URL.
-        let iroh_url = Url::parse("iroh://").unwrap();
+        // Both Alice and Bob add the same bare radiroh:// URL.
+        let iroh_url = Url::parse("radiroh://").unwrap();
         release
             .add_location(cid, iroh_url.clone(), &alice.signer)
             .unwrap();
@@ -1926,7 +1926,7 @@ mod test {
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        let iroh_locations = artifact.locations_by_scheme("iroh");
+        let iroh_locations = artifact.locations_by_scheme("radiroh");
 
         // Both DIDs contributed the same URL, so we get two entries.
         assert_eq!(iroh_locations.len(), 2);
