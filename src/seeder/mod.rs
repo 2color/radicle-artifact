@@ -19,7 +19,8 @@ use iroh::protocol::Router;
 use iroh_blobs::api::blobs::{AddPathOptions, ImportMode as IrohImportMode};
 use iroh_blobs::api::{Store, TempTag};
 use iroh_blobs::format::collection::Collection;
-use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::store::fs::{options::Options as FsStoreOptions, FsStore};
+use iroh_blobs::store::GcConfig;
 use iroh_blobs::{BlobFormat, BlobsProtocol, Hash, HashAndFormat};
 use n0_future::StreamExt;
 use radicle::identity::RepoId;
@@ -69,6 +70,13 @@ const SEEDED_PREFIX: &str = "seeded/";
 /// Best-effort bound on waiting for a relay connection during bootstrap.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How often the store's background GC sweep runs.
+///
+/// GC marks every blob reachable from a tag (or live temp tag) and
+/// sweeps the rest. The interval bounds how long an unseeded blob's
+/// bytes linger on disk after its `seeded/...` tag is removed.
+const GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
 /// A running iroh-blobs seeder: an `FsStore` plus the iroh `Router` that
 /// accepts blob fetches against it.
 pub struct Seeder {
@@ -92,7 +100,17 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
     let dir = home.join(ARTIFACTS_DIR);
     std::fs::create_dir_all(&dir).map_err(Error::Io)?;
 
-    let blobs = FsStore::load(dir.join(STORE_DIR))
+    // FsStore::load defaults to gc: None — blobs would linger on disk
+    // forever after unregister_seeded. Enable the periodic mark-and-sweep
+    // GC; our `seeded/{rid}/{cid}` tags are the live roots.
+    let store_dir = dir.join(STORE_DIR);
+    let db_path = store_dir.join("blobs.db");
+    let mut options = FsStoreOptions::new(&store_dir);
+    options.gc = Some(GcConfig {
+        interval: GC_INTERVAL,
+        add_protected: None,
+    });
+    let blobs = FsStore::load_with_opts(db_path, options)
         .await
         .map_err(|e| Error::Iroh(format!("FsStore load: {e}")))?;
 
