@@ -105,6 +105,10 @@ pub enum ErrorCode {
     Io,
     /// Iroh networking or store failure.
     Iroh,
+    /// Wire-level decode failure: the command line was not valid JSON,
+    /// or a typed field (rid, cid, …) failed to parse. The accompanying
+    /// `message` surfaces the underlying serde error.
+    InvalidRequest,
     /// Bug or unhandled state inside the node.
     Internal,
 }

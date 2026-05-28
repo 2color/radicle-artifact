@@ -220,13 +220,35 @@ async fn handle_connection(
         return Ok(());
     }
 
-    let mut response = match serde_json::from_str::<Command>(line.trim_end()) {
+    let mut response = match parse_command(line.trim_end()) {
         Ok(cmd) => dispatch(cmd, store, started_at_unix, endpoint_id, shutdown_tx).await,
-        Err(e) => err_json::<()>(ErrorCode::Internal, format!("invalid command JSON: {e}")),
+        Err((code, msg)) => err_json::<()>(code, msg),
     };
     response.push('\n');
     write.write_all(response.as_bytes()).await?;
     write.flush().await
+}
+
+/// Two-step wire decode: catch malformed `rid` (and other typed fields)
+/// with a message that names the field, instead of leaking the
+/// underlying serde error verbatim (`Unknown base code: n` etc.).
+fn parse_command(line: &str) -> Result<Command, (ErrorCode, String)> {
+    let value: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+        (
+            ErrorCode::InvalidRequest,
+            format!("invalid command JSON: {e}"),
+        )
+    })?;
+    if let Some(rid_s) = value.get("rid").and_then(|v| v.as_str()) {
+        if let Err(e) = RepoId::from_str(rid_s) {
+            return Err((
+                ErrorCode::InvalidRequest,
+                format!("invalid rid {rid_s:?}: {e}"),
+            ));
+        }
+    }
+    serde_json::from_value(value)
+        .map_err(|e| (ErrorCode::InvalidRequest, format!("invalid command: {e}")))
 }
 
 /// Dispatch a parsed command, returning the JSON line to send back
@@ -274,7 +296,9 @@ async fn seed_response(
 ) -> String {
     let cid = match Cid::from_str(cid_s) {
         Ok(v) => v,
-        Err(e) => return err_json::<SeedReceipt>(ErrorCode::Internal, format!("invalid cid: {e}")),
+        Err(e) => {
+            return err_json::<SeedReceipt>(ErrorCode::InvalidRequest, format!("invalid cid: {e}"))
+        }
     };
     if !path.exists() {
         return err_json::<SeedReceipt>(
@@ -305,7 +329,10 @@ async fn unseed_response(store: &FsStore, rid: RepoId, cid_s: &str) -> String {
     let cid = match Cid::from_str(cid_s) {
         Ok(v) => v,
         Err(e) => {
-            return err_json::<UnseedReceipt>(ErrorCode::Internal, format!("invalid cid: {e}"))
+            return err_json::<UnseedReceipt>(
+                ErrorCode::InvalidRequest,
+                format!("invalid cid: {e}"),
+            )
         }
     };
     let was_seeded = match seeder::is_seeded(store, &rid, &cid).await {
@@ -325,7 +352,7 @@ async fn unseed_response(store: &FsStore, rid: RepoId, cid_s: &str) -> String {
 async fn is_seeding_response(store: &FsStore, rid: &RepoId, cid_s: &str) -> String {
     let cid = match Cid::from_str(cid_s) {
         Ok(v) => v,
-        Err(e) => return err_json::<bool>(ErrorCode::Internal, format!("invalid cid: {e}")),
+        Err(e) => return err_json::<bool>(ErrorCode::InvalidRequest, format!("invalid cid: {e}")),
     };
     match seeder::is_seeded(store, rid, &cid).await {
         Ok(v) => ok_json(v),
@@ -561,6 +588,64 @@ mod tests {
 
             // Socket file is gone after shutdown.
             assert!(!socket.exists());
+        });
+    }
+
+    /// A malformed rid on the wire must surface as `InvalidRequest`
+    /// with the rid mentioned in the message — so callers don't have
+    /// to grep for "invalid command JSON" to recognize bad input.
+    #[test]
+    fn invalid_rid_is_invalid_request() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let home = tempfile::tempdir().unwrap();
+            let secret = iroh::SecretKey::from_bytes(&[4u8; 32]);
+            let home_path = home.path().to_path_buf();
+            let node_handle = tokio::spawn(async move { run(&home_path, secret).await });
+
+            let socket = home.path().join(ARTIFACTS_DIR).join("control.sock");
+            for _ in 0..200 {
+                if socket.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(socket.exists());
+
+            // Hand-rolled wire frame: well-formed JSON, malformed rid.
+            // The typed Client can't construct this since rid is now RepoId.
+            let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let line = br#"{"command":"list-seeded","rid":"not-a-real-rid"}"#;
+            tokio::io::AsyncWriteExt::write_all(&mut stream, line)
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut stream, b"\n")
+                .await
+                .unwrap();
+            let mut buf = String::new();
+            tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut buf)
+                .await
+                .unwrap();
+            let parsed: CommandResult<serde_json::Value> =
+                serde_json::from_str(buf.trim()).unwrap();
+            match parsed {
+                CommandResult::Error(CommandError { code, message }) => {
+                    assert_eq!(code, ErrorCode::InvalidRequest);
+                    assert!(
+                        message.contains("rid"),
+                        "message should name rid: {message}"
+                    );
+                }
+                CommandResult::Okay(_) => panic!("expected error, got ok"),
+            }
+
+            // Clean shutdown.
+            let client = Client::new(socket);
+            client.shutdown().await.unwrap();
+            node_handle.await.unwrap().unwrap();
         });
     }
 
