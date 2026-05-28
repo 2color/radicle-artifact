@@ -68,9 +68,6 @@ pub const STORE_DIR: &str = "store";
 /// future tag class we add. Binary, not UTF-8: see [`seeded_tag`].
 const SEEDED_TAG_V1: u8 = 0x01;
 
-/// Length of an [`Oid`] in bytes (Git-style SHA-1).
-const OID_LEN: usize = 20;
-
 /// Best-effort bound on waiting for a relay connection during bootstrap.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -146,40 +143,57 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
 
 /// Binary tag key for a `(rid, cid)` pair.
 ///
-/// Layout: `[SEEDED_TAG_V1][20-byte RID Oid][Cid binary form]`. The
-/// fixed-length RID makes prefix queries unambiguous —
-/// `[SEEDED_TAG_V1] ++ rid_bytes` matches exactly one repo's CIDs.
+/// Layout: `[SEEDED_TAG_V1][rid_len: u8][rid_bytes][Cid binary form]`.
+/// The length prefix keeps the format hash-agnostic — a SHA-256 RID
+/// (32 bytes) would slot in without a new sentinel byte.
 fn seeded_tag(rid: &RepoId, cid: &Cid) -> Vec<u8> {
+    let rid_b = rid_bytes(rid);
     let cid_bytes = cid.to_bytes();
-    let mut out = Vec::with_capacity(1 + OID_LEN + cid_bytes.len());
+    let mut out = Vec::with_capacity(2 + rid_b.len() + cid_bytes.len());
     out.push(SEEDED_TAG_V1);
-    out.extend_from_slice(rid_bytes(rid));
+    out.push(rid_b.len() as u8);
+    out.extend_from_slice(rid_b);
     out.extend_from_slice(&cid_bytes);
     out
 }
 
 /// Binary prefix matching every seeded tag for `rid`.
 fn seeded_rid_prefix(rid: &RepoId) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + OID_LEN);
+    let rid_b = rid_bytes(rid);
+    let mut out = Vec::with_capacity(2 + rid_b.len());
     out.push(SEEDED_TAG_V1);
-    out.extend_from_slice(rid_bytes(rid));
+    out.push(rid_b.len() as u8);
+    out.extend_from_slice(rid_b);
     out
 }
 
-/// 20-byte Git-style Oid backing a `RepoId`.
+/// Raw bytes of the [`Oid`] backing a `RepoId` — 20 for SHA-1, 32 for
+/// SHA-256 once radicle moves over.
 fn rid_bytes(rid: &RepoId) -> &[u8] {
     AsRef::<[u8]>::as_ref(&**rid)
+}
+
+/// Reconstruct an [`Oid`] from its byte form, dispatching on length so
+/// SHA-256 RIDs can join SHA-1 RIDs in the same store.
+fn oid_from_bytes(b: &[u8]) -> Option<Oid> {
+    match b.len() {
+        20 => Some(Oid::from_sha1(b.try_into().ok()?)),
+        // TODO(sha256): when radicle exposes a 32-byte Oid, dispatch here:
+        // 32 => Some(Oid::from_sha256(b.try_into().ok()?)),
+        _ => None,
+    }
 }
 
 /// Inverse of [`seeded_tag`]: decode a tag name back into `(RepoId, Cid)`.
 fn parse_seeded_tag(name: &[u8]) -> Option<(RepoId, Cid)> {
     let rest = name.strip_prefix(&[SEEDED_TAG_V1])?;
-    if rest.len() < OID_LEN {
+    let (&len_byte, rest) = rest.split_first()?;
+    let rid_len = usize::from(len_byte);
+    if rest.len() < rid_len {
         return None;
     }
-    let (rid_b, cid_b) = rest.split_at(OID_LEN);
-    let oid_arr: [u8; OID_LEN] = rid_b.try_into().ok()?;
-    let rid = RepoId::from(Oid::from_sha1(oid_arr));
+    let (rid_b, cid_b) = rest.split_at(rid_len);
+    let rid = RepoId::from(oid_from_bytes(rid_b)?);
     let cid = Cid::try_from(cid_b).ok()?;
     Some((rid, cid))
 }
@@ -547,19 +561,24 @@ mod tests {
         });
     }
 
-    /// Lock the binary tag-name layout: sentinel byte, 20-byte RID, then
-    /// the CID's canonical binary form. Also exercise the encode/decode
-    /// round-trip via `parse_seeded_tag`.
+    /// Lock the binary tag-name layout: sentinel byte, RID length, RID
+    /// bytes, then the CID's canonical binary form. Also exercise the
+    /// encode/decode round-trip via `parse_seeded_tag`.
     #[test]
     fn seeded_tag_layout() {
+        // Today's RIDs are SHA-1; the format itself doesn't bake that in,
+        // which is the point of the length prefix.
+        const SHA1_LEN: usize = 20;
+
         let (rid, _) = rid_pair();
         let cid = blob_cid(b"layout");
         let tag = seeded_tag(&rid, &cid);
 
-        assert_eq!(tag.len(), 1 + OID_LEN + cid.to_bytes().len());
+        assert_eq!(tag.len(), 2 + SHA1_LEN + cid.to_bytes().len());
         assert_eq!(tag[0], SEEDED_TAG_V1);
-        assert_eq!(&tag[1..1 + OID_LEN], AsRef::<[u8]>::as_ref(&*rid));
-        assert_eq!(Cid::try_from(&tag[1 + OID_LEN..]).unwrap(), cid);
+        assert_eq!(usize::from(tag[1]), SHA1_LEN);
+        assert_eq!(&tag[2..2 + SHA1_LEN], AsRef::<[u8]>::as_ref(&*rid));
+        assert_eq!(Cid::try_from(&tag[2 + SHA1_LEN..]).unwrap(), cid);
 
         let (rid_back, cid_back) = parse_seeded_tag(&tag).expect("decodes");
         assert_eq!(rid_back, rid);
