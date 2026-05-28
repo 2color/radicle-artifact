@@ -17,7 +17,7 @@ use std::time::Duration;
 use cid::Cid;
 use iroh::protocol::Router;
 use iroh_blobs::api::blobs::{AddPathOptions, ImportMode as IrohImportMode};
-use iroh_blobs::api::Store;
+use iroh_blobs::api::{Store, TempTag};
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::{BlobFormat, BlobsProtocol, Hash, HashAndFormat};
@@ -139,18 +139,19 @@ fn add_opts(path: std::path::PathBuf, mode: ImportMode) -> AddPathOptions {
 /// Import a single file into the store and verify it matches the expected CID.
 ///
 /// `mode` selects copy-vs-reference semantics — see [`ImportMode`].
+///
+/// Returns the blob `Hash` together with the [`TempTag`] that protects it.
+/// The caller must keep the temp tag alive until a persistent tag covers
+/// the blob, otherwise GC may sweep it. Prefer [`seed_artifact`], which
+/// holds the temp tag across [`register_seeded`].
 pub async fn import_blob(
     store: &Store,
     path: &Path,
     expected: &Cid,
     mode: ImportMode,
-) -> Result<Hash, Error> {
+) -> Result<(Hash, TempTag), Error> {
     // iroh-blobs requires an absolute path for in-place reference imports.
     let abs = dunce::canonicalize(path).map_err(|e| Error::Iroh(format!("canonicalize: {e}")))?;
-    // temp_tag (not with_tag): protects the blob while held, then releases
-    // on drop. The persistent `seeded/{rid}/{cid}` tag set by
-    // register_seeded takes over protection; this leaves no leftover
-    // per-import tag pinning the blob after an unseed.
     let tt = store
         .add_path_with_opts(add_opts(abs, mode))
         .temp_tag()
@@ -165,26 +166,30 @@ pub async fn import_blob(
             actual: actual.to_string(),
         });
     }
-    Ok(hash)
+    Ok((hash, tt))
 }
 
 /// Import a directory as a [`Collection`] and verify it matches the expected CID.
 ///
 /// Each file becomes a collection entry keyed by its relative path; files
 /// are imported in canonical (sorted) order for determinism.
+///
+/// Returns the root `Hash` and the [`TempTag`] that protects the
+/// collection. Holding the root temp tag covers child blobs too — GC's
+/// mark phase expands the hash-seq from any live root. The caller must
+/// keep the temp tag alive until a persistent tag covers the root;
+/// prefer [`seed_artifact`], which does this.
 pub async fn import_collection(
     store: &Store,
     dir: &Path,
     expected: &Cid,
     mode: ImportMode,
-) -> Result<Hash, Error> {
+) -> Result<(Hash, TempTag), Error> {
     let entries = cid_utils::canonical_walk(dir).map_err(Error::Io)?;
 
     let mut pairs: Vec<(String, Hash)> = Vec::new();
-    // Hold a temp tag per file so the child blobs stay protected until
-    // the collection's persistent seeded tag (set by register_seeded)
-    // covers them via its hash-seq. Unlike with_tag(), temp tags release
-    // on drop, so an unseed later leaves no per-file tag pinning blobs.
+    // Hold per-file temp tags until the root tag is created — once the
+    // root exists, GC mark expansion via hash-seq covers the children.
     let mut file_tags = Vec::with_capacity(entries.len());
     for (name, abs) in entries {
         let tt = store
@@ -201,15 +206,18 @@ pub async fn import_collection(
         .store(store)
         .await
         .map_err(|e| Error::Iroh(format!("store collection: {e}")))?;
+    // Root temp tag now protects the whole hash-seq; drop per-file tags.
+    drop(file_tags);
 
-    let actual = cid_utils::blake3_hash_to_cid(root_tag.hash(), ArtifactKind::Collection);
+    let hash = root_tag.hash();
+    let actual = cid_utils::blake3_hash_to_cid(hash, ArtifactKind::Collection);
     if actual != *expected {
         return Err(Error::CidMismatch {
             expected: expected.to_string(),
             actual: actual.to_string(),
         });
     }
-    Ok(root_tag.hash())
+    Ok((hash, root_tag))
 }
 
 /// Mark a `(rid, cid)` pair as actively seeded.
@@ -236,11 +244,34 @@ pub async fn register_seeded(
     Ok(())
 }
 
+/// Import an artifact and register it as seeded in a single step.
+///
+/// Holds the import temp tag alive across [`register_seeded`] so the
+/// freshly imported bytes are never momentarily unprotected — if GC's
+/// mark phase landed between the temp tag dropping and the persistent
+/// tag being set, the blob would be swept.
+pub async fn seed_artifact(
+    store: &Store,
+    rid: &RepoId,
+    cid: &Cid,
+    path: &Path,
+    kind: ArtifactKind,
+    mode: ImportMode,
+) -> Result<Hash, Error> {
+    let (hash, _tt) = match kind {
+        ArtifactKind::Blob => import_blob(store, path, cid, mode).await?,
+        ArtifactKind::Collection => import_collection(store, path, cid, mode).await?,
+    };
+    register_seeded(store, rid, cid, hash).await?;
+    // _tt drops here, after the persistent seeded tag protects the bytes.
+    Ok(hash)
+}
+
 /// Remove the `seeded/{rid}/{cid}` tag.
 ///
 /// Idempotent: deleting a tag that doesn't exist returns `Ok(())`. The
 /// underlying blob bytes are not removed by this call — iroh-blobs' GC
-/// reclaims them once no tags reference them.
+/// reclaims them on its next sweep once no tags reference them.
 pub async fn unregister_seeded(store: &Store, rid: &RepoId, cid: &Cid) -> Result<(), Error> {
     store
         .tags()

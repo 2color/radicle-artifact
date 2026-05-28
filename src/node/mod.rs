@@ -292,15 +292,7 @@ async fn seed_response(
         Ok(v) => v,
         Err(e) => return err_from_share::<SeedReceipt>(e),
     };
-    let import_res = match kind {
-        ArtifactKind::Blob => seeder::import_blob(store_ref, path, &cid, mode).await,
-        ArtifactKind::Collection => seeder::import_collection(store_ref, path, &cid, mode).await,
-    };
-    let hash = match import_res {
-        Ok(h) => h,
-        Err(e) => return err_from_share::<SeedReceipt>(e),
-    };
-    if let Err(e) = seeder::register_seeded(store_ref, &rid, &cid, hash).await {
+    if let Err(e) = seeder::seed_artifact(store_ref, &rid, &cid, path, kind, mode).await {
         return err_from_share::<SeedReceipt>(e);
     }
     let bytes = seeder::artifact_size(store_ref, &rid, &cid).await;
