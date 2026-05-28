@@ -187,13 +187,7 @@ The node never writes COB ops — every signed location write (`add_location`, `
 
 ### `radiroh://` location format
 
-Seeded artifacts are announced as `radiroh://<endpoint-id>` URLs, where `<endpoint-id>` is the iroh endpoint id encoded as **lowercase base32 with no padding** (RFC 4648, `a-z` and `2-7`). See [docs/uri-scheme.md](docs/uri-scheme.md) for the full grammar.
-
-A bare `radiroh://` (no host) derives the endpoint id from the location author's DID, since the radicle and iroh identities share the same Ed25519 key.
-
-#### Upgrading from `iroh://`
-
-The scheme was renamed from the unowned `iroh://` to the Radicle-namespaced `radiroh://` ([rad issue](https://radicle.network) b93d542). Legacy `iroh://` URLs are **no longer read** — fetch ignores them. If an earlier build wrote `iroh://` locations under your DID, sweep them with `rad-artifact reconcile --remove-orphaned-self`; a follow-up `rad-artifact reconcile` re-adds fresh `radiroh://` URLs for everything you're still seeding.
+Seeded artifacts are announced as `radiroh://<endpoint-id>` URLs, where `<endpoint-id>` is the iroh endpoint id encoded as lowercase base32. See [docs/uri-scheme.md](docs/uri-scheme.md) for the full grammar.
 
 ## How the COB is implemented
 
