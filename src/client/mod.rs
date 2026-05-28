@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use cid::Cid;
 use radicle::identity::RepoId;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -132,14 +133,14 @@ impl Client {
     pub async fn seed(
         &self,
         rid: RepoId,
-        cid: &str,
+        cid: Cid,
         path: &Path,
         kind: ArtifactKind,
         mode: ImportMode,
     ) -> Result<SeedReceipt, ClientError> {
         let cmd = Command::Seed {
             rid,
-            cid: cid.to_string(),
+            cid,
             path: path.to_path_buf(),
             kind,
             mode,
@@ -148,20 +149,14 @@ impl Client {
     }
 
     /// Ask the node to stop seeding `(rid, cid)`.
-    pub async fn unseed(&self, rid: RepoId, cid: &str) -> Result<UnseedReceipt, ClientError> {
-        let cmd = Command::Unseed {
-            rid,
-            cid: cid.to_string(),
-        };
+    pub async fn unseed(&self, rid: RepoId, cid: Cid) -> Result<UnseedReceipt, ClientError> {
+        let cmd = Command::Unseed { rid, cid };
         self.call(&cmd, DEFAULT_TIMEOUT).await
     }
 
     /// Whether the node currently has `(rid, cid)` tagged.
-    pub async fn is_seeding(&self, rid: RepoId, cid: &str) -> Result<bool, ClientError> {
-        let cmd = Command::IsSeeding {
-            rid,
-            cid: cid.to_string(),
-        };
+    pub async fn is_seeding(&self, rid: RepoId, cid: Cid) -> Result<bool, ClientError> {
+        let cmd = Command::IsSeeding { rid, cid };
         self.call(&cmd, DEFAULT_TIMEOUT).await
     }
 
