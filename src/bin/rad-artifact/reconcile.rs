@@ -18,7 +18,6 @@
 //!   `--remove-orphaned-self`.
 
 use std::collections::HashSet;
-use std::str::FromStr;
 use std::time::Duration;
 
 use clap::Parser;
@@ -309,10 +308,7 @@ fn reconcile_one(
         .client
         .call_blocking(&NodeMsg::ListSeeded { rid }, Duration::from_secs(30))
         .map_err(|e| Error::Node(node::client_err(e)))?;
-    let seeded: HashSet<Cid> = entries
-        .into_iter()
-        .filter_map(|e| Cid::from_str(&e.cid).ok())
-        .collect();
+    let seeded: HashSet<Cid> = entries.into_iter().map(|e| e.cid).collect();
 
     // Snapshot every release once so the loop body can drop its borrow
     // before mutations begin.

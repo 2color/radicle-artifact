@@ -380,7 +380,7 @@ pub(crate) fn seed_artifact(
         .call_blocking::<SeedReceipt>(
             &NodeMsg::Seed {
                 rid,
-                cid: cid.to_string(),
+                cid,
                 path: abs_path,
                 kind,
                 mode,
@@ -461,13 +461,7 @@ pub(crate) fn unseed_artifact(
     let client = Client::new(socket);
 
     let receipt = client
-        .call_blocking::<UnseedReceipt>(
-            &NodeMsg::Unseed {
-                rid,
-                cid: cid.to_string(),
-            },
-            client::DEFAULT_TIMEOUT,
-        )
+        .call_blocking::<UnseedReceipt>(&NodeMsg::Unseed { rid, cid }, client::DEFAULT_TIMEOUT)
         .map_err(client_err)?;
 
     if receipt.was_removed {

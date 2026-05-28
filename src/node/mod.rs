@@ -247,6 +247,14 @@ fn parse_command(line: &str) -> Result<Command, (ErrorCode, String)> {
             ));
         }
     }
+    if let Some(cid_s) = value.get("cid").and_then(|v| v.as_str()) {
+        if let Err(e) = Cid::from_str(cid_s) {
+            return Err((
+                ErrorCode::InvalidRequest,
+                format!("invalid cid {cid_s:?}: {e}"),
+            ));
+        }
+    }
     serde_json::from_value(value)
         .map_err(|e| (ErrorCode::InvalidRequest, format!("invalid command: {e}")))
 }
@@ -271,8 +279,8 @@ async fn dispatch(
             path,
             kind,
             mode,
-        } => seed_response(store, rid, &cid, &path, kind, mode, endpoint_id).await,
-        Command::Unseed { rid, cid } => unseed_response(store, rid, &cid).await,
+        } => seed_response(store, rid, cid, &path, kind, mode, endpoint_id).await,
+        Command::Unseed { rid, cid } => unseed_response(store, rid, cid).await,
         Command::IsSeeding { rid, cid } => is_seeding_response(store, &rid, &cid).await,
         Command::ListSeeded { rid } => list_seeded_response(store, rid).await,
         Command::Shutdown => {
@@ -288,18 +296,12 @@ async fn dispatch(
 async fn seed_response(
     store: &FsStore,
     rid: RepoId,
-    cid_s: &str,
+    cid: Cid,
     path: &Path,
     kind: ArtifactKind,
     mode: ImportMode,
     endpoint_id: EndpointId,
 ) -> String {
-    let cid = match Cid::from_str(cid_s) {
-        Ok(v) => v,
-        Err(e) => {
-            return err_json::<SeedReceipt>(ErrorCode::InvalidRequest, format!("invalid cid: {e}"))
-        }
-    };
     if !path.exists() {
         return err_json::<SeedReceipt>(
             ErrorCode::PathNotFound,
@@ -317,7 +319,7 @@ async fn seed_response(
     let bytes = seeder::artifact_size(store, &rid, &cid).await;
     let receipt = SeedReceipt {
         rid,
-        cid: cid.to_string(),
+        cid,
         endpoint_id,
         bytes,
         was_new: !was_already,
@@ -325,16 +327,7 @@ async fn seed_response(
     ok_json(receipt)
 }
 
-async fn unseed_response(store: &FsStore, rid: RepoId, cid_s: &str) -> String {
-    let cid = match Cid::from_str(cid_s) {
-        Ok(v) => v,
-        Err(e) => {
-            return err_json::<UnseedReceipt>(
-                ErrorCode::InvalidRequest,
-                format!("invalid cid: {e}"),
-            )
-        }
-    };
+async fn unseed_response(store: &FsStore, rid: RepoId, cid: Cid) -> String {
     let was_seeded = match seeder::is_seeded(store, &rid, &cid).await {
         Ok(v) => v,
         Err(e) => return err_from_share::<UnseedReceipt>(e),
@@ -344,17 +337,13 @@ async fn unseed_response(store: &FsStore, rid: RepoId, cid_s: &str) -> String {
     }
     ok_json(UnseedReceipt {
         rid,
-        cid: cid.to_string(),
+        cid,
         was_removed: was_seeded,
     })
 }
 
-async fn is_seeding_response(store: &FsStore, rid: &RepoId, cid_s: &str) -> String {
-    let cid = match Cid::from_str(cid_s) {
-        Ok(v) => v,
-        Err(e) => return err_json::<bool>(ErrorCode::InvalidRequest, format!("invalid cid: {e}")),
-    };
-    match seeder::is_seeded(store, rid, &cid).await {
+async fn is_seeding_response(store: &FsStore, rid: &RepoId, cid: &Cid) -> String {
+    match seeder::is_seeded(store, rid, cid).await {
         Ok(v) => ok_json(v),
         Err(e) => err_from_share::<bool>(e),
     }
@@ -368,10 +357,7 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
     let mut out = Vec::with_capacity(cids.len());
     for cid in cids {
         let bytes = seeder::artifact_size(store, &rid, &cid).await;
-        out.push(SeededEntry {
-            cid: cid.to_string(),
-            bytes,
-        });
+        out.push(SeededEntry { cid, bytes });
     }
     ok_json(out)
 }
@@ -475,7 +461,6 @@ mod tests {
             let payload = b"hello rad-artifact";
             fs::write(&blob_path, payload).unwrap();
             let real_cid = cid_utils::compute_blob_cid(&blob_path).unwrap();
-            let cid_str = real_cid.to_string();
             let rid = rid_a();
 
             // Pin the secret so the test is reproducible.
@@ -512,7 +497,7 @@ mod tests {
             let receipt = client
                 .seed(
                     rid,
-                    &cid_str,
+                    real_cid,
                     &blob_path,
                     ArtifactKind::Blob,
                     ImportMode::Copy,
@@ -527,7 +512,7 @@ mod tests {
             let receipt2 = client
                 .seed(
                     rid,
-                    &cid_str,
+                    real_cid,
                     &blob_path,
                     ArtifactKind::Blob,
                     ImportMode::Copy,
@@ -543,7 +528,7 @@ mod tests {
             let err = client
                 .seed(
                     rid,
-                    &bad_cid.to_string(),
+                    bad_cid,
                     &bad_path,
                     ArtifactKind::Blob,
                     ImportMode::Copy,
@@ -558,12 +543,12 @@ mod tests {
             }
 
             // IsSeeding reflects the tag we set above.
-            assert!(client.is_seeding(rid, &cid_str).await.unwrap());
+            assert!(client.is_seeding(rid, real_cid).await.unwrap());
 
             // ListSeeded returns exactly the one entry.
             let entries = client.list_seeded(rid).await.unwrap();
             assert_eq!(entries.len(), 1);
-            assert_eq!(entries[0].cid, cid_str);
+            assert_eq!(entries[0].cid, real_cid);
             assert_eq!(entries[0].bytes, payload.len() as u64);
 
             // Status now reports one seeded artifact.
@@ -572,11 +557,11 @@ mod tests {
             assert_eq!(status.seeded.bytes_logical, payload.len() as u64);
 
             // Unseed once removes the tag; second call is idempotent.
-            let r1 = client.unseed(rid, &cid_str).await.unwrap();
+            let r1 = client.unseed(rid, real_cid).await.unwrap();
             assert!(r1.was_removed);
-            let r2 = client.unseed(rid, &cid_str).await.unwrap();
+            let r2 = client.unseed(rid, real_cid).await.unwrap();
             assert!(!r2.was_removed);
-            assert!(!client.is_seeding(rid, &cid_str).await.unwrap());
+            assert!(!client.is_seeding(rid, real_cid).await.unwrap());
 
             // Shutdown — the node acks then exits cleanly.
             client.shutdown().await.unwrap();
@@ -591,11 +576,11 @@ mod tests {
         });
     }
 
-    /// A malformed rid on the wire must surface as `InvalidRequest`
-    /// with the rid mentioned in the message — so callers don't have
-    /// to grep for "invalid command JSON" to recognize bad input.
+    /// Malformed `rid`/`cid` on the wire must surface as `InvalidRequest`
+    /// with the offending field named in the message — so callers don't
+    /// have to grep for "invalid command JSON" to recognize bad input.
     #[test]
-    fn invalid_rid_is_invalid_request() {
+    fn invalid_typed_fields_surface_as_invalid_request() {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -615,31 +600,41 @@ mod tests {
             }
             assert!(socket.exists());
 
-            // Hand-rolled wire frame: well-formed JSON, malformed rid.
-            // The typed Client can't construct this since rid is now RepoId.
-            let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
-            let line = br#"{"command":"list-seeded","rid":"not-a-real-rid"}"#;
-            tokio::io::AsyncWriteExt::write_all(&mut stream, line)
-                .await
-                .unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut stream, b"\n")
-                .await
-                .unwrap();
-            let mut buf = String::new();
-            tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut buf)
-                .await
-                .unwrap();
-            let parsed: CommandResult<serde_json::Value> =
-                serde_json::from_str(buf.trim()).unwrap();
-            match parsed {
-                CommandResult::Error(CommandError { code, message }) => {
-                    assert_eq!(code, ErrorCode::InvalidRequest);
-                    assert!(
-                        message.contains("rid"),
-                        "message should name rid: {message}"
-                    );
+            // The typed Client can't construct these frames since the
+            // fields are now RepoId / Cid, so we hand-roll the wire.
+            for (frame, expected_field) in [
+                (
+                    br#"{"command":"list-seeded","rid":"not-a-real-rid"}"#.as_slice(),
+                    "rid",
+                ),
+                (
+                    br#"{"command":"is-seeding","rid":"rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip","cid":"not-a-real-cid"}"#.as_slice(),
+                    "cid",
+                ),
+            ] {
+                let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut stream, frame)
+                    .await
+                    .unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut stream, b"\n")
+                    .await
+                    .unwrap();
+                let mut buf = String::new();
+                tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut buf)
+                    .await
+                    .unwrap();
+                let parsed: CommandResult<serde_json::Value> =
+                    serde_json::from_str(buf.trim()).unwrap();
+                match parsed {
+                    CommandResult::Error(CommandError { code, message }) => {
+                        assert_eq!(code, ErrorCode::InvalidRequest);
+                        assert!(
+                            message.contains(expected_field),
+                            "message should name {expected_field}: {message}"
+                        );
+                    }
+                    CommandResult::Okay(_) => panic!("expected error, got ok"),
                 }
-                CommandResult::Okay(_) => panic!("expected error, got ok"),
             }
 
             // Clean shutdown.
