@@ -283,6 +283,12 @@ async fn dispatch(
         Command::Unseed { rid, cid } => unseed_response(store, rid, cid).await,
         Command::IsSeeding { rid, cid } => is_seeding_response(store, &rid, &cid).await,
         Command::ListSeeded { rid } => list_seeded_response(store, rid).await,
+        // Wired up in later steps (NodeCtx + Has/Export/Fetch handlers).
+        // Export/Fetch are streaming and will be intercepted before
+        // dispatch; this one-shot arm is a temporary placeholder.
+        Command::Has { .. } | Command::Export { .. } | Command::Fetch { .. } => {
+            err_json::<()>(ErrorCode::Internal, "not yet implemented".into())
+        }
         Command::Shutdown => {
             // ack first, then broadcast so the loop tears down after the
             // response makes it to the wire
