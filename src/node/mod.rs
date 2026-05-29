@@ -552,6 +552,25 @@ async fn stream_fetch(
         };
         let store = &ctx.store;
 
+        // Protect the content for the whole handler BEFORE doing anything
+        // else. This covers both paths: cached bytes that exist only as an
+        // untagged GC cache (a prior non-seed fetch) can't be reclaimed
+        // between the completeness check and export/seed on the fast path,
+        // and in-flight bytes are protected on the download path. If this
+        // future is dropped (disconnect) the temp tag drops with it.
+        //
+        // For a collection the tag covers `hash_seq(root)`; GC marks the
+        // children by walking the root, so they are protected once the root
+        // is complete. While the root itself is still downloading the
+        // children are not yet marked — a GC sweep in that window can force
+        // a re-download (progress loss), but never a false-complete, since
+        // the seeded tag is set only after completeness is verified.
+        let tt = store
+            .tags()
+            .temp_tag(haf)
+            .await
+            .map_err(|e| (ErrorCode::Iroh, format!("temp tag: {e}")))?;
+
         // Fast path: bytes already complete locally.
         let already = store
             .remote()
@@ -566,6 +585,7 @@ async fn stream_fetch(
                     .await
                     .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
             }
+            drop(tt);
             return Ok(FetchReceipt {
                 rid,
                 cid,
@@ -577,13 +597,6 @@ async fn stream_fetch(
             });
         }
 
-        // Download path. Protect the content for the whole operation; if
-        // this future is dropped (disconnect) the temp tag drops with it.
-        let tt = store
-            .tags()
-            .temp_tag(haf)
-            .await
-            .map_err(|e| (ErrorCode::Iroh, format!("temp tag: {e}")))?;
         on_progress(FetchProgress::Connecting);
 
         let (iroh_ids, urls) = partition(&locations);
