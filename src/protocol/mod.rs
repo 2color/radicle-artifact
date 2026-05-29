@@ -1,19 +1,23 @@
 //! Wire protocol for the rad-artifact node control socket.
 //!
-//! One request and one response per Unix-socket connection, each a single
-//! line of JSON terminated by `\n`. The client writes one [`Command`] and
-//! reads one [`CommandResult<T>`], where `T` is the response type expected
-//! for that command (the node always returns the matching type or a
-//! [`CommandError`]).
+//! One request per Unix-socket connection, each command a single line of
+//! JSON terminated by `\n`. Most commands are one-shot: the client writes
+//! one [`Command`] and reads one [`CommandResult<T>`]. The streaming
+//! commands ([`Command::Fetch`], [`Command::Export`]) instead emit a
+//! sequence of [`StreamEvent`] frames — zero or more `progress`, then one
+//! terminal `okay`/`error` whose tags match [`CommandResult`].
 //!
 //! [`Command`] and [`ErrorCode`] are `#[non_exhaustive]` so future
-//! additions (e.g. `Subscribe`) land without breaking the schema.
+//! additions land without breaking the schema; the response payload
+//! structs are likewise `#[non_exhaustive]` so fields can be added without
+//! breaking downstream crates that link this type.
 
 use std::path::PathBuf;
 
 use cid::Cid;
 use radicle::identity::RepoId;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::share::cid_utils::ArtifactKind;
 use crate::share::keys::EndpointId;
@@ -90,8 +94,58 @@ pub enum Command {
         /// Repository to enumerate.
         rid: RepoId,
     },
+    /// Cheap predicate: is this CID's content present/complete in the
+    /// store? No network. One-shot, returns [`HasResult`]. Hash-keyed and
+    /// repo-agnostic.
+    Has {
+        /// Content identifier to look up.
+        #[serde(with = "cid_string")]
+        cid: Cid,
+    },
+    /// Export already-local bytes to `dest`. No network. Streaming —
+    /// emits `exporting` progress, then [`ExportReceipt`]. Errors with
+    /// [`ErrorCode::NotLocal`] if the content isn't complete in the store.
+    Export {
+        /// Content identifier to export.
+        #[serde(with = "cid_string")]
+        cid: Cid,
+        /// Destination path (file for blobs, directory for collections).
+        dest: PathBuf,
+    },
+    /// Fetch an artifact: fast-path export if already local, else download
+    /// from `locations` into the store, export to `dest`, optionally tag
+    /// as seeded. Streaming — emits progress, then [`FetchReceipt`].
+    Fetch {
+        /// Repository the artifact belongs to (for the seeded tag).
+        rid: RepoId,
+        /// Expected content identifier; the blob kind is derived from it.
+        #[serde(with = "cid_string")]
+        cid: Cid,
+        /// Resolved providers/URLs to try. Iroh providers are batched into
+        /// one multi-provider download; URLs are tried in sequence.
+        locations: Vec<FetchLocation>,
+        /// Destination path (file for blobs, directory for collections).
+        dest: PathBuf,
+        /// Tag `seeded/{rid}/{cid}` after completion so the node serves it.
+        seed: bool,
+    },
     /// Ask the node to shut down gracefully.
     Shutdown,
+}
+
+/// A resolved place to fetch an artifact from.
+///
+/// Owned and serde-friendly, unlike [`crate::share::fetch::Location`].
+/// The caller resolves COB locations (including DID-derived bare
+/// `radiroh://` entries) into this concrete form; the node does no
+/// identity resolution of its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FetchLocation {
+    /// An HTTP(S) (or other-scheme) URL, serialized as the URL string.
+    Url(Url),
+    /// An iroh provider, serialized as the canonical `radiroh://<base32>` URL.
+    Iroh(EndpointId),
 }
 
 /// Top-level response envelope.
@@ -105,6 +159,63 @@ pub enum CommandResult<T> {
     Okay(T),
     /// Failure with structured error.
     Error(CommandError),
+}
+
+/// Frame of a streaming response ([`Command::Fetch`], [`Command::Export`]).
+///
+/// Externally tagged: `{"progress": …}` (repeatable, non-terminal) then
+/// exactly one terminal `{"okay": <T>}` / `{"error": <CommandError>}`. The
+/// terminal tags deliberately match [`CommandResult`] so a generic reader
+/// recognizes them; `progress` is the new, non-terminal frame.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StreamEvent<T> {
+    /// Non-terminal progress update.
+    Progress(FetchProgress),
+    /// Terminal success with command-specific payload.
+    Okay(T),
+    /// Terminal failure.
+    Error(CommandError),
+}
+
+/// One progress frame for a streaming command.
+///
+/// An enum, not a struct, so provider-level events (which carry no byte
+/// offset) and byte-movement events are modeled distinctly. The variants
+/// map onto the iroh `DownloadProgressItem` kinds the download loop
+/// already produces. `Export` only ever emits [`FetchProgress::Exporting`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+pub enum FetchProgress {
+    /// Endpoint/relay setup, before any provider is tried.
+    Connecting,
+    /// Now attempting this provider.
+    TryingProvider {
+        /// Provider being tried.
+        endpoint_id: EndpointId,
+    },
+    /// This provider failed; moving on to the next.
+    ProviderFailed {
+        /// Provider that failed.
+        endpoint_id: EndpointId,
+    },
+    /// Byte movement during download.
+    Downloading {
+        /// Bytes downloaded so far.
+        offset: u64,
+        /// Total size, if known.
+        total: Option<u64>,
+    },
+    /// Byte movement while writing the store out to disk.
+    Exporting {
+        /// Bytes exported so far.
+        offset: u64,
+        /// Total size, if known.
+        total: Option<u64>,
+        /// Collection member being exported; `None` for a single blob.
+        entry: Option<String>,
+    },
 }
 
 /// Structured failure: an [`ErrorCode`] plus a human-readable message.
@@ -136,6 +247,13 @@ pub enum ErrorCode {
     /// or a typed field (rid, cid, …) failed to parse. The accompanying
     /// `message` surfaces the underlying serde error.
     InvalidRequest,
+    /// `Export` (or a fetch fast path) needed local bytes that the store
+    /// does not hold completely.
+    NotLocal,
+    /// `Fetch` was given no usable locations to try.
+    NoLocations,
+    /// Every provider/URL a `Fetch` tried failed; `message` lists them.
+    AllFailed,
     /// Bug or unhandled state inside the node.
     Internal,
 }
@@ -178,6 +296,54 @@ pub struct SeededEntry {
     /// Logical artifact size in bytes. Best-effort — zero if the iroh
     /// status call temporarily fails.
     pub bytes: u64,
+}
+
+/// Result of [`Command::Has`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HasResult {
+    /// Some bytes for this CID are in the store.
+    pub present: bool,
+    /// The content is fully downloaded.
+    pub complete: bool,
+    /// Logical size known so far, in bytes.
+    pub bytes: u64,
+}
+
+/// Terminal result of [`Command::Export`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExportReceipt {
+    /// Echo of the exported CID.
+    #[serde(with = "cid_string")]
+    pub cid: Cid,
+    /// Where the bytes were written.
+    pub dest: PathBuf,
+    /// Logical size exported, in bytes.
+    pub bytes: u64,
+}
+
+/// Terminal result of [`Command::Fetch`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FetchReceipt {
+    /// Echo of the requested repository.
+    pub rid: RepoId,
+    /// Echo of the fetched CID.
+    #[serde(with = "cid_string")]
+    pub cid: Cid,
+    /// Where the bytes were written.
+    pub dest: PathBuf,
+    /// Logical size fetched, in bytes.
+    pub bytes: u64,
+    /// `true` if the bytes were already local; no network was used.
+    pub from_cache: bool,
+    /// `true` if a `seeded/{rid}/{cid}` tag is now set.
+    pub seeded: bool,
+    /// Endpoint id the node serves on, as a canonical `radiroh://<base32>`
+    /// URL. Present so the caller can write the `add_location` COB after a
+    /// `seed: true` fetch. Mirrors [`SeedReceipt::endpoint_id`].
+    pub endpoint_id: EndpointId,
 }
 
 /// Successful result of [`Command::Status`]. See the design doc for the
@@ -454,5 +620,164 @@ mod tests {
                 "warnings": {"did_locations_unmatched": 0},
             })
         );
+    }
+
+    #[test]
+    fn wire_snapshot_command_has_export_fetch() {
+        let cid = sample_cid();
+        let endpoint_id = sample_endpoint_id();
+
+        let has = Command::Has { cid };
+        assert_eq!(
+            serde_json::to_value(&has).unwrap(),
+            json!({"command": "has", "cid": cid.to_string()})
+        );
+
+        let export = Command::Export {
+            cid,
+            dest: PathBuf::from("/tmp/out"),
+        };
+        assert_eq!(
+            serde_json::to_value(&export).unwrap(),
+            json!({"command": "export", "cid": cid.to_string(), "dest": "/tmp/out"})
+        );
+
+        let fetch = Command::Fetch {
+            rid: sample_rid(),
+            cid,
+            locations: vec![
+                FetchLocation::Iroh(endpoint_id),
+                FetchLocation::Url(Url::parse("https://e.x/f").unwrap()),
+            ],
+            dest: PathBuf::from("/tmp/out"),
+            seed: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&fetch).unwrap(),
+            json!({
+                "command": "fetch",
+                "rid": SAMPLE_RID,
+                "cid": cid.to_string(),
+                "locations": [
+                    {"iroh": endpoint_id.to_string()},
+                    {"url": "https://e.x/f"},
+                ],
+                "dest": "/tmp/out",
+                "seed": true,
+            })
+        );
+        // Round-trips back to the same typed value.
+        let back: Command = serde_json::from_value(serde_json::to_value(&fetch).unwrap()).unwrap();
+        assert_eq!(back, fetch);
+    }
+
+    #[test]
+    fn wire_snapshot_stream_event() {
+        // Terminal tags match CommandResult; `progress` is the new frame.
+        let progress: StreamEvent<u32> = StreamEvent::Progress(FetchProgress::Connecting);
+        assert_eq!(
+            serde_json::to_value(&progress).unwrap(),
+            json!({"progress": {"kind": "connecting"}})
+        );
+
+        let ok: StreamEvent<u32> = StreamEvent::Okay(7);
+        assert_eq!(serde_json::to_value(&ok).unwrap(), json!({"okay": 7}));
+
+        let err: StreamEvent<u32> = StreamEvent::Error(CommandError {
+            code: ErrorCode::AllFailed,
+            message: "no providers".into(),
+        });
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            json!({"error": {"code": "all-failed", "message": "no providers"}})
+        );
+    }
+
+    #[test]
+    fn wire_snapshot_fetch_progress() {
+        let endpoint_id = sample_endpoint_id();
+        let cases = [
+            (FetchProgress::Connecting, json!({"kind": "connecting"})),
+            (
+                FetchProgress::TryingProvider { endpoint_id },
+                json!({"kind": "trying-provider", "endpoint_id": endpoint_id.to_string()}),
+            ),
+            (
+                FetchProgress::ProviderFailed { endpoint_id },
+                json!({"kind": "provider-failed", "endpoint_id": endpoint_id.to_string()}),
+            ),
+            (
+                FetchProgress::Downloading {
+                    offset: 65536,
+                    total: Some(1048576),
+                },
+                json!({"kind": "downloading", "offset": 65536, "total": 1048576}),
+            ),
+            (
+                FetchProgress::Exporting {
+                    offset: 10,
+                    total: None,
+                    entry: Some("a/b.txt".into()),
+                },
+                json!({"kind": "exporting", "offset": 10, "total": null, "entry": "a/b.txt"}),
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(serde_json::to_value(&value).unwrap(), expected);
+            let back: FetchProgress =
+                serde_json::from_value(serde_json::to_value(&value).unwrap()).unwrap();
+            assert_eq!(back, value);
+        }
+    }
+
+    #[test]
+    fn wire_snapshot_fetch_results() {
+        let cid = sample_cid();
+        let endpoint_id = sample_endpoint_id();
+
+        let has = HasResult {
+            present: true,
+            complete: false,
+            bytes: 1024,
+        };
+        assert_eq!(
+            serde_json::to_value(&has).unwrap(),
+            json!({"present": true, "complete": false, "bytes": 1024})
+        );
+
+        let export = ExportReceipt {
+            cid,
+            dest: PathBuf::from("/tmp/out"),
+            bytes: 2048,
+        };
+        assert_eq!(
+            serde_json::to_value(&export).unwrap(),
+            json!({"cid": cid.to_string(), "dest": "/tmp/out", "bytes": 2048})
+        );
+
+        let fetch = FetchReceipt {
+            rid: sample_rid(),
+            cid,
+            dest: PathBuf::from("/tmp/out"),
+            bytes: 4096,
+            from_cache: false,
+            seeded: true,
+            endpoint_id,
+        };
+        assert_eq!(
+            serde_json::to_value(&fetch).unwrap(),
+            json!({
+                "rid": SAMPLE_RID,
+                "cid": cid.to_string(),
+                "dest": "/tmp/out",
+                "bytes": 4096,
+                "from_cache": false,
+                "seeded": true,
+                "endpoint_id": endpoint_id.to_string(),
+            })
+        );
+        let back: FetchReceipt =
+            serde_json::from_value(serde_json::to_value(&fetch).unwrap()).unwrap();
+        assert_eq!(back, fetch);
     }
 }
