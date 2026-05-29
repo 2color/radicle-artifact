@@ -184,7 +184,7 @@ impl Client {
     }
 
     /// Fetch an artifact through the node, streaming progress to
-    /// `on_progress`. See [`Self::call_streaming`] for the timeout model.
+    /// `on_progress`. See `Self::call_streaming` for the timeout model.
     pub async fn fetch(
         &self,
         args: FetchArgs,
