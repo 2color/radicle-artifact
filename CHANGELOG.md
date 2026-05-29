@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ⭐️ Highlights
 
+#### A long-running node for reliable seeding
+
+Peer-to-peer seeding used to mean keeping a one-shot `serve` command running in a terminal, but this was mired with many limitation: you couldn't seed more than one artifact at a time. Moreover, seeding worked only as long as the process.
+
+This release replaces that with a real background node:
+
+```sh
+$ rad-artifact node start
+Node started (socket: /Users/you/.radicle/artifacts/control.sock)
+
+$ rad-artifact seed ./dist/linux-amd64.tar.gz
+Seeded bafkr4id5wrvsbpcw5hbdpcosgyzxt75hosqzj544v6mavnaxmjkypatgme (12.4 MiB, new tagged)
+Added radiroh location to release abc1234
+```
+
+The node starts once, detaches from your terminal, and keeps serving across shell exits and terminal closes. It holds a persistent iroh-blobs store on disk, so restarts don't re-import or re-hash anything you're already seeding. Check on it with `rad-artifact node status` (endpoint id, seeded count, disk, traffic), `rad-artifact node list`, and `rad-artifact node logs --follow`; stop it cleanly with `rad-artifact node stop`, which lets in-flight transfers drain before exiting.
+
+Together this means your published artifacts stay reachable peer-to-peer without you babysitting a foreground process.
+
+#### 🌱 `seed` / `unseed`, with automatic cleanup
+
+`serve` is renamed to `seed`, with a matching `unseed`, available both under `rad-artifact node …` and as top-level `rad-artifact seed` / `unseed`. `seed <PATH>` computes the CID, hands the bytes to the node, and registers a `radiroh://` location on the release in one step; `unseed <CID>` stops seeding and retracts your `radiroh://` locations. The node also runs periodic blob garbage collection, so space from unseeded artifacts is reclaimed automatically rather than growing without bound.
+
+#### 🤝 Keep your locations honest with `reconcile`
+
+`rad-artifact reconcile` brings the artifact COB back in line with what your node is actually seeding. It auto-adds missing `radiroh://` locations for artifacts you're serving, flags drift in the other direction (locations you left behind, stale endpoint ids) without deleting anything until you ask, and reports **dangling tags** — CIDs the node is seeding that no release references. Pass `--remove-orphaned <CID>` or `--remove-orphaned-self` to prune explicitly, and `--all-repos` to sweep everything at once. This is also the supported one-run migration off the legacy `iroh://` scheme (see below).
+
+#### Fetching now goes through the node - groundwork for desktop
+
+`fetch` no longer spins up a throwaway iroh endpoint of its own; it routes through the running node over a typed control-socket protocol, reusing the node's persistent store and connections. The same protocol exposes `has`, `fetch`, and `export` operations with streaming progress. Beyond making fetches faster and more reliable, this establishes the node as the single long-lived process that future clients — including the planned Radicle desktop integration — can talk to over a stable local interface, rather than each shelling out to the CLI.
+
 #### Rename the location URL scheme to `radiroh://`
 
 The peer-to-peer location scheme is renamed from the invented, unowned `iroh://` to the Radicle-namespaced `radiroh://` (rad issue b93d542). Radicle owns this namespace, so we can specify what the URL means — both peer discovery and the iroh-blobs transfer protocol — without colliding with the iroh project. See [docs/uri-scheme.md](docs/uri-scheme.md) for the grammar.
