@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use cid::Cid;
 use indicatif::{ProgressBar, ProgressStyle};
+use iroh_blobs::api::blobs::{AddPathOptions, ImportMode as IrohImportMode};
 use iroh_blobs::api::downloader::{DownloadProgressItem, Downloader, Shuffled};
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::store::fs::FsStore;
@@ -293,6 +294,71 @@ pub(crate) async fn export_collection_to(
         });
     }
     Ok(total)
+}
+
+/// Download an HTTP(S) blob into `store`, verifying it matches `expected`.
+///
+/// Routes HTTP content through the store (rather than straight to disk) so
+/// an HTTP-fetched blob becomes a first-class, seedable blob — identical to
+/// one fetched over iroh. ureq is blocking, so the network read runs on a
+/// blocking thread; the file is then imported (copied) into the store and
+/// its hash checked against the CID. Blob-only: collections require iroh.
+///
+/// The returned bytes are protected only by the import's temp tag, which is
+/// dropped here — the caller must already hold a tag covering the expected
+/// hash (it does: the fetch handler tags before downloading).
+pub(crate) async fn http_to_store(
+    store: &FsStore,
+    url: &Url,
+    expected: &Cid,
+    mut on_progress: impl FnMut(FetchProgress),
+) -> Result<Hash, Error> {
+    on_progress(FetchProgress::Connecting);
+    let expected_hash = cid_utils::cid_to_blake3_hash(expected)?;
+    let tmp = std::env::temp_dir().join(format!(".rad-artifact-http-{}", expected_hash.to_hex()));
+
+    // ureq is blocking; download to a temp file off the async runtime.
+    let url_owned = url.clone();
+    let tmp_dl = tmp.clone();
+    let downloaded = tokio::task::spawn_blocking(move || -> Result<(), Error> {
+        let agent = http_agent();
+        let file = std::fs::File::create(&tmp_dl).map_err(Error::Io)?;
+        let mut writer = BufWriter::new(file);
+        fetch_http(&agent, &url_owned, &mut writer)?;
+        writer.flush().map_err(Error::Io)
+    })
+    .await
+    .map_err(|e| Error::Iroh(format!("http download task: {e}")))?;
+    if let Err(e) = downloaded {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    on_progress(FetchProgress::Downloading {
+        offset: size,
+        total: Some(size),
+    });
+
+    // Import the file into the store (copy), then verify the hash.
+    let import = store
+        .add_path_with_opts(AddPathOptions {
+            path: tmp.clone(),
+            format: BlobFormat::Raw,
+            mode: IrohImportMode::Copy,
+        })
+        .temp_tag()
+        .await;
+    let _ = std::fs::remove_file(&tmp);
+    let tt = import.map_err(|e| Error::Iroh(format!("import http blob: {e}")))?;
+    let hash = tt.hash();
+    if hash != expected_hash {
+        let actual = cid_utils::blake3_hash_to_cid(hash, ArtifactKind::Blob);
+        return Err(Error::CidMismatch {
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        });
+    }
+    Ok(hash)
 }
 
 /// What to write to disk after the iroh download completes.
