@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use cid::Cid;
-use iroh_blobs::api::blobs::{AddPathOptions, ImportMode as IrohImportMode};
+use iroh_blobs::api::blobs::{AddPathOptions, ExportProgressItem, ImportMode as IrohImportMode};
 use iroh_blobs::api::downloader::{DownloadProgressItem, Downloader, Shuffled};
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::store::fs::FsStore;
@@ -208,6 +208,11 @@ impl Drop for ScopedPath {
     }
 }
 
+/// How often [`http_to_store`] emits a `Downloading` frame while the
+/// blocking body transfer runs — frequent enough for responsive progress
+/// and to keep the caller's idle timer alive on large blobs.
+const HTTP_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Hidden sibling of `dest` used as the staging path for an atomic export:
 /// `.<name>.rad-partial` in the same directory, so renaming it onto `dest`
 /// is a same-filesystem move. Distinct suffix (not a replaced extension) so
@@ -224,13 +229,52 @@ fn partial_sibling(dest: &Path) -> PathBuf {
     }
 }
 
+/// Export one blob to `target`, forwarding byte progress as
+/// [`FetchProgress::Exporting`] frames so a long copy keeps the caller's
+/// idle timer alive. `entry` names the collection member (None for a single
+/// blob). Returns the blob size.
+///
+/// Copy-on-write filesystems complete instantly and emit no
+/// `CopyProgress` (so no intermediate frames), which is fine — there is no
+/// slow window to report. A plain cross-filesystem copy does emit them.
+async fn export_streamed(
+    store: &FsStore,
+    hash: Hash,
+    target: &Path,
+    entry: Option<&str>,
+    on_progress: &mut impl FnMut(FetchProgress),
+) -> Result<u64, Error> {
+    let mut stream = store.blobs().export(hash, target).stream().await;
+    let mut size: Option<u64> = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            ExportProgressItem::Size(s) => size = Some(s),
+            ExportProgressItem::CopyProgress(offset) => on_progress(FetchProgress::Exporting {
+                offset,
+                total: size,
+                entry: entry.map(str::to_owned),
+            }),
+            ExportProgressItem::Done => {}
+            ExportProgressItem::Error(e) => return Err(Error::Iroh(format!("export: {e}"))),
+        }
+    }
+    let bytes = size.unwrap_or_else(|| std::fs::metadata(target).map(|m| m.len()).unwrap_or(0));
+    // Always emit a terminal frame for this entry so completion is visible
+    // even when the copy was instant (no CopyProgress events).
+    on_progress(FetchProgress::Exporting {
+        offset: bytes,
+        total: Some(bytes),
+        entry: entry.map(str::to_owned),
+    });
+    Ok(bytes)
+}
+
 /// Export a single blob from `store` to `dest`, atomically.
 ///
 /// Writes to a sibling staging file and renames on success, so a kill or
 /// cancellation mid-export never leaves a truncated file at `dest`. The
 /// staging file is removed on every exit path (including future-drop and
-/// a failed rename). Returns the bytes written and emits one
-/// [`FetchProgress::Exporting`] frame.
+/// a failed rename). Returns the bytes written and streams progress.
 pub(crate) async fn export_blob_to(
     store: &FsStore,
     hash: Hash,
@@ -239,18 +283,8 @@ pub(crate) async fn export_blob_to(
 ) -> Result<u64, Error> {
     let tmp = partial_sibling(dest);
     let _tmp = ScopedPath(tmp.clone());
-    store
-        .blobs()
-        .export(hash, &tmp)
-        .await
-        .map_err(|e| Error::Iroh(format!("export: {e}")))?;
+    let bytes = export_streamed(store, hash, &tmp, None, &mut on_progress).await?;
     std::fs::rename(&tmp, dest).map_err(Error::Io)?;
-    let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-    on_progress(FetchProgress::Exporting {
-        offset: bytes,
-        total: Some(bytes),
-        entry: None,
-    });
     Ok(bytes)
 }
 
@@ -304,18 +338,17 @@ async fn export_members(
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(Error::Io)?;
         }
-        store
-            .blobs()
-            .export(*entry_hash, &target)
-            .await
-            .map_err(|e| Error::Iroh(format!("export '{name}': {e}")))?;
-        let bytes = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        let name_ref: &str = name;
+        let bytes = export_streamed(
+            store,
+            *entry_hash,
+            &target,
+            Some(name_ref),
+            &mut on_progress,
+        )
+        .await
+        .map_err(|e| Error::Iroh(format!("export '{name}': {e}")))?;
         total = total.saturating_add(bytes);
-        on_progress(FetchProgress::Exporting {
-            offset: total,
-            total: None,
-            entry: Some(name.to_string()),
-        });
     }
     Ok(total)
 }
@@ -348,17 +381,23 @@ fn safe_join(base: &Path, name: &str) -> Option<PathBuf> {
 /// dropped here — the caller must already hold a tag covering the expected
 /// hash (it does: the fetch handler tags before downloading).
 ///
+/// While the body transfers, `Downloading` frames are emitted from the
+/// async side every [`HTTP_PROGRESS_INTERVAL`] (offset = the temp file's
+/// current size), keeping the caller's idle timer alive on large blobs. The
+/// caller emits the initial `Connecting` frame.
+///
 /// Cancellation note: the blocking download cannot be aborted mid-flight
 /// (dropping a `spawn_blocking` handle detaches the thread), so on a client
 /// disconnect the transfer runs to its bounded end. The temp file is always
-/// cleaned up via [`ScopedPath`], so no stray file is leaked.
+/// cleaned up via [`ScopedPath`], so no stray file is leaked. A stalled body
+/// keeps emitting frames (the file size stops growing), so an HTTP stall is
+/// not surfaced as an idle timeout — HTTP has no body-stall bound anyway.
 pub(crate) async fn http_to_store(
     store: &FsStore,
     url: &Url,
     expected: &Cid,
     mut on_progress: impl FnMut(FetchProgress),
 ) -> Result<Hash, Error> {
-    on_progress(FetchProgress::Connecting);
     let expected_hash = cid_utils::cid_to_blake3_hash(expected)?;
     // Per-operation unique temp name: process id + a monotonic counter so
     // concurrent fetches of the same CID don't share (and clobber) a path.
@@ -371,24 +410,28 @@ pub(crate) async fn http_to_store(
     ));
     let _tmp = ScopedPath(tmp.clone());
 
-    // ureq is blocking; download to a temp file off the async runtime.
+    // ureq is blocking; run the download off the async runtime and report
+    // progress from here by polling the temp file's size on an interval.
     let url_owned = url.clone();
     let tmp_dl = tmp.clone();
-    let downloaded = tokio::task::spawn_blocking(move || -> Result<(), Error> {
+    let download = tokio::task::spawn_blocking(move || -> Result<(), Error> {
         let agent = http_agent();
         let file = std::fs::File::create(&tmp_dl).map_err(Error::Io)?;
         let mut writer = BufWriter::new(file);
         fetch_http(&agent, &url_owned, &mut writer)?;
         writer.flush().map_err(Error::Io)
-    })
-    .await
-    .map_err(|e| Error::Iroh(format!("http download task: {e}")))?;
-    downloaded?;
-    let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
-    on_progress(FetchProgress::Downloading {
-        offset: size,
-        total: Some(size),
     });
+    tokio::pin!(download);
+    let joined = loop {
+        tokio::select! {
+            res = &mut download => break res,
+            _ = tokio::time::sleep(HTTP_PROGRESS_INTERVAL) => {
+                let offset = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+                on_progress(FetchProgress::Downloading { offset, total: None });
+            }
+        }
+    };
+    joined.map_err(|e| Error::Iroh(format!("http download task: {e}")))??;
 
     // Import the file into the store (copy), then verify the hash.
     let tt = store
