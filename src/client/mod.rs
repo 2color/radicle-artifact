@@ -16,7 +16,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use crate::protocol::{
-    Command, CommandError, CommandResult, ImportMode, SeedReceipt, SeededEntry, Status,
+    Command, CommandError, CommandResult, ExportReceipt, FetchLocation, FetchProgress,
+    FetchReceipt, HasResult, ImportMode, SeedReceipt, SeededEntry, Status, StreamEvent,
     UnseedReceipt,
 };
 use crate::share::cid_utils::ArtifactKind;
@@ -176,6 +177,127 @@ impl Client {
     pub async fn shutdown(&self) -> Result<(), ClientError> {
         self.call(&Command::Shutdown, DEFAULT_TIMEOUT).await
     }
+
+    /// Whether the node holds complete (or partial) bytes for `cid`.
+    pub async fn has(&self, cid: Cid) -> Result<HasResult, ClientError> {
+        self.call(&Command::Has { cid }, DEFAULT_TIMEOUT).await
+    }
+
+    /// Fetch an artifact through the node, streaming progress to
+    /// `on_progress`. See [`Self::call_streaming`] for the timeout model.
+    pub async fn fetch(
+        &self,
+        args: FetchArgs,
+        idle: Duration,
+        on_progress: impl FnMut(&FetchProgress),
+    ) -> Result<FetchReceipt, ClientError> {
+        let cmd = Command::Fetch {
+            rid: args.rid,
+            cid: args.cid,
+            locations: args.locations,
+            dest: args.dest,
+            seed: args.seed,
+        };
+        self.call_streaming(&cmd, idle, on_progress).await
+    }
+
+    /// Export already-local bytes to `dest`, streaming progress.
+    pub async fn export(
+        &self,
+        cid: Cid,
+        dest: PathBuf,
+        idle: Duration,
+        on_progress: impl FnMut(&FetchProgress),
+    ) -> Result<ExportReceipt, ClientError> {
+        self.call_streaming(&Command::Export { cid, dest }, idle, on_progress)
+            .await
+    }
+
+    /// Drive a streaming command: read frames until the terminal one,
+    /// invoking `on_progress` per progress frame and returning the terminal
+    /// payload.
+    ///
+    /// `idle` bounds the wait for *each* frame (reset on every frame),
+    /// not the whole transfer — a download that keeps making progress
+    /// never times out, but a stall longer than `idle` does.
+    async fn call_streaming<T>(
+        &self,
+        cmd: &Command,
+        idle: Duration,
+        mut on_progress: impl FnMut(&FetchProgress),
+    ) -> Result<T, ClientError>
+    where
+        T: DeserializeOwned,
+    {
+        let stream = UnixStream::connect(&self.socket).await?;
+        let (read, mut write) = stream.into_split();
+
+        let mut line = serde_json::to_string(cmd)?;
+        line.push('\n');
+        write.write_all(line.as_bytes()).await?;
+        write.flush().await?;
+
+        let mut reader = BufReader::new(read);
+        loop {
+            let mut buf = String::new();
+            let n = match tokio::time::timeout(idle, reader.read_line(&mut buf)).await {
+                Ok(res) => res?,
+                Err(_) => return Err(ClientError::Timeout(idle)),
+            };
+            if n == 0 {
+                return Err(ClientError::Eof);
+            }
+            match serde_json::from_str::<StreamEvent<T>>(buf.trim_end())? {
+                StreamEvent::Progress(p) => on_progress(&p),
+                StreamEvent::Okay(v) => return Ok(v),
+                StreamEvent::Error(e) => return Err(ClientError::Remote(e)),
+            }
+        }
+    }
+
+    /// Blocking variant of [`Self::fetch`] for synchronous callers (CLI).
+    pub fn fetch_blocking(
+        &self,
+        args: FetchArgs,
+        idle: Duration,
+        on_progress: impl FnMut(&FetchProgress),
+    ) -> Result<FetchReceipt, ClientError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(ClientError::Io)?;
+        rt.block_on(self.fetch(args, idle, on_progress))
+    }
+
+    /// Blocking variant of [`Self::export`] for synchronous callers (CLI).
+    pub fn export_blocking(
+        &self,
+        cid: Cid,
+        dest: PathBuf,
+        idle: Duration,
+        on_progress: impl FnMut(&FetchProgress),
+    ) -> Result<ExportReceipt, ClientError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(ClientError::Io)?;
+        rt.block_on(self.export(cid, dest, idle, on_progress))
+    }
+}
+
+/// Arguments for [`Client::fetch`]; mirrors [`Command::Fetch`].
+#[derive(Debug, Clone)]
+pub struct FetchArgs {
+    /// Repository the artifact belongs to (for the seeded tag).
+    pub rid: RepoId,
+    /// Content identifier to fetch.
+    pub cid: Cid,
+    /// Resolved providers/URLs to try.
+    pub locations: Vec<FetchLocation>,
+    /// Destination path.
+    pub dest: PathBuf,
+    /// Whether to tag the artifact as seeded after fetching.
+    pub seed: bool,
 }
 
 /// Failure modes when calling the node.
@@ -196,4 +318,89 @@ pub enum ClientError {
     /// Structured error returned by the node.
     #[error("node error: {0:?}: {message}", message = .0.message)]
     Remote(CommandError),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::seeder::ARTIFACTS_DIR;
+    use crate::share::cid_utils::{self, ArtifactKind};
+
+    /// Exercise the streaming client reader (`has`, `export`, `fetch`)
+    /// end-to-end against a real node.
+    #[test]
+    fn streaming_methods_round_trip() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let home = tempfile::tempdir().unwrap();
+            let payload = b"hello client streaming";
+            let blob_path = home.path().join("payload.bin");
+            std::fs::write(&blob_path, payload).unwrap();
+            let cid = cid_utils::compute_blob_cid(&blob_path).unwrap();
+            let rid = RepoId::from_str("rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip").unwrap();
+
+            let secret = iroh::SecretKey::from_bytes(&[8u8; 32]);
+            let home_path = home.path().to_path_buf();
+            let node = tokio::spawn(async move { crate::node::run(&home_path, secret).await });
+
+            let socket = home.path().join(ARTIFACTS_DIR).join("control.sock");
+            for _ in 0..200 {
+                if socket.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(socket.exists());
+
+            let client = Client::new(socket);
+            client
+                .seed(rid, cid, &blob_path, ArtifactKind::Blob, ImportMode::Copy)
+                .await
+                .unwrap();
+
+            // has
+            let h = client.has(cid).await.unwrap();
+            assert!(h.present && h.complete);
+            assert_eq!(h.bytes, payload.len() as u64);
+
+            // export streams to disk; count the progress frames.
+            let dest = home.path().join("exported.bin");
+            let mut progress = 0;
+            let receipt = client
+                .export(cid, dest.clone(), Duration::from_secs(30), |_| {
+                    progress += 1
+                })
+                .await
+                .unwrap();
+            assert_eq!(receipt.bytes, payload.len() as u64);
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+            assert!(progress >= 1, "expected at least one progress frame");
+
+            // fetch fast-path: already local, no locations.
+            let fetched = client
+                .fetch(
+                    FetchArgs {
+                        rid,
+                        cid,
+                        locations: vec![],
+                        dest: home.path().join("fetched.bin"),
+                        seed: false,
+                    },
+                    Duration::from_secs(30),
+                    |_| {},
+                )
+                .await
+                .unwrap();
+            assert!(fetched.from_cache);
+            assert_eq!(fetched.bytes, payload.len() as u64);
+
+            client.shutdown().await.unwrap();
+            node.await.unwrap().unwrap();
+        });
+    }
 }
