@@ -259,6 +259,7 @@ pub enum ErrorCode {
 }
 
 /// Successful result of [`Command::Seed`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeedReceipt {
     /// Echo of the requested repository.
@@ -276,6 +277,7 @@ pub struct SeedReceipt {
 }
 
 /// Successful result of [`Command::Unseed`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnseedReceipt {
     /// Echo of the requested repository.
@@ -288,6 +290,7 @@ pub struct UnseedReceipt {
 }
 
 /// One entry returned by [`Command::ListSeeded`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeededEntry {
     /// Content identifier currently tagged under the requested rid.
@@ -369,6 +372,7 @@ pub struct Status {
 }
 
 /// Aggregated `seeded/{rid}/{cid}` tag stats across all repos.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeededStats {
     /// Number of tagged `(rid, cid)` pairs.
@@ -378,6 +382,7 @@ pub struct SeededStats {
 }
 
 /// Disk usage for the store backing this node.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiskStats {
     /// Total bytes on disk under `<home>/artifacts/store/`. Includes db
@@ -388,6 +393,7 @@ pub struct DiskStats {
 }
 
 /// QUIC connection counters from iroh's socket metrics.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionStats {
     /// Currently open connections (`opened_total - closed_total`).
@@ -409,6 +415,7 @@ pub struct ConnectionStats {
 /// Bytes-on-the-wire counters from iroh's socket metrics. See the design
 /// doc for the disco-vs-data semantics — `out_bytes` includes disco
 /// frames, `in_bytes` excludes them.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrafficStats {
     /// Bytes sent across ipv4/ipv6/relay (includes disco).
@@ -418,6 +425,7 @@ pub struct TrafficStats {
 }
 
 /// Soft warnings surfaced in `Status`.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Warnings {
     /// Count of COB locations under our DID whose endpoint id does not
