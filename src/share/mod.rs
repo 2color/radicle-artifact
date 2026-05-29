@@ -7,17 +7,11 @@
 //!
 //! This module is available when the `share` feature is enabled (default).
 //!
-//! # Sync/async design
-//!
-//! The fetch entry points [`download`] and [`download_collection`] are
-//! **synchronous**. Each call creates an ephemeral `tokio::Runtime`, a
-//! single `iroh::Endpoint` shared across all iroh providers, and a
-//! temporary blob store — torn down before the function returns. This is
-//! intended for CLI tools that perform isolated, one-shot fetches.
-//!
-//! Applications with a long-lived async runtime and persistent iroh endpoint
-//! (e.g. a Tauri desktop app) should use `iroh_blobs::api::downloader::Downloader`
-//! directly instead of these functions.
+//! Blob I/O is owned by the node: fetching, exporting, and HTTP downloads
+//! all run against its persistent store and shared endpoint. The async
+//! building blocks live in [`fetch`] (`download_iroh_to_store`,
+//! `http_to_store`, the export helpers); the node's handlers and the CLI
+//! (via the control socket) are the only callers.
 
 use std::io;
 
@@ -32,7 +26,6 @@ pub use cid_utils::{
     compute_content_id, verify_cid_file, ArtifactKind, BLAKE3_HASHSEQ_CODEC, HASH_CODE_BLAKE3,
     RAW_CODEC,
 };
-pub use fetch::{download, download_collection, Location};
 pub use iroh::EndpointConfig;
 
 /// Errors from sharing operations.
