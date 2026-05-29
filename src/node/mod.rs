@@ -25,7 +25,7 @@ use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::HashAndFormat;
 use radicle::identity::RepoId;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{broadcast, mpsc};
@@ -246,15 +246,30 @@ async fn handle_connection(
     }
 
     match parse_command(line.trim_end()) {
-        // Streaming commands write their own frames directly.
-        Ok(Command::Export { cid, dest }) => stream_export(ctx, &mut write, cid, dest).await,
+        // Streaming commands write their own frames directly. They also get
+        // the read half to watch for client disconnect during silent phases.
+        Ok(Command::Export { cid, dest }) => {
+            stream_export(ctx, &mut reader, &mut write, cid, dest).await
+        }
         Ok(Command::Fetch {
             rid,
             cid,
             locations,
             dest,
             seed,
-        }) => stream_fetch(ctx, &mut write, rid, cid, locations, dest, seed).await,
+        }) => {
+            stream_fetch(
+                ctx,
+                &mut reader,
+                &mut write,
+                rid,
+                cid,
+                locations,
+                dest,
+                seed,
+            )
+            .await
+        }
         // One-shot commands return a single JSON line.
         Ok(cmd) => write_line(&mut write, dispatch(cmd, ctx, shutdown_tx).await).await,
         Err((code, msg)) => write_line(&mut write, err_json::<()>(code, msg)).await,
@@ -392,11 +407,14 @@ async fn stream_error<T: serde::Serialize>(
 /// Drive a streaming operation: forward `FetchProgress` frames as they
 /// arrive on the channel, then write the terminal okay/error frame.
 ///
-/// If a frame write fails (client disconnected), the error propagates and
-/// `op` is dropped — aborting the in-flight download/export. This is the
-/// disconnect-to-abort wiring: nothing long-running is left orphaned.
-async fn run_stream<W, T, F, Fut>(write: &mut W, op: F) -> io::Result<()>
+/// Disconnect-to-abort works two ways, so a vanished client never leaves
+/// `op` running: a failed frame write propagates its error, and `read` is
+/// polled for EOF (or any unexpected inbound byte) even during silent
+/// phases that emit no frames (a long export or HTTP body). Either path
+/// returns, dropping `op` and aborting the in-flight download/export.
+async fn run_stream<R, W, T, F, Fut>(read: &mut R, write: &mut W, op: F) -> io::Result<()>
 where
+    R: AsyncReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
     T: serde::Serialize,
     F: FnOnce(mpsc::UnboundedSender<FetchProgress>) -> Fut,
@@ -405,12 +423,10 @@ where
     let (tx, mut rx) = mpsc::unbounded_channel::<FetchProgress>();
     let fut = op(tx);
     tokio::pin!(fut);
+    let mut probe = [0u8; 1];
     loop {
         tokio::select! {
             biased;
-            Some(p) = rx.recv() => {
-                write_frame(write, &StreamEvent::<T>::Progress(p)).await?;
-            }
             res = &mut fut => {
                 // Flush any progress buffered before completion.
                 while let Ok(p) = rx.try_recv() {
@@ -422,6 +438,16 @@ where
                 };
                 return write_frame(write, &event).await;
             }
+            Some(p) = rx.recv() => {
+                write_frame(write, &StreamEvent::<T>::Progress(p)).await?;
+            }
+            // The client should stay silent until the terminal frame; a read
+            // readiness means it closed (EOF) or went away. Stop and drop
+            // `op`. read() is cancel-safe here: with no inbound bytes it just
+            // stays pending, so being dropped by another arm loses nothing.
+            _ = read.read(&mut probe) => {
+                return Ok(());
+            }
         }
     }
 }
@@ -430,6 +456,7 @@ where
 /// if the content isn't complete in the store.
 async fn stream_export(
     ctx: &NodeCtx,
+    read: &mut (impl AsyncReadExt + Unpin),
     write: &mut (impl AsyncWriteExt + Unpin),
     cid: Cid,
     dest: PathBuf,
@@ -468,7 +495,7 @@ async fn stream_export(
         }
     }
 
-    run_stream(write, move |tx| async move {
+    run_stream(read, write, move |tx| async move {
         let on_progress = move |p| {
             let _ = tx.send(p);
         };
@@ -525,6 +552,7 @@ async fn export_to_dest(
 #[allow(clippy::too_many_arguments)]
 async fn stream_fetch(
     ctx: &NodeCtx,
+    read: &mut (impl AsyncReadExt + Unpin),
     write: &mut (impl AsyncWriteExt + Unpin),
     rid: RepoId,
     cid: Cid,
@@ -546,7 +574,7 @@ async fn stream_fetch(
     let hash = haf.hash;
     let endpoint_id = ctx.endpoint_id;
 
-    run_stream(write, move |tx| async move {
+    run_stream(read, write, move |tx| async move {
         let mut on_progress = move |p| {
             let _ = tx.send(p);
         };
