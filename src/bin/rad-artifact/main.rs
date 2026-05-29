@@ -20,6 +20,8 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
+use radicle_artifact::client::{Client, FetchArgs};
+use radicle_artifact::protocol::{FetchLocation, FetchProgress};
 use radicle_artifact::share;
 use radicle_artifact::share::keys::EndpointId;
 use radicle_artifact::*;
@@ -29,6 +31,11 @@ mod node;
 mod reconcile;
 
 const TIMEOUT: Duration = Duration::from_millis(5000);
+
+/// Per-frame idle bound for a streaming fetch. Larger than the node's own
+/// download idle timeout so the node's "no progress" error reaches us
+/// before this client-side cap fires.
+const FETCH_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn main() {
     if let Err(err) = fallible_main() {
@@ -1047,7 +1054,7 @@ fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
 fn run_fetch(
     args: command::Fetch,
     no_input: bool,
-    _profile: &Profile,
+    profile: &Profile,
     releases: &Releases<Repository>,
     repo: &Repository,
 ) -> Result<(), RadArtifactError> {
@@ -1116,8 +1123,12 @@ fn run_fetch(
 
     eprintln!("Artifact: {} (CID: {cid})", artifact.name());
 
+    // Release to announce a `--seed` location into (the one matching the
+    // requested revision, else any containing the CID).
+    let primary_id = primary.0;
+
     let locations = if let Some(ref url) = args.url {
-        vec![share::Location::Url(url)]
+        vec![FetchLocation::Url(url.clone())]
     } else {
         let artifacts = matching.iter().filter_map(|(_, r)| r.artifact(&cid));
         artifact_locations(artifacts)?
@@ -1126,14 +1137,14 @@ fn run_fetch(
     if locations.is_empty() {
         return Err(error::Share::NoLocationsForCid { cid }.into());
     }
-    // `Location::Url` covers any URL scheme (https, ipfs, legacy iroh, …),
-    // so label the bucket "url" rather than implying they're all https.
+    // `FetchLocation::Url` covers any URL scheme (https, ipfs, …), so label
+    // the bucket "url" rather than implying they're all https.
     let (url_count, iroh_count) =
         locations
             .iter()
             .fold((0usize, 0usize), |(u, i), loc| match loc {
-                share::Location::Url(_) => (u + 1, i),
-                share::Location::Iroh(_) => (u, i + 1),
+                FetchLocation::Url(_) => (u + 1, i),
+                FetchLocation::Iroh(_) => (u, i + 1),
             });
     eprintln!(
         "Trying {} location{} ({url_count} url, {iroh_count} iroh)...",
@@ -1146,18 +1157,53 @@ fn run_fetch(
         std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_")))
     });
 
-    let preset = share::EndpointConfig::from_env().map_err(error::Share::Protocol)?;
-    let kind = share::artifact_kind(&cid).map_err(error::Share::Protocol)?;
+    // Route the fetch through the local node, which owns the store and all
+    // blob I/O. A missing node surfaces as `node::Error::NotRunning`.
+    let client = Client::new(Client::default_socket(profile.home.path()));
+    let fetch_args = FetchArgs {
+        rid: repo.id,
+        cid,
+        locations,
+        dest: output_path.clone(),
+        seed: args.seed,
+    };
 
-    match kind {
-        share::ArtifactKind::Blob => {
-            share::download(&locations, &cid, &output_path, &preset)
-                .map_err(error::Share::Protocol)?;
-        }
-        share::ArtifactKind::Collection => {
-            share::download_collection(&locations, &cid, &output_path, &preset)
-                .map_err(error::Share::Protocol)?;
-        }
+    let pb = indicatif::ProgressBar::new_spinner();
+    pb.enable_steady_tick(Duration::from_millis(250));
+    pb.set_style(
+        indicatif::ProgressStyle::with_template(
+            "{spinner:.green} {msg} {bytes} ({binary_bytes_per_sec})",
+        )
+        .unwrap(),
+    );
+    let receipt = client
+        .fetch_blocking(fetch_args, FETCH_IDLE_TIMEOUT, |p| match p {
+            FetchProgress::Connecting => pb.set_message("connecting"),
+            FetchProgress::TryingProvider { endpoint_id } => {
+                pb.set_message(format!("trying {endpoint_id}"))
+            }
+            FetchProgress::Downloading { offset, .. } => pb.set_position(*offset),
+            FetchProgress::Exporting { .. } => pb.set_message("exporting"),
+            _ => {}
+        })
+        .map_err(node::client_err)?;
+    pb.finish_and_clear();
+
+    // On --seed, the node now serves the bytes; announce a discoverable
+    // location with a signed COB write (the node writes no COBs itself).
+    if args.seed && receipt.seeded {
+        let mut releases_mut = open_releases(repo)?;
+        let signer = profile
+            .signer()
+            .map_err(|e| error::Share::Usage(format!("signer: {e}")))?;
+        let url = receipt.endpoint_id.to_url();
+        let mut release_mut = releases_mut
+            .get_mut(&primary_id)
+            .map_err(|e| error::Share::Usage(format!("open release {primary_id}: {e}")))?;
+        release_mut
+            .add_location(cid, url, &signer)
+            .map_err(|e| error::Share::Usage(format!("announce location: {e}")))?;
+        eprintln!("Now seeding {cid}; announced location to release {primary_id}");
     }
 
     eprintln!("Saved to {}", output_path.display());
@@ -1200,7 +1246,7 @@ fn run_unseed(
 /// stderr so that one bad entry doesn't sink an otherwise-fetchable artifact.
 fn artifact_locations<'a>(
     artifacts: impl IntoIterator<Item = &'a Artifact>,
-) -> Result<Vec<share::Location<'a>>, RadArtifactError> {
+) -> Result<Vec<FetchLocation>, RadArtifactError> {
     let mut seen_urls: BTreeSet<&url::Url> = BTreeSet::new();
     let mut seen_iroh: BTreeSet<EndpointId> = BTreeSet::new();
     let mut locations = Vec::new();
@@ -1217,10 +1263,10 @@ fn artifact_locations<'a>(
                         }
                     };
                     if seen_iroh.insert(endpoint_id) {
-                        locations.push(share::Location::Iroh(endpoint_id));
+                        locations.push(FetchLocation::Iroh(endpoint_id));
                     }
                 } else if seen_urls.insert(url) {
-                    locations.push(share::Location::Url(url));
+                    locations.push(FetchLocation::Url(url.clone()));
                 }
             }
         }
@@ -1979,6 +2025,10 @@ Examples:
         /// Fetch from this URL directly, skipping registered locations.
         #[clap(long)]
         pub url: Option<url::Url>,
+        /// After fetching, keep seeding the artifact and announce a
+        /// `radiroh://` location under your DID so others can fetch it.
+        #[clap(long)]
+        pub seed: bool,
     }
 
     /// Alias for `rad-artifact node seed`.
