@@ -2,10 +2,10 @@
 //!
 //! These are the building blocks the node's `Fetch`/`Export` handlers call
 //! against their persistent [`FsStore`] and shared
-//! [`Downloader`](iroh_blobs::api::downloader::Downloader): a multi-provider
-//! iroh download ([`download_iroh_to_store`]), an HTTP-into-store download
-//! ([`http_to_store`], so HTTP blobs become seedable), and atomic export
-//! helpers ([`export_blob_to`], [`export_collection_to`]). None of them own
+//! [`Downloader`]: a multi-provider
+//! iroh download (`download_iroh_to_store`), an HTTP-into-store download
+//! (`http_to_store`, so HTTP blobs become seedable), and atomic export
+//! helpers (`export_blob_to`, `export_collection_to`). None of them own
 //! the endpoint, store, or runtime — the caller supplies those.
 //!
 //! Progress is reported through a [`FetchProgress`] callback so the caller
@@ -15,7 +15,7 @@
 //! Both transports bound how long an unreachable provider can tie up a
 //! fetch. HTTP sets connect and receive-response timeouts on the
 //! `ureq::Agent`; iroh applies a connect timeout on the connection pool
-//! ([`pool_options`]) and an idle-progress timeout around the Downloader
+//! (`pool_options`) and an idle-progress timeout around the Downloader
 //! stream. Mid-body HTTP stalls are intentionally not bounded — ureq 3.3
 //! only offers a total-body timeout, which would break large downloads.
 //!
