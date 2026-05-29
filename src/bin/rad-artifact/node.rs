@@ -409,7 +409,7 @@ pub(crate) fn seed_artifact(
         eprintln!("Retry with: rad-artifact seed {}", path.display());
         return Err(e);
     }
-    eprintln!("Added radiroh location to release {release_id}");
+    eprintln!("Added radiroh:// location to release {release_id}");
     Ok(())
 }
 

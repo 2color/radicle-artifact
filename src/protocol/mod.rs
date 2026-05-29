@@ -135,7 +135,7 @@ pub enum Command {
 
 /// A resolved place to fetch an artifact from.
 ///
-/// Owned and serde-friendly, unlike [`crate::share::fetch::Location`].
+/// Owned and serde-friendly, unlike the borrowed COB form (`(&Url, &Did)`).
 /// The caller resolves COB locations (including DID-derived bare
 /// `radiroh://` entries) into this concrete form; the node does no
 /// identity resolution of its own.
