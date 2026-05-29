@@ -26,6 +26,7 @@
 
 use std::io::{self, BufWriter, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use cid::Cid;
@@ -194,18 +195,50 @@ pub(crate) async fn download_iroh_to_store(
     }
 }
 
+/// Removes a path (file or directory) when dropped — best-effort cleanup
+/// that also runs if the owning future is cancelled mid-operation, so an
+/// aborted export/download leaves no stray temp file or staging directory.
+struct ScopedPath(PathBuf);
+
+impl Drop for ScopedPath {
+    fn drop(&mut self) {
+        // One of these matches the path's kind; the other is a harmless no-op.
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Hidden sibling of `dest` used as the staging path for an atomic export:
+/// `.<name>.rad-partial` in the same directory, so renaming it onto `dest`
+/// is a same-filesystem move. Distinct suffix (not a replaced extension) so
+/// it won't clobber a user file that happens to share `dest`'s stem.
+fn partial_sibling(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "artifact".to_string());
+    let staged = format!(".{name}.rad-partial");
+    match dest.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(staged),
+        _ => PathBuf::from(staged),
+    }
+}
+
 /// Export a single blob from `store` to `dest`, atomically.
 ///
-/// Writes to a sibling `.partial` file and renames on success, so a kill
-/// mid-export never leaves a truncated file at `dest`. Returns the number
-/// of bytes written and emits one [`FetchProgress::Exporting`] frame.
+/// Writes to a sibling staging file and renames on success, so a kill or
+/// cancellation mid-export never leaves a truncated file at `dest`. The
+/// staging file is removed on every exit path (including future-drop and
+/// a failed rename). Returns the bytes written and emits one
+/// [`FetchProgress::Exporting`] frame.
 pub(crate) async fn export_blob_to(
     store: &FsStore,
     hash: Hash,
     dest: &Path,
     mut on_progress: impl FnMut(FetchProgress),
 ) -> Result<u64, Error> {
-    let tmp = dest.with_extension("partial");
+    let tmp = partial_sibling(dest);
+    let _tmp = ScopedPath(tmp.clone());
     store
         .blobs()
         .export(hash, &tmp)
@@ -239,27 +272,22 @@ pub(crate) async fn export_collection_to(
         .await
         .map_err(|e| Error::Iroh(format!("load collection: {e}")))?;
 
-    let staging = staging_dir(dest_dir);
-    // Clear any leftover staging from a previously-crashed export.
+    let staging = partial_sibling(dest_dir);
+    // Clear any leftover staging from a previously-crashed export, then
+    // guard it so a cancelled export cleans up too.
     let _ = std::fs::remove_dir_all(&staging);
+    let _staging = ScopedPath(staging.clone());
     std::fs::create_dir_all(&staging).map_err(Error::Io)?;
 
-    match export_members(store, &collection, &staging, on_progress).await {
-        Ok(total) => {
-            // Swap staging into place. staging is a sibling of dest_dir, so
-            // the rename is a same-filesystem move; replace any existing
-            // destination first (rename onto a non-empty dir fails).
-            if dest_dir.exists() {
-                std::fs::remove_dir_all(dest_dir).map_err(Error::Io)?;
-            }
-            std::fs::rename(&staging, dest_dir).map_err(Error::Io)?;
-            Ok(total)
-        }
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&staging);
-            Err(e)
-        }
+    let total = export_members(store, &collection, &staging, on_progress).await?;
+    // Swap staging into place. staging is a sibling of dest_dir, so the
+    // rename is a same-filesystem move; replace any existing destination
+    // first (rename onto a non-empty dir fails).
+    if dest_dir.exists() {
+        std::fs::remove_dir_all(dest_dir).map_err(Error::Io)?;
     }
+    std::fs::rename(&staging, dest_dir).map_err(Error::Io)?;
+    Ok(total)
 }
 
 /// Export each collection member into `dir`, rejecting unsafe names.
@@ -308,21 +336,6 @@ fn safe_join(base: &Path, name: &str) -> Option<PathBuf> {
     Some(base.join(rel))
 }
 
-/// Sibling staging directory for an atomic collection export: a hidden
-/// `.<name>.rad-partial` next to `dest_dir`, so the final rename is a
-/// same-filesystem move.
-fn staging_dir(dest: &Path) -> PathBuf {
-    let name = dest
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "collection".to_string());
-    let staged = format!(".{name}.rad-partial");
-    match dest.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.join(staged),
-        _ => PathBuf::from(staged),
-    }
-}
-
 /// Download an HTTP(S) blob into `store`, verifying it matches `expected`.
 ///
 /// Routes HTTP content through the store (rather than straight to disk) so
@@ -334,6 +347,11 @@ fn staging_dir(dest: &Path) -> PathBuf {
 /// The returned bytes are protected only by the import's temp tag, which is
 /// dropped here — the caller must already hold a tag covering the expected
 /// hash (it does: the fetch handler tags before downloading).
+///
+/// Cancellation note: the blocking download cannot be aborted mid-flight
+/// (dropping a `spawn_blocking` handle detaches the thread), so on a client
+/// disconnect the transfer runs to its bounded end. The temp file is always
+/// cleaned up via [`ScopedPath`], so no stray file is leaked.
 pub(crate) async fn http_to_store(
     store: &FsStore,
     url: &Url,
@@ -342,7 +360,16 @@ pub(crate) async fn http_to_store(
 ) -> Result<Hash, Error> {
     on_progress(FetchProgress::Connecting);
     let expected_hash = cid_utils::cid_to_blake3_hash(expected)?;
-    let tmp = std::env::temp_dir().join(format!(".rad-artifact-http-{}", expected_hash.to_hex()));
+    // Per-operation unique temp name: process id + a monotonic counter so
+    // concurrent fetches of the same CID don't share (and clobber) a path.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!(
+        ".rad-artifact-http-{}-{}-{n}",
+        expected_hash.to_hex(),
+        std::process::id(),
+    ));
+    let _tmp = ScopedPath(tmp.clone());
 
     // ureq is blocking; download to a temp file off the async runtime.
     let url_owned = url.clone();
@@ -356,10 +383,7 @@ pub(crate) async fn http_to_store(
     })
     .await
     .map_err(|e| Error::Iroh(format!("http download task: {e}")))?;
-    if let Err(e) = downloaded {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
+    downloaded?;
     let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
     on_progress(FetchProgress::Downloading {
         offset: size,
@@ -367,16 +391,15 @@ pub(crate) async fn http_to_store(
     });
 
     // Import the file into the store (copy), then verify the hash.
-    let import = store
+    let tt = store
         .add_path_with_opts(AddPathOptions {
             path: tmp.clone(),
             format: BlobFormat::Raw,
             mode: IrohImportMode::Copy,
         })
         .temp_tag()
-        .await;
-    let _ = std::fs::remove_file(&tmp);
-    let tt = import.map_err(|e| Error::Iroh(format!("import http blob: {e}")))?;
+        .await
+        .map_err(|e| Error::Iroh(format!("import http blob: {e}")))?;
     let hash = tt.hash();
     if hash != expected_hash {
         let actual = cid_utils::blake3_hash_to_cid(hash, ArtifactKind::Blob);
