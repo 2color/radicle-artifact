@@ -31,16 +31,6 @@ pub use iroh::EndpointConfig;
 /// Errors from sharing operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// URL scheme not handled by any registered fetcher.
-    #[error("unsupported URL scheme: {0}")]
-    UnsupportedScheme(String),
-
-    /// HTTP location given for a collection artifact. HTTP fetch is only
-    /// implemented for single-blob artifacts; multi-file collections require
-    /// an iroh provider.
-    #[error("HTTP fetch is not supported for collection artifacts (URL: {0}); an iroh provider is required")]
-    HttpCollectionUnsupported(String),
-
     /// HTTP fetch failed.
     #[error("HTTP fetch failed: {0}")]
     Http(String),
@@ -65,22 +55,4 @@ pub enum Error {
     /// CID parsing or validation error.
     #[error("CID error: {0}")]
     Cid(String),
-
-    /// No locations registered for the artifact.
-    #[error("no locations registered for this artifact")]
-    NoLocations,
-
-    /// All fetch attempts failed.
-    #[error("all {} fetch attempt{} failed:\n{}", .0.len(), if .0.len() == 1 { "" } else { "s" }, format_attempts(.0))]
-    AllFailed(Vec<Error>),
-}
-
-/// Format each per-location error as a numbered list for [`Error::AllFailed`] display.
-fn format_attempts(errors: &[Error]) -> String {
-    errors
-        .iter()
-        .enumerate()
-        .map(|(i, e)| format!("  {}: {e}", i + 1))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
