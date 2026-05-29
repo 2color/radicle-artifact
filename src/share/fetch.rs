@@ -26,7 +26,7 @@ use iroh_blobs::api::downloader::{DownloadProgressItem, Downloader, Shuffled};
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::util::connection_pool::Options as PoolOptions;
-use iroh_blobs::{BlobFormat, HashAndFormat};
+use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
 use n0_future::StreamExt;
 use url::Url;
 
@@ -34,6 +34,7 @@ use super::cid_utils::{self, ArtifactKind};
 use super::iroh::EndpointConfig;
 use super::keys::EndpointId;
 use super::Error;
+use crate::protocol::FetchProgress;
 
 /// Per-provider connect bound. A provider that cannot establish a usable
 /// connection (HTTP TCP handshake or iroh QUIC+relay path) within this
@@ -116,48 +117,45 @@ fn blob_format_for_cid(cid: &Cid) -> Result<BlobFormat, Error> {
     }
 }
 
-/// Run a multi-provider iroh download
+/// Build a connection pool with our connect-timeout override.
+pub(crate) fn pool_options() -> PoolOptions {
+    PoolOptions {
+        connect_timeout: CONNECT_TIMEOUT,
+        ..PoolOptions::default()
+    }
+}
+
+/// Run a multi-provider iroh download into `store` using a caller-supplied
+/// [`Downloader`].
 ///
-/// One `Endpoint` and one [`Downloader`] are reused across providers, so we pay the
-/// endpoint-bind cost once and partial progress persists across providers
-/// (the second provider only supplies what the first didn't deliver).
+/// The reusable core shared by the CLI's ephemeral path and the node's
+/// persistent-store handler — it owns neither the endpoint nor the store,
+/// so partial progress persists across providers and (for the node)
+/// across fetches. Progress is reported through `on_progress`; the CLI
+/// drives a progress bar, the node forwards [`FetchProgress`] frames over
+/// the control socket.
 ///
 /// Returns per-provider errors on failure. `DownloadProgressItem::ProviderFailed`
 /// intentionally drops the underlying cause — the errors vector therefore
 /// records only which provider failed plus the final stream-level cause if
 /// the download terminates fatally.
-async fn iroh_fetch_to_store(
+pub(crate) async fn download_iroh_to_store(
+    downloader: &Downloader,
+    store: &FsStore,
     hash_and_format: HashAndFormat,
     providers: Vec<EndpointId>,
-    preset: EndpointConfig,
-    db: &FsStore,
+    mut on_progress: impl FnMut(FetchProgress),
 ) -> Result<(), Vec<Error>> {
     // Convert to iroh's bare type at the iroh-blobs API boundary.
     let providers: Vec<iroh::EndpointId> =
         providers.into_iter().map(EndpointId::into_inner).collect();
-    let endpoint = match iroh::Endpoint::builder(preset).bind().await {
-        Ok(ep) => ep,
-        Err(e) => return Err(vec![Error::Iroh(format!("endpoint bind: {e}"))]),
-    };
-
-    let pool_opts = PoolOptions {
-        connect_timeout: CONNECT_TIMEOUT,
-        ..PoolOptions::default()
-    };
-    let downloader = Downloader::new_with_opts(db.as_ref(), &endpoint, pool_opts);
-
-    let pb: ProgressBar = make_download_progress();
 
     // below we shuffle to avoid overloading a single provider, but the
     // trade-off is that we may lose freshness ordering if providers are prioritized by the caller.
     let progress = downloader.download(hash_and_format, Shuffled::new(providers));
     let mut stream = match progress.stream().await {
         Ok(s) => s,
-        Err(e) => {
-            pb.finish_and_clear();
-            endpoint.close().await;
-            return Err(vec![Error::Iroh(format!("downloader rpc: {e}"))]);
-        }
+        Err(e) => return Err(vec![Error::Iroh(format!("downloader rpc: {e}"))]),
     };
 
     let mut errors: Vec<Error> = Vec::new();
@@ -179,16 +177,22 @@ async fn iroh_fetch_to_store(
             Ok(None) => break, // Download completed!
             Ok(Some(item)) => match item {
                 DownloadProgressItem::TryProvider { id, .. } => {
-                    eprintln!("Trying iroh provider {}...", EndpointId::from(id));
+                    on_progress(FetchProgress::TryingProvider {
+                        endpoint_id: EndpointId::from(id),
+                    });
                 }
                 DownloadProgressItem::ProviderFailed { id, .. } => {
+                    let endpoint_id = EndpointId::from(id);
+                    on_progress(FetchProgress::ProviderFailed { endpoint_id });
                     errors.push(Error::Iroh(format!(
-                        "provider {}: download failed",
-                        EndpointId::from(id)
+                        "provider {endpoint_id}: download failed"
                     )));
                 }
                 DownloadProgressItem::Progress(offset) => {
-                    pb.set_position(offset);
+                    on_progress(FetchProgress::Downloading {
+                        offset,
+                        total: None,
+                    });
                     deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
                 }
                 DownloadProgressItem::PartComplete { .. } => {
@@ -205,14 +209,12 @@ async fn iroh_fetch_to_store(
             },
         }
     }
-    pb.finish_and_clear();
-    endpoint.close().await;
 
     // Trust the store: if nothing is missing, we have the content — even
     // if individual providers emitted `ProviderFailed` along the way. If
     // the completeness check itself errors, treat the attempt as failed
     // and surface the cause so it isn't silently swallowed.
-    let done = match db.remote().local(hash_and_format).await {
+    let done = match store.remote().local(hash_and_format).await {
         Ok(local) => local.is_complete(),
         Err(e) => {
             errors.push(Error::Iroh(format!("store completeness check: {e}")));
@@ -229,6 +231,70 @@ async fn iroh_fetch_to_store(
     }
 }
 
+/// Export a single blob from `store` to `dest`, atomically.
+///
+/// Writes to a sibling `.partial` file and renames on success, so a kill
+/// mid-export never leaves a truncated file at `dest`. Returns the number
+/// of bytes written and emits one [`FetchProgress::Exporting`] frame.
+pub(crate) async fn export_blob_to(
+    store: &FsStore,
+    hash: Hash,
+    dest: &Path,
+    mut on_progress: impl FnMut(FetchProgress),
+) -> Result<u64, Error> {
+    let tmp = dest.with_extension("partial");
+    store
+        .blobs()
+        .export(hash, &tmp)
+        .await
+        .map_err(|e| Error::Iroh(format!("export: {e}")))?;
+    std::fs::rename(&tmp, dest).map_err(Error::Io)?;
+    let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    on_progress(FetchProgress::Exporting {
+        offset: bytes,
+        total: Some(bytes),
+        entry: None,
+    });
+    Ok(bytes)
+}
+
+/// Export a hashseq collection from `store` under `dest_dir`.
+///
+/// Each entry is exported in turn, emitting a per-member
+/// [`FetchProgress::Exporting`] frame. Returns the total bytes written.
+/// A killed export leaves a partial directory, which a retry overwrites.
+pub(crate) async fn export_collection_to(
+    store: &FsStore,
+    hash: Hash,
+    dest_dir: &Path,
+    mut on_progress: impl FnMut(FetchProgress),
+) -> Result<u64, Error> {
+    let collection = Collection::load(hash, store.as_ref())
+        .await
+        .map_err(|e| Error::Iroh(format!("load collection: {e}")))?;
+    std::fs::create_dir_all(dest_dir).map_err(Error::Io)?;
+    let mut total = 0u64;
+    for (name, entry_hash) in collection.iter() {
+        let target = dest_dir.join(name);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(Error::Io)?;
+        }
+        store
+            .blobs()
+            .export(*entry_hash, &target)
+            .await
+            .map_err(|e| Error::Iroh(format!("export '{name}': {e}")))?;
+        let bytes = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        total = total.saturating_add(bytes);
+        on_progress(FetchProgress::Exporting {
+            offset: total,
+            total: None,
+            entry: Some(name.to_string()),
+        });
+    }
+    Ok(total)
+}
+
 /// What to write to disk after the iroh download completes.
 enum ExportTarget {
     /// Export the single raw blob to this file path.
@@ -239,10 +305,14 @@ enum ExportTarget {
 
 /// Synchronous wrapper around one iroh download attempt.
 ///
-/// Creates an ephemeral tokio runtime and on-disk store, runs the
-/// multi-provider download via [`iroh_fetch_to_store`], then performs the
-/// blob-or-collection export step described by `target`. The store and
-/// runtime are torn down before returning.
+/// Creates an ephemeral tokio runtime, endpoint, downloader, and on-disk
+/// store, runs the multi-provider download via [`download_iroh_to_store`],
+/// then exports as described by `target`. The store, endpoint, and runtime
+/// are torn down before returning.
+///
+/// This is the CLI's one-shot path; the node calls
+/// [`download_iroh_to_store`] and the export helpers directly against its
+/// persistent store and shared endpoint.
 fn run_iroh_attempt(
     cid: &Cid,
     providers: Vec<EndpointId>,
@@ -270,35 +340,44 @@ fn run_iroh_attempt(
         tokio::runtime::Runtime::new().map_err(|e| vec![Error::Iroh(format!("runtime: {e}"))])?;
     rt.block_on(async move {
         let (db, store_dir) = open_ephemeral_store(&hash).await?;
+        let endpoint = match iroh::Endpoint::builder(preset.clone()).bind().await {
+            Ok(ep) => ep,
+            Err(e) => {
+                db.shutdown().await.ok();
+                std::fs::remove_dir_all(&store_dir).ok();
+                return Err(vec![Error::Iroh(format!("endpoint bind: {e}"))]);
+            }
+        };
+        let downloader = Downloader::new_with_opts(db.as_ref(), &endpoint, pool_options());
+
+        let pb = make_download_progress();
         let result = async {
-            iroh_fetch_to_store(hash_and_format, providers, preset.clone(), &db).await?;
+            download_iroh_to_store(&downloader, &db, hash_and_format, providers, |p| match p {
+                FetchProgress::TryingProvider { endpoint_id } => {
+                    eprintln!("Trying iroh provider {endpoint_id}...");
+                }
+                FetchProgress::Downloading { offset, .. } => pb.set_position(offset),
+                _ => {}
+            })
+            .await?;
+            // Export progress is not shown on the CLI's one-shot path.
             match target {
                 ExportTarget::Blob(dest) => {
-                    db.blobs()
-                        .export(hash, dest)
+                    export_blob_to(&db, hash, &dest, |_| {})
                         .await
-                        .map_err(|e| vec![Error::Iroh(format!("export: {e}"))])?;
+                        .map_err(|e| vec![e])?;
                 }
                 ExportTarget::Collection(dest_dir) => {
-                    let collection = Collection::load(hash, db.as_ref())
+                    export_collection_to(&db, hash, &dest_dir, |_| {})
                         .await
-                        .map_err(|e| vec![Error::Iroh(format!("load collection: {e}"))])?;
-                    std::fs::create_dir_all(&dest_dir).map_err(|e| vec![Error::Io(e)])?;
-                    for (name, entry_hash) in collection.iter() {
-                        let target = dest_dir.join(name);
-                        if let Some(parent) = target.parent() {
-                            std::fs::create_dir_all(parent).map_err(|e| vec![Error::Io(e)])?;
-                        }
-                        db.blobs()
-                            .export(*entry_hash, &target)
-                            .await
-                            .map_err(|e| vec![Error::Iroh(format!("export '{name}': {e}"))])?;
-                    }
+                        .map_err(|e| vec![e])?;
                 }
             }
             Ok::<(), Vec<Error>>(())
         }
         .await;
+        pb.finish_and_clear();
+        endpoint.close().await;
         db.shutdown().await.ok();
         std::fs::remove_dir_all(&store_dir).ok();
         result
