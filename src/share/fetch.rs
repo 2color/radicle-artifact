@@ -25,7 +25,7 @@
 //! (subscriber is installed in `rad-artifact node start --foreground`).
 
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use cid::Cid;
@@ -221,24 +221,58 @@ pub(crate) async fn export_blob_to(
     Ok(bytes)
 }
 
-/// Export a hashseq collection from `store` under `dest_dir`.
+/// Export a hashseq collection from `store`, atomically.
 ///
-/// Each entry is exported in turn, emitting a per-member
-/// [`FetchProgress::Exporting`] frame. Returns the total bytes written.
-/// A killed export leaves a partial directory, which a retry overwrites.
+/// Members are written into a sibling staging directory; the whole
+/// directory is renamed onto `dest_dir` only once every member is exported,
+/// so a killed or disconnected export never leaves a partially-populated
+/// destination. Member names are sanitized — a name that is absolute or
+/// escapes the directory (a `..` component) is rejected rather than written
+/// outside `dest_dir`. Returns the total bytes written.
 pub(crate) async fn export_collection_to(
     store: &FsStore,
     hash: Hash,
     dest_dir: &Path,
-    mut on_progress: impl FnMut(FetchProgress),
+    on_progress: impl FnMut(FetchProgress),
 ) -> Result<u64, Error> {
     let collection = Collection::load(hash, store.as_ref())
         .await
         .map_err(|e| Error::Iroh(format!("load collection: {e}")))?;
-    std::fs::create_dir_all(dest_dir).map_err(Error::Io)?;
+
+    let staging = staging_dir(dest_dir);
+    // Clear any leftover staging from a previously-crashed export.
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(Error::Io)?;
+
+    match export_members(store, &collection, &staging, on_progress).await {
+        Ok(total) => {
+            // Swap staging into place. staging is a sibling of dest_dir, so
+            // the rename is a same-filesystem move; replace any existing
+            // destination first (rename onto a non-empty dir fails).
+            if dest_dir.exists() {
+                std::fs::remove_dir_all(dest_dir).map_err(Error::Io)?;
+            }
+            std::fs::rename(&staging, dest_dir).map_err(Error::Io)?;
+            Ok(total)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            Err(e)
+        }
+    }
+}
+
+/// Export each collection member into `dir`, rejecting unsafe names.
+async fn export_members(
+    store: &FsStore,
+    collection: &Collection,
+    dir: &Path,
+    mut on_progress: impl FnMut(FetchProgress),
+) -> Result<u64, Error> {
     let mut total = 0u64;
     for (name, entry_hash) in collection.iter() {
-        let target = dest_dir.join(name);
+        let target = safe_join(dir, name)
+            .ok_or_else(|| Error::Iroh(format!("unsafe collection member name: {name:?}")))?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(Error::Io)?;
         }
@@ -256,6 +290,37 @@ pub(crate) async fn export_collection_to(
         });
     }
     Ok(total)
+}
+
+/// Join `name` under `base`, returning `None` when the name is absolute or
+/// would escape `base` (a root, prefix, or `..` component). Normal nested
+/// paths (`a/b/c`) and `.` are allowed — collection member names are
+/// untrusted (a malicious provider controls them), so this guards against
+/// writing outside the destination.
+fn safe_join(base: &Path, name: &str) -> Option<PathBuf> {
+    let rel = Path::new(name);
+    for component in rel.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir => return None,
+        }
+    }
+    Some(base.join(rel))
+}
+
+/// Sibling staging directory for an atomic collection export: a hidden
+/// `.<name>.rad-partial` next to `dest_dir`, so the final rename is a
+/// same-filesystem move.
+fn staging_dir(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "collection".to_string());
+    let staged = format!(".{name}.rad-partial");
+    match dest.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(staged),
+        _ => PathBuf::from(staged),
+    }
 }
 
 /// Download an HTTP(S) blob into `store`, verifying it matches `expected`.
@@ -321,4 +386,31 @@ pub(crate) async fn http_to_store(
         });
     }
     Ok(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_join_allows_nested_paths() {
+        let base = Path::new("/dest");
+        assert_eq!(
+            safe_join(base, "a/b/c.txt"),
+            Some(PathBuf::from("/dest/a/b/c.txt"))
+        );
+        assert!(safe_join(base, "file.bin").is_some());
+        assert!(safe_join(base, "./file.bin").is_some());
+    }
+
+    #[test]
+    fn safe_join_rejects_traversal_and_absolute() {
+        let base = Path::new("/dest");
+        // Leading, interior, and bare parent-dir escapes are all rejected.
+        assert!(safe_join(base, "../escape").is_none());
+        assert!(safe_join(base, "a/../../escape").is_none());
+        assert!(safe_join(base, "..").is_none());
+        // Absolute paths must not replace the base.
+        assert!(safe_join(base, "/etc/passwd").is_none());
+    }
 }
