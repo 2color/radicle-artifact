@@ -29,6 +29,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{broadcast, mpsc};
+use url::Url;
 
 use crate::client::Client;
 use crate::protocol::{
@@ -81,8 +82,6 @@ struct NodeCtx {
     /// The persistent blob store.
     store: FsStore,
     /// Downloader bound to the seeder endpoint, reused across fetches.
-    // Consumed by the Fetch handler, wired in the next step.
-    #[allow(dead_code)]
     downloader: Downloader,
     /// Endpoint id the node serves on.
     endpoint_id: EndpointId,
@@ -485,7 +484,44 @@ async fn stream_export(
     .await
 }
 
-/// `Fetch`: implemented in the next step. For now, a terminal error frame.
+/// Split resolved locations into iroh providers and HTTP URLs.
+fn partition(locations: &[FetchLocation]) -> (Vec<EndpointId>, Vec<Url>) {
+    let mut iroh = Vec::new();
+    let mut urls = Vec::new();
+    for loc in locations {
+        match loc {
+            FetchLocation::Iroh(id) => iroh.push(*id),
+            FetchLocation::Url(u) => urls.push(u.clone()),
+        }
+    }
+    (iroh, urls)
+}
+
+/// Export `hash` to `dest` per `kind`, mapping errors to a wire code.
+async fn export_to_dest(
+    store: &FsStore,
+    hash: iroh_blobs::Hash,
+    kind: ArtifactKind,
+    dest: &Path,
+    on_progress: impl FnMut(FetchProgress),
+) -> Result<u64, (ErrorCode, String)> {
+    match kind {
+        ArtifactKind::Blob => fetch::export_blob_to(store, hash, dest, on_progress).await,
+        ArtifactKind::Collection => {
+            fetch::export_collection_to(store, hash, dest, on_progress).await
+        }
+    }
+    .map_err(|e| (share_error_to_code(&e), e.to_string()))
+}
+
+/// `Fetch`: fast-path export if local, else download into the store from
+/// `locations`, export to `dest`, and tag as seeded if requested.
+///
+/// Abort-safe: a temp tag protects the content for the whole download +
+/// export; the seeded tag (if any) is set only after the bytes are
+/// verified complete; the temp tag is dropped last. A disconnect mid-stream
+/// drops this future via [`run_stream`], releasing the temp tag so GC
+/// reclaims any partial.
 #[allow(clippy::too_many_arguments)]
 async fn stream_fetch(
     ctx: &NodeCtx,
@@ -496,12 +532,142 @@ async fn stream_fetch(
     dest: PathBuf,
     seed: bool,
 ) -> io::Result<()> {
-    let _ = (ctx, rid, cid, locations, dest, seed);
-    stream_error::<FetchReceipt>(
-        write,
-        ErrorCode::Internal,
-        "fetch not yet implemented".into(),
-    )
+    let kind = match cid_utils::artifact_kind(&cid) {
+        Ok(k) => k,
+        Err(e) => {
+            return stream_error::<FetchReceipt>(write, ErrorCode::InvalidRequest, e.to_string())
+                .await
+        }
+    };
+    let haf = match hash_and_format(&cid) {
+        Ok(h) => h,
+        Err((code, msg)) => return stream_error::<FetchReceipt>(write, code, msg).await,
+    };
+    let hash = haf.hash;
+    let endpoint_id = ctx.endpoint_id;
+
+    run_stream(write, move |tx| async move {
+        let mut on_progress = move |p| {
+            let _ = tx.send(p);
+        };
+        let store = &ctx.store;
+
+        // Fast path: bytes already complete locally.
+        let already = store
+            .remote()
+            .local(haf)
+            .await
+            .map_err(|e| (ErrorCode::Iroh, format!("local lookup: {e}")))?
+            .is_complete();
+        if already {
+            let bytes = export_to_dest(store, hash, kind, &dest, &mut on_progress).await?;
+            if seed {
+                seeder::register_seeded(store, &rid, &cid, hash)
+                    .await
+                    .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
+            }
+            return Ok(FetchReceipt {
+                rid,
+                cid,
+                dest,
+                bytes,
+                from_cache: true,
+                seeded: seed,
+                endpoint_id,
+            });
+        }
+
+        // Download path. Protect the content for the whole operation; if
+        // this future is dropped (disconnect) the temp tag drops with it.
+        let tt = store
+            .tags()
+            .temp_tag(haf)
+            .await
+            .map_err(|e| (ErrorCode::Iroh, format!("temp tag: {e}")))?;
+        on_progress(FetchProgress::Connecting);
+
+        let (iroh_ids, urls) = partition(&locations);
+        let no_locations = iroh_ids.is_empty() && urls.is_empty();
+        let mut errors: Vec<String> = Vec::new();
+        let mut got = false;
+
+        if !iroh_ids.is_empty() {
+            match fetch::download_iroh_to_store(
+                &ctx.downloader,
+                store,
+                haf,
+                iroh_ids,
+                &mut on_progress,
+            )
+            .await
+            {
+                Ok(()) => got = true,
+                Err(errs) => errors.extend(errs.into_iter().map(|e| e.to_string())),
+            }
+        }
+        if !got {
+            match kind {
+                // HTTP is a blob-only fallback; stop at the first success
+                // (completeness is re-checked against the store below).
+                ArtifactKind::Blob => {
+                    for url in &urls {
+                        match fetch::http_to_store(store, url, &cid, &mut on_progress).await {
+                            Ok(_) => break,
+                            Err(e) => errors.push(e.to_string()),
+                        }
+                    }
+                }
+                ArtifactKind::Collection => {
+                    for url in &urls {
+                        errors.push(format!("HTTP fetch unsupported for collection: {url}"));
+                    }
+                }
+            }
+        }
+
+        // Trust the store: complete means we have it, whatever individual
+        // providers reported.
+        let complete = store
+            .remote()
+            .local(haf)
+            .await
+            .map(|i| i.is_complete())
+            .unwrap_or(false);
+        if !complete {
+            drop(tt); // release protection so GC reclaims the partial
+            let code = if no_locations {
+                ErrorCode::NoLocations
+            } else {
+                ErrorCode::AllFailed
+            };
+            let msg = if errors.is_empty() {
+                "no locations succeeded".to_string()
+            } else {
+                errors.join("; ")
+            };
+            return Err((code, msg));
+        }
+
+        // Export, then tag last so we never advertise incomplete content.
+        let bytes = export_to_dest(store, hash, kind, &dest, &mut on_progress).await?;
+        if seed {
+            seeder::register_seeded(store, &rid, &cid, hash)
+                .await
+                .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
+        }
+        // Drop after the seeded tag (if any) covers the bytes; without a
+        // seed, dropping leaves the bytes for GC to reclaim (cache).
+        drop(tt);
+        Ok(FetchReceipt {
+            rid,
+            cid,
+            dest,
+            bytes,
+            from_cache: false,
+            seeded: seed,
+            endpoint_id,
+        })
+    })
     .await
 }
 
@@ -1022,6 +1188,114 @@ mod tests {
             match term {
                 StreamEvent::Error(e) => assert_eq!(e.code, ErrorCode::NotLocal),
                 other => panic!("expected NotLocal error, got {other:?}"),
+            }
+
+            client.shutdown().await.unwrap();
+            node_handle.await.unwrap().unwrap();
+        });
+    }
+
+    /// `Fetch` fast-path: already-local bytes export without network, seed
+    /// across a second repo, and an empty location set on absent content
+    /// reports `NoLocations`. (The networked download path needs two
+    /// endpoints and is exercised via the shared core, not here.)
+    #[test]
+    fn fetch_fast_path_and_no_locations() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let home = tempfile::tempdir().unwrap();
+            let payload = b"hello fetch fast-path";
+            let blob_path = home.path().join("payload.bin");
+            fs::write(&blob_path, payload).unwrap();
+            let cid = cid_utils::compute_blob_cid(&blob_path).unwrap();
+            let rid = rid_a();
+
+            let secret = iroh::SecretKey::from_bytes(&[6u8; 32]);
+            let home_path = home.path().to_path_buf();
+            let node_handle = tokio::spawn(async move { run(&home_path, secret).await });
+
+            let socket = home.path().join(ARTIFACTS_DIR).join("control.sock");
+            for _ in 0..200 {
+                if socket.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(socket.exists(), "control socket never appeared");
+
+            // Seed so the bytes live in the store.
+            let client = Client::new(socket.clone());
+            client
+                .seed(rid, cid, &blob_path, ArtifactKind::Blob, ImportMode::Copy)
+                .await
+                .unwrap();
+
+            // Fast path: complete locally, no locations needed, no seed.
+            let dest = home.path().join("fetched.bin");
+            let (_p, term) = streaming::<FetchReceipt>(
+                &socket,
+                &Command::Fetch {
+                    rid,
+                    cid,
+                    locations: vec![],
+                    dest: dest.clone(),
+                    seed: false,
+                },
+            )
+            .await;
+            match term {
+                StreamEvent::Okay(r) => {
+                    assert!(r.from_cache);
+                    assert!(!r.seeded);
+                    assert_eq!(r.bytes, payload.len() as u64);
+                    assert_eq!(r.dest, dest);
+                }
+                other => panic!("expected okay, got {other:?}"),
+            }
+            assert_eq!(fs::read(&dest).unwrap(), payload);
+
+            // Fast path with seed under a second repo: the bytes are shared
+            // by hash, so a (rid2, cid) tag is set without re-downloading.
+            let rid2 = RepoId::from_str("rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5").unwrap();
+            let (_p, term) = streaming::<FetchReceipt>(
+                &socket,
+                &Command::Fetch {
+                    rid: rid2,
+                    cid,
+                    locations: vec![],
+                    dest: home.path().join("fetched2.bin"),
+                    seed: true,
+                },
+            )
+            .await;
+            match term {
+                StreamEvent::Okay(r) => {
+                    assert!(r.from_cache);
+                    assert!(r.seeded);
+                }
+                other => panic!("expected okay, got {other:?}"),
+            }
+            assert!(client.is_seeding(rid2, cid).await.unwrap());
+
+            // Absent content with no locations to try: NoLocations.
+            let unknown = fake_blob_cid(b"absent");
+            let (_p, term) = streaming::<FetchReceipt>(
+                &socket,
+                &Command::Fetch {
+                    rid,
+                    cid: unknown,
+                    locations: vec![],
+                    dest: home.path().join("x.bin"),
+                    seed: false,
+                },
+            )
+            .await;
+            match term {
+                StreamEvent::Error(e) => assert_eq!(e.code, ErrorCode::NoLocations),
+                other => panic!("expected NoLocations error, got {other:?}"),
             }
 
             client.shutdown().await.unwrap();
