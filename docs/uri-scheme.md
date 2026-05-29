@@ -79,9 +79,8 @@ deprecated and left out of the grammar above. It pins the serving endpoint to
 the author's radicle key, so it can't name an endpoint backed by a separate
 iroh key. Writers always emit the explicit `radiroh://<endpoint-id>` form.
 
-To clean up `iroh://` locations an earlier build wrote under your DID, run:
+To clean up `iroh://` locations from earlier versions under your DID and migrate to the new `radiroh://`, run:
 
 ```
-rad-artifact reconcile --remove-orphaned-self   # retract legacy URLs
-rad-artifact reconcile                           # re-add fresh radiroh:// URLs
+rad-artifact reconcile --remove-orphaned-self
 ```

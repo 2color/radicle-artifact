@@ -15,7 +15,7 @@ The peer-to-peer location scheme is renamed from the invented, unowned `iroh://`
 
 The host encoding is unchanged: the iroh endpoint id as lowercase base32, no padding (RFC 4648). A bare `radiroh://` still derives the endpoint id from the location author's DID.
 
-This is a **hard break**: legacy `iroh://` URLs are no longer read, and fetch ignores them. The store and these COB locations are pre-release, so there is no migration path. To clean up `iroh://` locations an earlier build wrote under your DID, run `rad-artifact reconcile --remove-orphaned-self` (which now sweeps them into the stale-endpoint bucket) followed by `rad-artifact reconcile` to re-add fresh `radiroh://` URLs.
+This is a **hard break** on read: legacy `iroh://` URLs are no longer parsed, and fetch ignores them. There is no automatic dual-read; instead, `rad-artifact reconcile --remove-orphaned-self` migrates your locations in a single run. It retracts the legacy URLs and re-adds fresh `radiroh://` URLs.
 
 ## [0.14.0] - 2026-05-12
 
