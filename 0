@@ -1,1 +1,1 @@
-{"base":"5e8e09eb741b4f5f8c1ecf05e37eeca2a53b53cf","description":"docs: correct migration for urls\n\n- clarify the hard break is on read, not a missing migration path\n- replace the two-step reconcile dance with a single\n  `reconcile --remove-orphaned-self` that retracts and re-adds in one pass","oid":"df4ef15b924286fe8a66498da8699bf3bccdcc61","type":"revision"}
+{"commit":"df4ef15b924286fe8a66498da8699bf3bccdcc61","revision":"6222506029f9fe3b8cc4e8cb5aeb59c5d40a5052","type":"merge"}
