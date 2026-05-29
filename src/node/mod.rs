@@ -21,22 +21,25 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cid::Cid;
+use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::HashAndFormat;
 use radicle::identity::RepoId;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::client::Client;
 use crate::protocol::{
-    Command, CommandError, CommandResult, ErrorCode, ImportMode, SeedReceipt, SeededEntry, Status,
+    Command, CommandError, CommandResult, ErrorCode, ExportReceipt, FetchLocation, FetchProgress,
+    FetchReceipt, HasResult, ImportMode, SeedReceipt, SeededEntry, Status, StreamEvent,
     UnseedReceipt,
 };
 use crate::seeder::{self, ARTIFACTS_DIR};
-use crate::share::cid_utils::ArtifactKind;
+use crate::share::cid_utils::{self, ArtifactKind};
 use crate::share::keys::EndpointId;
-use crate::share::Error as ShareError;
+use crate::share::{fetch, Error as ShareError};
 
 /// How long shutdown waits for in-flight handlers before forcing the
 /// router down anyway. Sized to outlast a large collection import so a
@@ -66,6 +69,25 @@ pub enum NodeError {
     /// Local I/O (mkdir, bind, chmod) failure.
     #[error("node I/O error: {0}")]
     Io(#[from] io::Error),
+}
+
+/// Shared per-node state passed to every connection handler.
+///
+/// Built once at startup and wrapped in an `Arc` so each spawned handler
+/// gets a cheap clone. Holds the single `FsStore` and the single
+/// [`Downloader`] (built on the seeder endpoint, pooling connections
+/// across all fetches), plus identity/uptime fields for `Status`.
+struct NodeCtx {
+    /// The persistent blob store.
+    store: FsStore,
+    /// Downloader bound to the seeder endpoint, reused across fetches.
+    // Consumed by the Fetch handler, wired in the next step.
+    #[allow(dead_code)]
+    downloader: Downloader,
+    /// Endpoint id the node serves on.
+    endpoint_id: EndpointId,
+    /// Unix timestamp (seconds) when the node bound its socket.
+    started_at_unix: i64,
 }
 
 /// Run the node in the foreground until it receives a shutdown signal
@@ -113,13 +135,26 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
         .unwrap_or(0);
 
     let endpoint_id = EndpointId::from(seeder.router.endpoint().id());
-    let store: FsStore = seeder.blobs.clone();
 
     tracing::info!(
         endpoint_id = %endpoint_id,
         socket = %socket_path.display(),
         "rad-artifact node ready"
     );
+
+    // One Downloader on the seeder endpoint, reused across all fetches so
+    // the connection pool is shared (no per-fetch endpoint bind).
+    let downloader = Downloader::new_with_opts(
+        seeder.blobs.as_ref(),
+        seeder.router.endpoint(),
+        fetch::pool_options(),
+    );
+    let ctx = Arc::new(NodeCtx {
+        store: seeder.blobs.clone(),
+        downloader,
+        endpoint_id,
+        started_at_unix,
+    });
 
     // Subscribe before installing the signal handler: a signal that
     // arrives during startup must land in a live receiver, otherwise the
@@ -145,20 +180,12 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
                         continue;
                     }
                 };
-                let store = store.clone();
+                let ctx = ctx.clone();
                 let shutdown_tx = shutdown_tx.clone();
                 let in_flight = in_flight.clone();
                 in_flight.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(
-                        stream,
-                        &store,
-                        started_at_unix,
-                        endpoint_id,
-                        &shutdown_tx,
-                    )
-                    .await
-                    {
+                    if let Err(e) = handle_connection(stream, &ctx, &shutdown_tx).await {
                         tracing::warn!("handler error: {e}");
                     }
                     in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -199,12 +226,11 @@ fn spawn_signal_handler(shutdown_tx: broadcast::Sender<()>) {
     });
 }
 
-/// Read one command, write one response, close.
+/// Read one command, then either write one response (one-shot commands)
+/// or stream frames (`Fetch`/`Export`), and close.
 async fn handle_connection(
     stream: UnixStream,
-    store: &FsStore,
-    started_at_unix: i64,
-    endpoint_id: EndpointId,
+    ctx: &NodeCtx,
     shutdown_tx: &broadcast::Sender<()>,
 ) -> io::Result<()> {
     let (read, mut write) = stream.into_split();
@@ -220,10 +246,27 @@ async fn handle_connection(
         return Ok(());
     }
 
-    let mut response = match parse_command(line.trim_end()) {
-        Ok(cmd) => dispatch(cmd, store, started_at_unix, endpoint_id, shutdown_tx).await,
-        Err((code, msg)) => err_json::<()>(code, msg),
-    };
+    match parse_command(line.trim_end()) {
+        // Streaming commands write their own frames directly.
+        Ok(Command::Export { cid, dest }) => stream_export(ctx, &mut write, cid, dest).await,
+        Ok(Command::Fetch {
+            rid,
+            cid,
+            locations,
+            dest,
+            seed,
+        }) => stream_fetch(ctx, &mut write, rid, cid, locations, dest, seed).await,
+        // One-shot commands return a single JSON line.
+        Ok(cmd) => write_line(&mut write, dispatch(cmd, ctx, shutdown_tx).await).await,
+        Err((code, msg)) => write_line(&mut write, err_json::<()>(code, msg)).await,
+    }
+}
+
+/// Write a single JSON response line (with trailing newline) and flush.
+async fn write_line(
+    write: &mut (impl AsyncWriteExt + Unpin),
+    mut response: String,
+) -> io::Result<()> {
     response.push('\n');
     write.write_all(response.as_bytes()).await?;
     write.flush().await
@@ -259,17 +302,13 @@ fn parse_command(line: &str) -> Result<Command, (ErrorCode, String)> {
         .map_err(|e| (ErrorCode::InvalidRequest, format!("invalid command: {e}")))
 }
 
-/// Dispatch a parsed command, returning the JSON line to send back
-/// (without trailing newline).
-async fn dispatch(
-    cmd: Command,
-    store: &FsStore,
-    started_at_unix: i64,
-    endpoint_id: EndpointId,
-    shutdown_tx: &broadcast::Sender<()>,
-) -> String {
+/// Dispatch a one-shot command, returning the JSON line to send back
+/// (without trailing newline). Streaming commands (`Fetch`, `Export`) are
+/// handled in [`handle_connection`] before reaching here.
+async fn dispatch(cmd: Command, ctx: &NodeCtx, shutdown_tx: &broadcast::Sender<()>) -> String {
+    let store = &ctx.store;
     match cmd {
-        Command::Status => match build_status(store, endpoint_id, started_at_unix).await {
+        Command::Status => match build_status(store, ctx.endpoint_id, ctx.started_at_unix).await {
             Ok(status) => ok_json(status),
             Err(e) => err_from_share::<Status>(e),
         },
@@ -279,15 +318,14 @@ async fn dispatch(
             path,
             kind,
             mode,
-        } => seed_response(store, rid, cid, &path, kind, mode, endpoint_id).await,
+        } => seed_response(store, rid, cid, &path, kind, mode, ctx.endpoint_id).await,
         Command::Unseed { rid, cid } => unseed_response(store, rid, cid).await,
         Command::IsSeeding { rid, cid } => is_seeding_response(store, &rid, &cid).await,
         Command::ListSeeded { rid } => list_seeded_response(store, rid).await,
-        // Wired up in later steps (NodeCtx + Has/Export/Fetch handlers).
-        // Export/Fetch are streaming and will be intercepted before
-        // dispatch; this one-shot arm is a temporary placeholder.
-        Command::Has { .. } | Command::Export { .. } | Command::Fetch { .. } => {
-            err_json::<()>(ErrorCode::Internal, "not yet implemented".into())
+        Command::Has { cid } => has_response(store, &cid).await,
+        // Intercepted in handle_connection; never reaches dispatch.
+        Command::Export { .. } | Command::Fetch { .. } => {
+            unreachable!("streaming commands are handled before dispatch")
         }
         Command::Shutdown => {
             // ack first, then broadcast so the loop tears down after the
@@ -297,6 +335,174 @@ async fn dispatch(
             resp
         }
     }
+}
+
+/// Resolve a CID to the iroh hash+format pair, or a wire error.
+fn hash_and_format(cid: &Cid) -> Result<HashAndFormat, (ErrorCode, String)> {
+    let hash = cid_utils::cid_to_blake3_hash(cid)
+        .map_err(|e| (ErrorCode::InvalidRequest, e.to_string()))?;
+    match cid_utils::artifact_kind(cid) {
+        Ok(ArtifactKind::Blob) => Ok(HashAndFormat::raw(hash)),
+        Ok(ArtifactKind::Collection) => Ok(HashAndFormat::hash_seq(hash)),
+        Err(e) => Err((ErrorCode::InvalidRequest, e.to_string())),
+    }
+}
+
+/// `Has`: report local presence/completeness for a CID. Hash-keyed, so it
+/// answers regardless of which repo (if any) tagged the content.
+async fn has_response(store: &FsStore, cid: &Cid) -> String {
+    let haf = match hash_and_format(cid) {
+        Ok(h) => h,
+        Err((code, msg)) => return err_json::<HasResult>(code, msg),
+    };
+    match store.remote().local(haf).await {
+        Ok(info) => {
+            let bytes = info.local_bytes();
+            ok_json(HasResult {
+                present: bytes > 0,
+                complete: info.is_complete(),
+                bytes,
+            })
+        }
+        Err(e) => err_json::<HasResult>(ErrorCode::Iroh, format!("local lookup: {e}")),
+    }
+}
+
+/// Serialize and write one stream frame as a JSON line, then flush.
+async fn write_frame<T: serde::Serialize>(
+    write: &mut (impl AsyncWriteExt + Unpin),
+    event: &StreamEvent<T>,
+) -> io::Result<()> {
+    let mut line = serde_json::to_string(event).unwrap_or_else(|e| {
+        format!(r#"{{"error":{{"code":"internal","message":"encode: {e}"}}}}"#)
+    });
+    line.push('\n');
+    write.write_all(line.as_bytes()).await?;
+    write.flush().await
+}
+
+/// Shorthand for writing a terminal error frame.
+async fn stream_error<T: serde::Serialize>(
+    write: &mut (impl AsyncWriteExt + Unpin),
+    code: ErrorCode,
+    message: String,
+) -> io::Result<()> {
+    write_frame::<T>(write, &StreamEvent::Error(CommandError { code, message })).await
+}
+
+/// Drive a streaming operation: forward `FetchProgress` frames as they
+/// arrive on the channel, then write the terminal okay/error frame.
+///
+/// If a frame write fails (client disconnected), the error propagates and
+/// `op` is dropped — aborting the in-flight download/export. This is the
+/// disconnect-to-abort wiring: nothing long-running is left orphaned.
+async fn run_stream<W, T, F, Fut>(write: &mut W, op: F) -> io::Result<()>
+where
+    W: AsyncWriteExt + Unpin,
+    T: serde::Serialize,
+    F: FnOnce(mpsc::UnboundedSender<FetchProgress>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, (ErrorCode, String)>>,
+{
+    let (tx, mut rx) = mpsc::unbounded_channel::<FetchProgress>();
+    let fut = op(tx);
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            biased;
+            Some(p) = rx.recv() => {
+                write_frame(write, &StreamEvent::<T>::Progress(p)).await?;
+            }
+            res = &mut fut => {
+                // Flush any progress buffered before completion.
+                while let Ok(p) = rx.try_recv() {
+                    write_frame(write, &StreamEvent::<T>::Progress(p)).await?;
+                }
+                let event = match res {
+                    Ok(payload) => StreamEvent::Okay(payload),
+                    Err((code, message)) => StreamEvent::Error(CommandError { code, message }),
+                };
+                return write_frame(write, &event).await;
+            }
+        }
+    }
+}
+
+/// `Export`: stream already-local bytes to `dest`. Errors with `NotLocal`
+/// if the content isn't complete in the store.
+async fn stream_export(
+    ctx: &NodeCtx,
+    write: &mut (impl AsyncWriteExt + Unpin),
+    cid: Cid,
+    dest: PathBuf,
+) -> io::Result<()> {
+    let kind = match cid_utils::artifact_kind(&cid) {
+        Ok(k) => k,
+        Err(e) => {
+            return stream_error::<ExportReceipt>(write, ErrorCode::InvalidRequest, e.to_string())
+                .await
+        }
+    };
+    let haf = match hash_and_format(&cid) {
+        Ok(h) => h,
+        Err((code, msg)) => return stream_error::<ExportReceipt>(write, code, msg).await,
+    };
+    let hash = haf.hash;
+
+    // Export needs the bytes already complete locally.
+    match ctx.store.remote().local(haf).await {
+        Ok(info) if info.is_complete() => {}
+        Ok(_) => {
+            return stream_error::<ExportReceipt>(
+                write,
+                ErrorCode::NotLocal,
+                format!("content for {cid} is not complete in the store"),
+            )
+            .await
+        }
+        Err(e) => {
+            return stream_error::<ExportReceipt>(
+                write,
+                ErrorCode::Iroh,
+                format!("local lookup: {e}"),
+            )
+            .await
+        }
+    }
+
+    run_stream(write, move |tx| async move {
+        let on_progress = move |p| {
+            let _ = tx.send(p);
+        };
+        let bytes = match kind {
+            ArtifactKind::Blob => fetch::export_blob_to(&ctx.store, hash, &dest, on_progress).await,
+            ArtifactKind::Collection => {
+                fetch::export_collection_to(&ctx.store, hash, &dest, on_progress).await
+            }
+        }
+        .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
+        Ok(ExportReceipt { cid, dest, bytes })
+    })
+    .await
+}
+
+/// `Fetch`: implemented in the next step. For now, a terminal error frame.
+#[allow(clippy::too_many_arguments)]
+async fn stream_fetch(
+    ctx: &NodeCtx,
+    write: &mut (impl AsyncWriteExt + Unpin),
+    rid: RepoId,
+    cid: Cid,
+    locations: Vec<FetchLocation>,
+    dest: PathBuf,
+    seed: bool,
+) -> io::Result<()> {
+    let _ = (ctx, rid, cid, locations, dest, seed);
+    stream_error::<FetchReceipt>(
+        write,
+        ErrorCode::Internal,
+        "fetch not yet implemented".into(),
+    )
+    .await
 }
 
 async fn seed_response(
@@ -682,6 +888,144 @@ mod tests {
             let client = Client::new(socket);
             client.shutdown().await.unwrap();
             first.await.unwrap().unwrap();
+        });
+    }
+
+    /// Send a one-shot command on a fresh connection and decode the reply.
+    async fn oneshot<T: serde::de::DeserializeOwned>(
+        socket: &Path,
+        cmd: &Command,
+    ) -> CommandResult<T> {
+        let mut stream = UnixStream::connect(socket).await.unwrap();
+        let mut line = serde_json::to_string(cmd).unwrap();
+        line.push('\n');
+        tokio::io::AsyncWriteExt::write_all(&mut stream, line.as_bytes())
+            .await
+            .unwrap();
+        let mut buf = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut buf)
+            .await
+            .unwrap();
+        serde_json::from_str(buf.trim()).unwrap()
+    }
+
+    /// Send a streaming command; return (progress frame count, terminal frame).
+    async fn streaming<T: serde::de::DeserializeOwned>(
+        socket: &Path,
+        cmd: &Command,
+    ) -> (usize, StreamEvent<T>) {
+        let mut stream = UnixStream::connect(socket).await.unwrap();
+        let mut line = serde_json::to_string(cmd).unwrap();
+        line.push('\n');
+        tokio::io::AsyncWriteExt::write_all(&mut stream, line.as_bytes())
+            .await
+            .unwrap();
+        let mut buf = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut buf)
+            .await
+            .unwrap();
+        let mut progress = 0usize;
+        let mut terminal = None;
+        for l in buf.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str::<StreamEvent<T>>(l).unwrap() {
+                StreamEvent::Progress(_) => progress += 1,
+                term => terminal = Some(term),
+            }
+        }
+        (progress, terminal.expect("a terminal frame"))
+    }
+
+    /// `Has` reflects store presence; `Export` streams local bytes to disk
+    /// and reports `NotLocal` for content the store doesn't hold.
+    #[test]
+    fn has_and_export_round_trip() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let home = tempfile::tempdir().unwrap();
+            let payload = b"hello has/export";
+            let blob_path = home.path().join("payload.bin");
+            fs::write(&blob_path, payload).unwrap();
+            let cid = cid_utils::compute_blob_cid(&blob_path).unwrap();
+            let rid = rid_a();
+
+            let secret = iroh::SecretKey::from_bytes(&[5u8; 32]);
+            let home_path = home.path().to_path_buf();
+            let node_handle = tokio::spawn(async move { run(&home_path, secret).await });
+
+            let socket = home.path().join(ARTIFACTS_DIR).join("control.sock");
+            for _ in 0..200 {
+                if socket.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(socket.exists(), "control socket never appeared");
+
+            // Seed the blob so its bytes live in the store.
+            let client = Client::new(socket.clone());
+            client
+                .seed(rid, cid, &blob_path, ArtifactKind::Blob, ImportMode::Copy)
+                .await
+                .unwrap();
+
+            // Has: present and complete with the right size.
+            match oneshot::<HasResult>(&socket, &Command::Has { cid }).await {
+                CommandResult::Okay(h) => {
+                    assert!(h.present);
+                    assert!(h.complete);
+                    assert_eq!(h.bytes, payload.len() as u64);
+                }
+                CommandResult::Error(e) => panic!("has errored: {e:?}"),
+            }
+
+            // Has on content the store doesn't hold: absent.
+            let unknown = fake_blob_cid(b"never stored");
+            match oneshot::<HasResult>(&socket, &Command::Has { cid: unknown }).await {
+                CommandResult::Okay(h) => {
+                    assert!(!h.present);
+                    assert!(!h.complete);
+                }
+                CommandResult::Error(e) => panic!("has errored: {e:?}"),
+            }
+
+            // Export streams the bytes to disk; the file matches the payload.
+            let dest = home.path().join("exported.bin");
+            let (_progress, term) = streaming::<ExportReceipt>(
+                &socket,
+                &Command::Export {
+                    cid,
+                    dest: dest.clone(),
+                },
+            )
+            .await;
+            match term {
+                StreamEvent::Okay(r) => {
+                    assert_eq!(r.bytes, payload.len() as u64);
+                    assert_eq!(r.dest, dest);
+                }
+                other => panic!("expected okay, got {other:?}"),
+            }
+            assert_eq!(fs::read(&dest).unwrap(), payload);
+
+            // Export of absent content reports NotLocal.
+            let (_p, term) = streaming::<ExportReceipt>(
+                &socket,
+                &Command::Export {
+                    cid: unknown,
+                    dest: home.path().join("nope.bin"),
+                },
+            )
+            .await;
+            match term {
+                StreamEvent::Error(e) => assert_eq!(e.code, ErrorCode::NotLocal),
+                other => panic!("expected NotLocal error, got {other:?}"),
+            }
+
+            client.shutdown().await.unwrap();
+            node_handle.await.unwrap().unwrap();
         });
     }
 }
