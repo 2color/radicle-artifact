@@ -83,6 +83,9 @@ struct NodeCtx {
     store: FsStore,
     /// Downloader bound to the seeder endpoint, reused across fetches.
     downloader: Downloader,
+    /// The seeder endpoint, kept for its live connection/traffic metrics
+    /// (a clone shares the underlying counters with the router's endpoint).
+    endpoint: iroh::Endpoint,
     /// Endpoint id the node serves on.
     endpoint_id: EndpointId,
     /// Unix timestamp (seconds) when the node bound its socket.
@@ -151,6 +154,7 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
     let ctx = Arc::new(NodeCtx {
         store: seeder.blobs.clone(),
         downloader,
+        endpoint: seeder.router.endpoint().clone(),
         endpoint_id,
         started_at_unix,
     });
@@ -322,7 +326,14 @@ fn parse_command(line: &str) -> Result<Command, (ErrorCode, String)> {
 async fn dispatch(cmd: Command, ctx: &NodeCtx, shutdown_tx: &broadcast::Sender<()>) -> String {
     let store = &ctx.store;
     match cmd {
-        Command::Status => match build_status(store, ctx.endpoint_id, ctx.started_at_unix).await {
+        Command::Status => match build_status(
+            store,
+            ctx.endpoint.metrics(),
+            ctx.endpoint_id,
+            ctx.started_at_unix,
+        )
+        .await
+        {
             Ok(status) => ok_json(status),
             Err(e) => err_from_share::<Status>(e),
         },
@@ -788,6 +799,7 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
 
 async fn build_status(
     store: &FsStore,
+    metrics: &iroh::metrics::EndpointMetrics,
     endpoint_id: EndpointId,
     started_at_unix: i64,
 ) -> Result<Status, ShareError> {
@@ -798,8 +810,34 @@ async fn build_status(
         bytes_logical =
             bytes_logical.saturating_add(seeder::artifact_size_for(store, cid, *hash).await);
     }
-    // Phase 2 leaves connection/traffic counters at zero; the
-    // iroh-metrics wiring lands with the CLI in phase 3.
+    // Socket counters are byte totals (sends include disco frames; recv
+    // counts data only) and connection/path tallies — see the field docs
+    // on `ConnectionStats`/`TrafficStats` for the disco-vs-data split.
+    let s = &metrics.socket;
+    let opened_total = s.num_conns_opened.get();
+    let closed_total = s.num_conns_closed.get();
+    let connections = crate::protocol::ConnectionStats {
+        active: opened_total.saturating_sub(closed_total) as u32,
+        opened_total,
+        closed_total,
+        direct_total: s.num_conns_direct.get(),
+        holepunch_attempts: s.holepunch_attempts.get(),
+        paths_direct: s.paths_direct.get(),
+        paths_relayed: s.paths_relay.get(),
+    };
+    let traffic = crate::protocol::TrafficStats {
+        out_bytes: s
+            .send_ipv4
+            .get()
+            .saturating_add(s.send_ipv6.get())
+            .saturating_add(s.send_relay.get()),
+        in_bytes: s
+            .recv_data_ipv4
+            .get()
+            .saturating_add(s.recv_data_ipv6.get())
+            .saturating_add(s.recv_data_relay.get())
+            .saturating_add(s.recv_data_custom.get()),
+    };
     Ok(Status {
         endpoint_id,
         started_at_unix,
@@ -811,8 +849,11 @@ async fn build_status(
             store_bytes: 0,
             seeded_bytes_logical: bytes_logical,
         },
-        connections: crate::protocol::ConnectionStats::default(),
-        traffic: crate::protocol::TrafficStats::default(),
+        connections,
+        traffic,
+        // The node has no repo storage handle, so it can't compare COB
+        // locations against its endpoint id; the CLI fills this in at
+        // status-print time.
         warnings: crate::protocol::Warnings::default(),
     })
 }
