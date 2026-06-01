@@ -1,10 +1,13 @@
 # CI for radicle-artifact. Steps run in a pinned Rust container (the version
-# tracks `rust-version` in Cargo.toml — bump both together) and one at a time,
-# sharing a single cache volume.
+# tracks `rust-version` in Cargo.toml — bump both together) sharing a single
+# cache volume.
 #
 # The cache lives outside the checkout (Buildkite's git clean would wipe
-# anything inside it) and holds both the cargo registry and build output.
-# Because steps run sequentially, nothing contends on it.
+# anything inside it) and holds the cargo registry and per-step build output.
+# fmt gates the three compile steps; clippy, test, and doc then run in parallel.
+# Each compile step gets its own CARGO_TARGET_DIR to avoid Cargo's file-lock
+# contention; all share CARGO_HOME for the registry (Cargo serialises writes
+# there internally).
 
 env:
   RUST_IMAGE: "rust:1.91"
@@ -37,28 +40,31 @@ steps:
     plugins:
       - *docker
 
-  - wait: ~
-
   - label: ":cargo: test"
     # Plain `cargo test` includes doctests; don't add --all-targets, which
     # silently excludes them.
     command: cargo test --all-features
     plugins:
-      - *docker
-
-  - wait: ~
-
-  - label: ":books: doc"
-    command: cargo doc --no-deps --all-features
-    plugins:
-      ## we don't use the template because of the added RUSTDOCFLAGS
-      ## which fails the step of doc problems
       - docker#v5.11.0:
           image: "$RUST_IMAGE"
           environment:
             - CARGO_TERM_COLOR
             - CARGO_HOME=/cache/cargo
-            - CARGO_TARGET_DIR=/cache/target
+            - CARGO_TARGET_DIR=/cache/target-test
+          volumes:
+            - "rad-artifact-cache:/cache"
+
+  - label: ":books: doc"
+    command: cargo doc --no-deps --all-features
+    plugins:
+      ## separate target dir so this runs in parallel with clippy and test;
+      ## RUSTDOCFLAGS can't go in the shared template
+      - docker#v5.11.0:
+          image: "$RUST_IMAGE"
+          environment:
+            - CARGO_TERM_COLOR
+            - CARGO_HOME=/cache/cargo
+            - CARGO_TARGET_DIR=/cache/target-doc
             - RUSTDOCFLAGS=-D warnings
           volumes:
             - "rad-artifact-cache:/cache"
