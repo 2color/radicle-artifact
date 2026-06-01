@@ -390,10 +390,12 @@ pub async fn seeded_cids(store: &Store, rid: &RepoId) -> Result<HashSet<Cid>, Er
 
 /// Walk every seeded tag in the store, regardless of repo.
 ///
-/// Yields each `(rid, cid)` pair currently tagged as seeded. Tag names
-/// that don't parse cleanly are skipped — we own the writer, so this
-/// only fires on corrupt stores.
-pub async fn all_seeded(store: &Store) -> Result<Vec<(RepoId, Cid)>, Error> {
+/// Yields each `(rid, cid, hash)` currently tagged as seeded. The hash
+/// comes straight from the tag listing so callers can size the artifact
+/// without a second tag lookup (see [`artifact_size_for`]). Tag names that
+/// don't parse cleanly are skipped — we own the writer, so this only fires
+/// on corrupt stores.
+pub async fn all_seeded(store: &Store) -> Result<Vec<(RepoId, Cid, Hash)>, Error> {
     let mut stream = store
         .tags()
         .list_prefix([SEEDED_TAG_V1])
@@ -403,8 +405,8 @@ pub async fn all_seeded(store: &Store) -> Result<Vec<(RepoId, Cid)>, Error> {
     let mut out = Vec::new();
     while let Some(item) = stream.next().await {
         let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
-        if let Some(pair) = parse_seeded_tag(info.name.as_ref()) {
-            out.push(pair);
+        if let Some((rid, cid)) = parse_seeded_tag(info.name.as_ref()) {
+            out.push((rid, cid, info.hash));
         }
     }
     Ok(out)
@@ -416,15 +418,22 @@ pub async fn all_seeded(store: &Store) -> Result<Vec<(RepoId, Cid)>, Error> {
 /// sum the children. Errors resolve to `0` so a `Status` view can render
 /// the row even if iroh is momentarily unhappy.
 pub async fn artifact_size(store: &Store, rid: &RepoId, cid: &Cid) -> u64 {
-    let Ok(kind) = cid_utils::artifact_kind(cid) else {
-        return 0;
-    };
     let Ok(Some(tag)) = store.tags().get(seeded_tag(rid, cid)).await else {
         return 0;
     };
+    artifact_size_for(store, cid, tag.hash).await
+}
+
+/// Stored byte total for an already-resolved `(cid, hash)`, skipping the
+/// seeded-tag lookup. Use when the hash is already in hand (e.g. from
+/// [`all_seeded`]) to avoid a redundant `tags().get()`.
+pub async fn artifact_size_for(store: &Store, cid: &Cid, hash: Hash) -> u64 {
+    let Ok(kind) = cid_utils::artifact_kind(cid) else {
+        return 0;
+    };
     match kind {
-        ArtifactKind::Blob => blob_size(store, tag.hash).await,
-        ArtifactKind::Collection => match Collection::load(tag.hash, store).await {
+        ArtifactKind::Blob => blob_size(store, hash).await,
+        ArtifactKind::Collection => match Collection::load(hash, store).await {
             Ok(collection) => {
                 let mut total = 0u64;
                 for (_, child) in collection.iter() {
@@ -554,9 +563,14 @@ mod tests {
                 register_seeded(&store, rid, cid, hash).await.unwrap();
             }
 
-            let got: HashSet<(RepoId, Cid)> =
+            // The hash rides along from the tag listing, so callers can size
+            // each artifact without a second lookup.
+            let got: HashSet<(RepoId, Cid, Hash)> =
                 all_seeded(&store).await.unwrap().into_iter().collect();
-            let want: HashSet<(RepoId, Cid)> = pairs.into_iter().collect();
+            let want: HashSet<(RepoId, Cid, Hash)> = pairs
+                .into_iter()
+                .map(|(rid, cid)| (rid, cid, hash))
+                .collect();
             assert_eq!(got, want);
         });
     }

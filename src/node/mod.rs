@@ -794,8 +794,9 @@ async fn build_status(
     let pairs = seeder::all_seeded(store).await?;
     let count = pairs.len();
     let mut bytes_logical = 0u64;
-    for (rid, cid) in &pairs {
-        bytes_logical = bytes_logical.saturating_add(seeder::artifact_size(store, rid, cid).await);
+    for (_rid, cid, hash) in &pairs {
+        bytes_logical =
+            bytes_logical.saturating_add(seeder::artifact_size_for(store, cid, *hash).await);
     }
     // Phase 2 leaves connection/traffic counters at zero; the
     // iroh-metrics wiring lands with the CLI in phase 3.
