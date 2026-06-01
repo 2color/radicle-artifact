@@ -424,15 +424,11 @@ pub struct TrafficStats {
     pub in_bytes: u64,
 }
 
-/// Soft warnings surfaced in `Status`.
+/// Soft warnings surfaced in `Status`. Empty for now — reserved as an
+/// extension point for advice the node can attach to a status reply.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Warnings {
-    /// Count of COB locations under our DID whose endpoint id does not
-    /// match the node's current endpoint id. Populated client-side at
-    /// status-print time; the node always returns zero here.
-    pub did_locations_unmatched: usize,
-}
+pub struct Warnings {}
 
 #[cfg(test)]
 mod tests {
@@ -625,7 +621,7 @@ mod tests {
                     "paths_relayed": 0,
                 },
                 "traffic": {"out_bytes": 0, "in_bytes": 0},
-                "warnings": {"did_locations_unmatched": 0},
+                "warnings": {},
             })
         );
     }

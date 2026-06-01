@@ -851,9 +851,7 @@ async fn build_status(
         },
         connections,
         traffic,
-        // The node has no repo storage handle, so it can't compare COB
-        // locations against its endpoint id; the CLI fills this in at
-        // status-print time.
+        // Reserved extension point; no warnings are emitted yet.
         warnings: crate::protocol::Warnings::default(),
     })
 }

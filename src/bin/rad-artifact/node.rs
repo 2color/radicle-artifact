@@ -591,14 +591,6 @@ fn print_status_pretty(s: &Status) {
         human_bytes(tr.out_bytes),
         human_bytes(tr.in_bytes)
     );
-    if s.warnings.did_locations_unmatched > 0 {
-        println!(
-            "Warnings      ⚠ {} stale endpoint URL(s) under your DID (run `rad-artifact reconcile --retract-orphaned-self`)",
-            s.warnings.did_locations_unmatched
-        );
-    } else {
-        println!("Warnings      none");
-    }
 }
 
 fn human_bytes(n: u64) -> String {
