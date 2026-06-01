@@ -412,14 +412,11 @@ async fn stream_error<T: serde::Serialize>(
 /// polled for EOF (or any unexpected inbound byte) even during silent
 /// phases that emit no frames (a long export or HTTP body). Either path
 /// returns, dropping `op` and aborting the in-flight download/export.
-async fn run_stream<R, W, T, F, Fut>(read: &mut R, write: &mut W, op: F) -> io::Result<()>
-where
-    R: AsyncReadExt + Unpin,
-    W: AsyncWriteExt + Unpin,
-    T: serde::Serialize,
-    F: FnOnce(mpsc::UnboundedSender<FetchProgress>) -> Fut,
-    Fut: std::future::Future<Output = Result<T, (ErrorCode, String)>>,
-{
+async fn run_stream<T: serde::Serialize>(
+    read: &mut (impl AsyncReadExt + Unpin),
+    write: &mut (impl AsyncWriteExt + Unpin),
+    op: impl AsyncFnOnce(mpsc::UnboundedSender<FetchProgress>) -> Result<T, (ErrorCode, String)>,
+) -> io::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<FetchProgress>();
     let fut = op(tx);
     tokio::pin!(fut);
@@ -495,7 +492,7 @@ async fn stream_export(
         }
     }
 
-    run_stream(read, write, move |tx| async move {
+    run_stream(read, write, async move |tx| {
         let on_progress = move |p| {
             let _ = tx.send(p);
         };
@@ -574,7 +571,7 @@ async fn stream_fetch(
     let hash = haf.hash;
     let endpoint_id = ctx.endpoint_id;
 
-    run_stream(read, write, move |tx| async move {
+    run_stream(read, write, async move |tx| {
         let mut on_progress = move |p| {
             let _ = tx.send(p);
         };
