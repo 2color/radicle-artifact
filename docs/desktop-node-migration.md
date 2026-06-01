@@ -3,20 +3,20 @@
 **Audience:** whoever wires `radicle-desktop` onto the new long-running
 seeder node in `radicle-artifact`.
 **Status of the producer side (`radicle-artifact`):** the node, client,
-protocol, and seeder all landed on `main` (crate `0.14`). The
-`switch-url-scheme` branch renames the location scheme `iroh://` →
-`radiroh://`; land/merge that before starting so the desktop targets the
-final scheme. The fetch read-side protocol (`Has`/`Export`/`Fetch`) is
-specified in `fetch-protocol-design.md` but not yet implemented — the
-read-side migration is gated on it; the write side is not.
+protocol, and seeder landed earlier; the `radiroh://` location scheme is
+already in place (the legacy `iroh://` scheme is rejected on read). The
+fetch read-side protocol (`Has`/`Export`/`Fetch`, streaming) is now
+**implemented** — patch `659e57a` (pending merge to `main`) per
+`fetch-protocol-design.md`. So neither side is gated any longer: both the
+write side and the read side can be migrated against the shipped API.
 **Status of the consumer side (`radicle-desktop`):** unstarted. Desktop
 still runs its own in-process seeder (`crates/radicle-types/src/seeder.rs`)
 and pins `radicle-artifact = "0.13"`.
 
 > **This is not a drop-in swap.** The desktop's iroh `FsStore` is used for
 > *both* seeding and fetching, and four things changed underneath it
-> (store ownership, identity, URL scheme, tag layout). Read "The blocker"
-> before estimating.
+> (store ownership, identity, URL scheme, tag layout). Read "Four
+> mismatches" before estimating.
 
 ---
 
@@ -35,14 +35,33 @@ All under the `share` feature, crate `radicle_artifact`:
   - `.list_seeded(rid) -> Vec<SeededEntry>`
   - `.status() -> Status`
   - `.shutdown()`
+  - **Read side (new):**
+    - `.has(cid) -> HasResult` — `{ present, complete, bytes }`, one-shot,
+      no network. The "bytes already local?" fast-path probe.
+    - `.export(cid, dest, idle, on_progress) -> ExportReceipt` — stream
+      already-local bytes to disk; `ErrorCode::NotLocal` if absent.
+    - `.fetch(args: FetchArgs, idle, on_progress) -> FetchReceipt` —
+      fast-path export if local, else download from `args.locations` into
+      the store, export, and (if `args.seed`) tag as seeded.
+    - `.fetch_blocking` / `.export_blocking` — sync wrappers (the CLI uses
+      these). `on_progress: impl FnMut(&FetchProgress)`; `idle: Duration`
+      bounds each frame, not the whole transfer.
+    - `FetchArgs { rid, cid, locations: Vec<FetchLocation>, dest, seed }`.
+      The caller resolves COB locations into `Vec<FetchLocation>` itself
+      (the node does no DID resolution); `src/bin/rad-artifact/main.rs`
+      `artifact_locations` is the reference resolver.
   - Note the **typed** args: `rid: RepoId`, `cid: Cid` (not strings, as of
     the `type … on the wire` refactors). `kind: ArtifactKind`,
     `mode: ImportMode` (`Copy` | `Reference`).
 - `protocol::{Command, CommandResult, CommandError, ErrorCode,
-  SeedReceipt, UnseedReceipt, SeededEntry, Status, …}` — the wire types.
-  `SeedReceipt.endpoint_id` / `Status.endpoint_id` are a typed
+  SeedReceipt, UnseedReceipt, SeededEntry, Status,
+  FetchLocation, HasResult, ExportReceipt, FetchReceipt, FetchProgress,
+  StreamEvent, …}` — the wire types. `SeedReceipt.endpoint_id` /
+  `FetchReceipt.endpoint_id` / `Status.endpoint_id` are a typed
   `share::keys::EndpointId` that serializes as a canonical
-  `radiroh://<base32>` URL.
+  `radiroh://<base32>` URL. `FetchProgress` is an enum
+  (`connecting` / `trying-provider` / `provider-failed` / `downloading` /
+  `exporting`) — bridge it to the `artifact_progress` Tauri event.
 - `node::run(home, secret)` + `node::lifecycle::{resolve_passphrase,
   rotate_log, spawn_detached, wait_until_running, log_path}` — the daemon
   and its parent-side startup helpers. The CLI's `rad-artifact node start`
@@ -75,61 +94,43 @@ Tauri state. It backs two distinct concerns:
 The Tauri commands already receive `rid: RepoId`, so feeding the
 per-repo API is straightforward.
 
-### 2. Fetching (read side) — **the blocker**
+### 2. Fetching (read side) — was the blocker, now unblocked
 
-The same `iroh.blobs` store is also the download target and source:
+The same `iroh.blobs` store is also the download target and source. The
+three read-side call sites map one-to-one onto the new client methods:
 
-- `release.rs:303,408` — `iroh.blobs.blobs().has(hash)` (fast path: bytes
-  already local).
-- `release.rs:305,366` — `fetch::export(&iroh.blobs, hash, kind, &dest)`
-  writes store bytes to disk.
-- `release.rs:343` — `fetch::fetch_artifact(&iroh.blobs, router.endpoint(),
-  …)` downloads a CID from peer locations *into* the store
-  (`crates/radicle-types/src/fetch.rs`, uses `iroh_blobs … Downloader`).
+| Desktop call site | Current call | Replacement |
+|---|---|---|
+| `release.rs:303,408` | `iroh.blobs.blobs().has(hash)` (fast path) | `client.has(cid)` → `HasResult.complete` |
+| `release.rs:305,366` | `fetch::export(&iroh.blobs, hash, kind, &dest)` | `client.export(cid, dest, idle, on_progress)` |
+| `release.rs:343` | `fetch::fetch_artifact(&iroh.blobs, endpoint, …)` | `client.fetch(FetchArgs{…}, idle, on_progress)` |
 
-**The node protocol has no fetch / export / has command.** It only does
-Status/Seed/Unseed/IsSeeding/ListSeeded/Shutdown. And `FsStore` is
-single-writer: if the node owns `<home>/artifacts/store/`, the desktop
-**cannot** open its own `FsStore` on the same `RAD_HOME` to fetch into —
-the second open blocks on the lock.
+Why this needed a protocol change at all: `FsStore` is single-writer, so
+once the node owns `<home>/artifacts/store/`, the desktop **cannot** open
+its own `FsStore` on the same `RAD_HOME` — the second open blocks on the
+lock. The node had to grow `Has`/`Export`/`Fetch` so the desktop opens no
+store of its own. That work is **done** (patch `659e57a`):
 
-So you cannot just delete the seeder and keep `fetch.rs` pointed at a
-local store. One of these has to happen:
+- **Option A — extend the protocol (chosen, implemented).** The node owns
+  all blob I/O; the desktop opens no store. `Has`/`Export`/`Fetch` plus the
+  `StreamEvent` streaming envelope shipped per `fetch-protocol-design.md`.
+- **Option B — split stores** *(rejected).* Node owns the seeding store;
+  the desktop keeps a separate ephemeral endpoint+store for fetching. Two
+  iroh endpoints, and the local-bytes fast path breaks because seeded bytes
+  live in the node's store. Retained only as a rejected alternative.
+- **Option C — embed the node in-process** *(rejected).* Reintroduces the
+  single-writer conflict the moment a CLI node also runs on the same home,
+  and loses the "one seeder per host" model.
 
-- **Option A — extend the protocol.** Add `Fetch { rid, cid, locations,
-  dest }` (+ progress streaming) and `Export`/`Has` commands so the node
-  owns all blob I/O and the desktop opens no store at all. Cleanest
-  end state; biggest change (new wire commands + a streaming/`Subscribe`
-  mechanism the protocol doesn't have yet — `Command` is `#[non_exhaustive]`
-  precisely for this).
-- **Option B — split stores.** Node owns the seeding store; the desktop
-  keeps a *separate ephemeral* endpoint+store for fetching (mirror the
-  CLI's one-shot `share::download` path). Smaller change, but: two iroh
-  endpoints, and the "bytes already local → skip network" fast path
-  breaks because seeded bytes live in the node's store, not the
-  fetcher's. Auto-seed-after-fetch becomes a `client.seed(path)` of the
-  exported file rather than a tag of already-present bytes.
-- **Option C — embed the node in-process.** Call `node::run` from the
-  Tauri runtime instead of shelling out. Avoids a separate process but
-  reintroduces the single-writer conflict the moment a CLI node is also
-  started on the same home, and you lose the "one seeder per host" model.
-  Not recommended.
+Consequence for this migration: both halves are now unblocked.
 
-**Decision (2026-05): go straight to Option A.** The streaming fetch
-protocol is now specified in `fetch-protocol-design.md` (`Has` / `Export`
-/ `Fetch` commands, a `StreamEvent` envelope, provider-level progress).
-That removes the reason to build — and then throw away — the Option B
-stopgap. Option B/C are retained above only as rejected alternatives.
-
-Consequence for this migration: the work splits cleanly in two.
-
-- **Write side (seeding) — independent, do it first.** The seven call
-  sites in the table above move onto the existing `Client` with *no*
-  protocol change. This is unblocked today and need not wait on anything.
-- **Read side (fetching) — gated on the new protocol.** Once `Has` /
-  `Export` / `Fetch` land in `radicle-artifact` per the design doc, the
-  three read-side call sites map straight onto `client.has` /
-  `client.export` / `client.fetch` (see that doc's "Desktop mapping").
+- **Write side (seeding) — independent.** The seven call sites in the
+  table above move onto the existing `Client`; no protocol change.
+- **Read side (fetching) — ready.** The protocol shipped, so the three
+  read-side call sites map straight onto `client.has` / `client.export` /
+  `client.fetch` (see `fetch-protocol-design.md` "Desktop mapping").
+  The caller resolves COB locations into `Vec<FetchLocation>` first
+  (reference resolver: `artifact_locations` in the CLI).
   Bridge the streamed `FetchProgress` frames into the existing
   `artifact_progress` Tauri event.
 
@@ -188,17 +189,16 @@ secret through `spawn_detached` / the env.
 
 ## Suggested sequence
 
-1. Bump `radicle-artifact` to `0.14`+ (path or git dep until published),
-   `features = ["share"]`.
-2. **Write side (independent, land first):** replace `IrohState`'s seeding
-   role — add a `Client` to app state; rewrite the seven write-side call
-   sites (table above) to go through it. Keep `rid` threading — it's
-   already at every call site. No protocol change needed; not gated on the
-   fetch work.
-3. **Read side (gated on the fetch protocol):** once `Has`/`Export`/`Fetch`
-   land per `fetch-protocol-design.md`, rewrite the three read-side call
-   sites onto `client.has`/`export`/`fetch`; bridge `FetchProgress` frames
-   to the `artifact_progress` event.
+1. Bump `radicle-artifact` to the version carrying the fetch protocol
+   (patch `659e57a`; path or git dep until published), `features =
+   ["share"]`.
+2. **Write side (independent):** replace `IrohState`'s seeding role — add a
+   `Client` to app state; rewrite the seven write-side call sites (table
+   above) to go through it. Keep `rid` threading — it's already at every
+   call site. No protocol change needed.
+3. **Read side (now available):** rewrite the three read-side call sites
+   onto `client.has`/`export`/`fetch`; bridge `FetchProgress` frames to the
+   `artifact_progress` event. The protocol has shipped — no longer gated.
 4. Handle identity + scheme + tag migration (the four mismatches). At
    minimum: stop hand-building URLs, sweep stale `iroh://` URLs under the
    user's DID, document/auto-handle the re-seed.
@@ -208,8 +208,14 @@ secret through `spawn_detached` / the env.
 
 ## Reference points in radicle-artifact
 
-- `src/bin/rad-artifact/node.rs` — the canonical `Client` caller for every
-  command, including seed-then-`add_location` and the reconcile sweep.
+- `src/bin/rad-artifact/node.rs` — the canonical `Client` caller for the
+  seeding commands, including seed-then-`add_location` and the reconcile sweep.
+- `src/bin/rad-artifact/main.rs` `run_fetch` — reference read-side caller:
+  resolves COB locations via `artifact_locations` → `Vec<FetchLocation>`,
+  drives `client.fetch_blocking` with a progress bar, and (on `--seed`)
+  writes the `add_location` COB from `FetchReceipt.endpoint_id`.
+- `src/share/fetch.rs` — the node-side fetch/export core, if the desktop
+  ever needs to understand what the node does behind the protocol.
 - `src/client/mod.rs` — full client surface + `ClientError` (note the
   ConnectionRefused/NotFound → "not running" mapping in
   `node.rs:client_err`).
