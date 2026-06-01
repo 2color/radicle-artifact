@@ -120,12 +120,12 @@ impl Client {
 
     /// Probe whether a node is reachable on the configured socket.
     ///
-    /// Issues a short-deadline [`Command::Status`] and reports
-    /// success/failure. False covers both "socket missing" and "owner
-    /// dead but socket file lingers" — the parent CLI uses this to
-    /// decide whether to unlink and rebind.
+    /// Issues a short-deadline [`Command::Alive`] — the cheapest command,
+    /// touching no state — and reports success/failure. False covers both
+    /// "socket missing" and "owner dead but socket file lingers" — the
+    /// parent CLI uses this to decide whether to unlink and rebind.
     pub async fn is_running(&self) -> bool {
-        self.call::<Status>(&Command::Status, PROBE_TIMEOUT)
+        self.call::<()>(&Command::Alive, PROBE_TIMEOUT)
             .await
             .is_ok()
     }

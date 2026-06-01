@@ -56,6 +56,10 @@ pub use crate::seeder::ImportMode;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "command", rename_all = "kebab-case")]
 pub enum Command {
+    /// Cheap liveness probe: the node replies `{"okay":null}` and does no
+    /// work. Used to tell a live owner from a stale socket file. Distinct
+    /// from any network-level reachability check against a peer endpoint.
+    Alive,
     /// Report node status.
     Status,
     /// Import bytes from `path`, verify against `cid`, register the
@@ -466,6 +470,15 @@ mod tests {
         let cmd = Command::Status;
         let s = serde_json::to_string(&cmd).unwrap();
         assert_eq!(s, r#"{"command":"status"}"#);
+        let back: Command = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, cmd);
+    }
+
+    #[test]
+    fn wire_snapshot_command_alive() {
+        let cmd = Command::Alive;
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(s, r#"{"command":"alive"}"#);
         let back: Command = serde_json::from_str(&s).unwrap();
         assert_eq!(back, cmd);
     }

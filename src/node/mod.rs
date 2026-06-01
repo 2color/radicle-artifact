@@ -326,6 +326,8 @@ fn parse_command(line: &str) -> Result<Command, (ErrorCode, String)> {
 async fn dispatch(cmd: Command, ctx: &NodeCtx, shutdown_tx: &broadcast::Sender<()>) -> String {
     let store = &ctx.store;
     match cmd {
+        // Cheap liveness probe: touch no state, just ack.
+        Command::Alive => ok_json(()),
         Command::Status => match build_status(
             store,
             ctx.endpoint.metrics(),
