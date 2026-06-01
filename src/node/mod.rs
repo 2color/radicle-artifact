@@ -859,6 +859,25 @@ mod tests {
         RepoId::from_str("rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip").unwrap()
     }
 
+    /// Spawn a node under `home`, wait for its control socket to appear, and
+    /// return the socket path plus the join handle for asserting clean exit.
+    async fn start_node(
+        home: &Path,
+        secret: iroh::SecretKey,
+    ) -> (PathBuf, tokio::task::JoinHandle<Result<(), NodeError>>) {
+        let home_path = home.to_path_buf();
+        let handle = tokio::spawn(async move { run(&home_path, secret).await });
+        let socket = home.join(ARTIFACTS_DIR).join("control.sock");
+        for _ in 0..200 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(socket.exists(), "control socket never appeared");
+        (socket, handle)
+    }
+
     /// End-to-end client↔node round-trip covering Status, Seed (new +
     /// duplicate + CID mismatch), IsSeeding, ListSeeded, Unseed (new +
     /// duplicate), and Shutdown.
@@ -1338,6 +1357,186 @@ mod tests {
 
             client.shutdown().await.unwrap();
             node_handle.await.unwrap().unwrap();
+        });
+    }
+
+    /// A client that vanishes mid-stream must drop the in-flight `op`, not
+    /// leave it running. Driven directly over an in-memory pipe: the op parks
+    /// forever, so the only way `run_stream` returns is the disconnect arm
+    /// seeing EOF on the read half — at which point the op future is dropped.
+    #[test]
+    fn run_stream_aborts_on_client_disconnect() {
+        use std::sync::atomic::AtomicBool;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // Duplex pipe standing in for the connection: we keep the client
+            // end, run_stream reads/writes the server end.
+            let (client_end, server_end) = tokio::io::duplex(64);
+            let (mut srv_read, mut srv_write) = tokio::io::split(server_end);
+
+            // Guard whose Drop flips a flag, so we can prove the op future was
+            // dropped (aborted) rather than allowed to complete.
+            struct DropFlag(Arc<AtomicBool>);
+            impl Drop for DropFlag {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let aborted = Arc::new(AtomicBool::new(false));
+            let completed = Arc::new(AtomicBool::new(false));
+            let aborted_op = aborted.clone();
+            let completed_op = completed.clone();
+
+            let op = async move |_tx: mpsc::UnboundedSender<FetchProgress>| {
+                let _guard = DropFlag(aborted_op);
+                // Never resolves on its own; only a drop ends it.
+                std::future::pending::<()>().await;
+                completed_op.store(true, Ordering::SeqCst);
+                Ok::<(), (ErrorCode, String)>(())
+            };
+
+            let server =
+                tokio::spawn(
+                    async move { run_stream::<()>(&mut srv_read, &mut srv_write, op).await },
+                );
+
+            // Let run_stream enter its select loop (op parked) before the
+            // client disconnects, so we exercise a genuinely in-flight op.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(client_end); // EOF on the server read half
+
+            let res = tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("run_stream did not return after disconnect")
+                .expect("join error");
+            assert!(res.is_ok());
+            assert!(
+                aborted.load(Ordering::SeqCst),
+                "op future was not dropped on disconnect"
+            );
+            assert!(
+                !completed.load(Ordering::SeqCst),
+                "op should have been aborted, not completed"
+            );
+        });
+    }
+
+    /// A leftover socket file with no live owner must be reclaimed: `run`
+    /// probes it, finds nothing answering, unlinks it, and binds its own.
+    #[test]
+    fn stale_socket_is_reclaimed() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let home = tempfile::tempdir().unwrap();
+            let socket = home.path().join(ARTIFACTS_DIR).join("control.sock");
+            fs::create_dir_all(socket.parent().unwrap()).unwrap();
+            // Bind then drop: the socket file lingers but nothing listens.
+            drop(UnixListener::bind(&socket).unwrap());
+            assert!(socket.exists());
+
+            let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
+            let home_path = home.path().to_path_buf();
+            let handle = tokio::spawn(async move { run(&home_path, secret).await });
+
+            // Poll is_running (not just file existence) since the stale file
+            // is replaced in place — only a live answer means we're up.
+            let client = Client::new(socket.clone());
+            let mut ready = false;
+            for _ in 0..200 {
+                if client.is_running().await {
+                    ready = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(ready, "node never came up after reclaiming stale socket");
+
+            client.shutdown().await.unwrap();
+            handle.await.unwrap().unwrap();
+        });
+    }
+
+    /// `Seed` against a path that doesn't exist must report `PathNotFound`
+    /// before any import work.
+    #[test]
+    fn seed_missing_path_errors() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let home = tempfile::tempdir().unwrap();
+            let secret = iroh::SecretKey::from_bytes(&[8u8; 32]);
+            let (socket, handle) = start_node(home.path(), secret).await;
+
+            let client = Client::new(socket.clone());
+            let missing = home.path().join("does-not-exist.bin");
+            let err = client
+                .seed(
+                    rid_a(),
+                    fake_blob_cid(b"whatever"),
+                    &missing,
+                    ArtifactKind::Blob,
+                    ImportMode::Copy,
+                )
+                .await
+                .expect_err("missing path must error");
+            match err {
+                crate::client::ClientError::Remote(CommandError { code, .. }) => {
+                    assert_eq!(code, ErrorCode::PathNotFound);
+                }
+                other => panic!("expected PathNotFound, got {other:?}"),
+            }
+
+            client.shutdown().await.unwrap();
+            handle.await.unwrap().unwrap();
+        });
+    }
+
+    /// Bare malformed JSON (not just a bad typed field) must surface as
+    /// `InvalidRequest` naming the JSON parse failure.
+    #[test]
+    fn malformed_json_surfaces_as_invalid_request() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let home = tempfile::tempdir().unwrap();
+            let secret = iroh::SecretKey::from_bytes(&[9u8; 32]);
+            let (socket, handle) = start_node(home.path(), secret).await;
+
+            let mut stream = UnixStream::connect(&socket).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut stream, b"this is not json\n")
+                .await
+                .unwrap();
+            let mut buf = String::new();
+            tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut buf)
+                .await
+                .unwrap();
+            let parsed: CommandResult<serde_json::Value> =
+                serde_json::from_str(buf.trim()).unwrap();
+            match parsed {
+                CommandResult::Error(CommandError { code, message }) => {
+                    assert_eq!(code, ErrorCode::InvalidRequest);
+                    assert!(
+                        message.contains("invalid command JSON"),
+                        "message should name the JSON failure: {message}"
+                    );
+                }
+                CommandResult::Okay(_) => panic!("expected error, got ok"),
+            }
+
+            let client = Client::new(socket);
+            client.shutdown().await.unwrap();
+            handle.await.unwrap().unwrap();
         });
     }
 }
