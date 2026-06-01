@@ -584,12 +584,20 @@ async fn stream_fetch(
         // and in-flight bytes are protected on the download path. If this
         // future is dropped (disconnect) the temp tag drops with it.
         //
-        // For a collection the tag covers `hash_seq(root)`; GC marks the
-        // children by walking the root, so they are protected once the root
-        // is complete. While the root itself is still downloading the
-        // children are not yet marked — a GC sweep in that window can force
-        // a re-download (progress loss), but never a false-complete, since
-        // the seeded tag is set only after completeness is verified.
+        // For a collection the tag covers `hash_seq(root)`; GC always
+        // protects the root hash itself, and marks the children by walking
+        // the root once it is complete (a partial child mid-download is then
+        // covered too). The only unprotected window is while the root
+        // hash-seq is itself still incomplete — but the downloader must fetch
+        // the root before it can know which children to fetch, so little to
+        // no child data exists yet in that window. A GC sweep there can force
+        // a re-download, but the lost progress is tiny, and it can never
+        // false-complete: the seeded tag is set only after completeness is
+        // verified.
+        //
+        // We could close the window with a GC pause (an `add_protected`
+        // callback that returns `Abort` while a fetch is in flight), but it's
+        // questionable whether that's worth it given how little is at stake.
         let tt = store
             .tags()
             .temp_tag(haf)
