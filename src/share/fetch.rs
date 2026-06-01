@@ -81,7 +81,7 @@ fn fetch_http(agent: &ureq::Agent, url: &Url, dest: &mut dyn Write) -> Result<()
     Ok(())
 }
 
-/// Build a connection pool with our connect-timeout override.
+/// Build an iroh connection pool with our connect-timeout override.
 pub(crate) fn pool_options() -> PoolOptions {
     PoolOptions {
         connect_timeout: CONNECT_TIMEOUT,
@@ -456,7 +456,175 @@ pub(crate) async fn http_to_store(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+    use std::net::TcpListener;
+
     use super::*;
+
+    /// Spawn a one-shot HTTP/1.1 server that serves `body` once and exits.
+    /// Returns the URL to GET and the server thread's join handle.
+    fn serve_once(body: Vec<u8>) -> (Url, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                // Drain the request so the client's write side completes.
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        let url = Url::parse(&format!("http://{addr}/blob")).unwrap();
+        (url, handle)
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// `http_to_store` downloads the body, imports it, and returns the hash
+    /// when the bytes match the expected CID.
+    #[test]
+    fn http_to_store_imports_matching_blob() {
+        runtime().block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = FsStore::load(tmp.path()).await.unwrap();
+
+            let body = b"hello over http".to_vec();
+            let expected = cid_utils::blake3_hash_to_cid(Hash::new(&body), ArtifactKind::Blob);
+            let (url, server) = serve_once(body.clone());
+
+            let hash = http_to_store(&store, &url, &expected, |_| {})
+                .await
+                .unwrap();
+            assert_eq!(hash, Hash::new(&body));
+            assert!(store.blobs().has(hash).await.unwrap());
+            server.join().unwrap();
+        });
+    }
+
+    /// A body whose bytes don't hash to `expected` surfaces `CidMismatch`
+    /// rather than silently importing the wrong content.
+    #[test]
+    fn http_to_store_rejects_mismatch() {
+        runtime().block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = FsStore::load(tmp.path()).await.unwrap();
+
+            // Expect one thing, serve another.
+            let expected =
+                cid_utils::blake3_hash_to_cid(Hash::new(b"expected"), ArtifactKind::Blob);
+            let (url, server) = serve_once(b"something else entirely".to_vec());
+
+            let err = http_to_store(&store, &url, &expected, |_| {})
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Error::CidMismatch { .. }), "got {err:?}");
+            server.join().unwrap();
+        });
+    }
+
+    /// Build a small collection in the store and seed three child blobs.
+    /// Returns the root hash. Member names are caller-supplied so tests can
+    /// inject unsafe ones.
+    async fn store_collection(store: &FsStore, members: &[(&str, &[u8])]) -> Hash {
+        let mut pairs = Vec::new();
+        // Hold child tags until the root tag covers them.
+        let mut tags = Vec::new();
+        for (name, data) in members {
+            let tt = store.add_bytes(data.to_vec()).temp_tag().await.unwrap();
+            pairs.push((name.to_string(), tt.hash()));
+            tags.push(tt);
+        }
+        let collection = Collection::from_iter(pairs);
+        let root = collection.store(store.as_ref()).await.unwrap();
+        root.hash()
+    }
+
+    /// `export_collection_to` writes every member to disk, creating nested
+    /// directories, and renames the staging tree onto the destination.
+    #[test]
+    fn export_collection_writes_members() {
+        runtime().block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = FsStore::load(tmp.path()).await.unwrap();
+            let root =
+                store_collection(&store, &[("a.txt", b"alpha"), ("sub/b.txt", b"beta")]).await;
+
+            let dest = tmp.path().join("out");
+            let total = export_collection_to(&store, root, &dest, |_| {})
+                .await
+                .unwrap();
+
+            assert_eq!(total, (b"alpha".len() + b"beta".len()) as u64);
+            assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"alpha");
+            assert_eq!(std::fs::read(dest.join("sub/b.txt")).unwrap(), b"beta");
+            // Staging sibling is gone once the swap completes.
+            assert!(!partial_sibling(&dest).exists());
+        });
+    }
+
+    /// A member name that escapes the destination (`..`) aborts the export;
+    /// the destination is never created and the staging tree is cleaned up.
+    #[test]
+    fn export_collection_rejects_unsafe_member() {
+        runtime().block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = FsStore::load(tmp.path()).await.unwrap();
+            let root = store_collection(&store, &[("../escape", b"evil")]).await;
+
+            let dest = tmp.path().join("out");
+            let err = export_collection_to(&store, root, &dest, |_| {})
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, Error::Iroh(m) if m.contains("unsafe collection member name")),
+                "got {err:?}"
+            );
+            // Neither the destination nor the staging tree survives.
+            assert!(!dest.exists());
+            assert!(!partial_sibling(&dest).exists());
+            // And nothing was written outside the destination.
+            assert!(!tmp.path().join("escape").exists());
+        });
+    }
+
+    /// `ScopedPath` removes a file when dropped — the cancellation-cleanup
+    /// guarantee the export/download paths rely on.
+    #[test]
+    fn scoped_path_removes_file_on_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("staged");
+        std::fs::write(&file, b"partial").unwrap();
+        {
+            let _guard = ScopedPath(file.clone());
+            assert!(file.exists());
+        }
+        assert!(!file.exists());
+    }
+
+    /// `ScopedPath` also removes a staging directory when dropped.
+    #[test]
+    fn scoped_path_removes_dir_on_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("staging");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("inner"), b"x").unwrap();
+        {
+            let _guard = ScopedPath(dir.clone());
+            assert!(dir.exists());
+        }
+        assert!(!dir.exists());
+    }
 
     #[test]
     fn safe_join_allows_nested_paths() {
