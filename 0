@@ -1,1 +1,1 @@
-{"state":{"reason":"other","status":"closed"},"type":"lifecycle"}
+{"body":"Closing this as we now have a long-running artifact node which manages its own state. ","replyTo":"8d993fbfd16858604e38cdd683fd25300fcd0ddf","type":"comment"}
