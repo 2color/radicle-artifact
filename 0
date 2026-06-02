@@ -1,1 +1,1 @@
-{"base":"32a86d24f975d97e2abf27b60159563673a3bdf8","description":"chore(deps): upgrade iroh to rc.1, drop nonempty\n\n- iroh/iroh-base/iroh-dns/iroh-relay/iroh-tickets: rc.0 → rc.1\n- iroh-blobs: 0.101.0 → 0.102.0\n- nonempty was declared but never used; remove it\n\nchore(deps): bump indicatif and inquire\n\n- indicatif: 0.17 → 0.18\n- inquire: 0.7 → 0.9","oid":"92981bf2909d564fc94631fa95c8d1eb4dbe1ed4","type":"revision"}
+{"commit":"92981bf2909d564fc94631fa95c8d1eb4dbe1ed4","revision":"2b92280f78977a6f02fc044b0882c3db8658aad3","type":"merge"}
