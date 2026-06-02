@@ -1,1 +1,1 @@
-{"state":{"reason":"solved","status":"closed"},"type":"lifecycle"}
+{"body":"This has been resolved by introducing the long-running daemon. See the CHANGELOG.md for more information.","replyTo":"5918e3897ce73ab84e0d9b7d4b1f4088080cf66d","type":"comment"}
