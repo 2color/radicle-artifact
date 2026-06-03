@@ -43,7 +43,7 @@
 //!
 //! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse().unwrap();
 //! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
-//! release.add_artifact(cid, "linux-amd64 binary".into(), &alice.signer).unwrap();
+//! release.register_artifact(cid, "linux-amd64 binary".into(), &alice.signer).unwrap();
 //! release.add_location(cid, url, &alice.signer).unwrap();
 //! ```
 
@@ -290,10 +290,13 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tag: Option<Oid>,
     },
-    /// Add an artifact to the release.
+    /// Register an artifact in the release.
     ///
-    /// If the CID already exists, the name is updated.
-    AddArtifact {
+    /// If the CID already exists, the name is updated. The serialized
+    /// action name stays `AddArtifact` for backward compatibility with
+    /// existing COBs.
+    #[serde(rename = "AddArtifact")]
+    RegisterArtifact {
         /// The content identifier for this artifact.
         cid: Cid,
         /// A human-readable description of the artifact.
@@ -434,7 +437,7 @@ impl Release {
         match action {
             // Subsequent Create actions are ignored after initialization.
             Action::Create { .. } => {}
-            Action::AddArtifact { cid, name } => {
+            Action::RegisterArtifact { cid, name } => {
                 // Insert if new, or update the name if the original author resends.
                 match self.artifacts.entry(cid) {
                     indexmap::map::Entry::Occupied(mut e) => {
@@ -818,8 +821,8 @@ where
         Ok(())
     }
 
-    /// Add an artifact to the release.
-    pub fn add_artifact<G>(
+    /// Register an artifact in the release.
+    pub fn register_artifact<G>(
         &mut self,
         cid: Cid,
         name: String,
@@ -828,7 +831,9 @@ where
     where
         G: Signer<crypto::Signature>,
     {
-        self.transaction("Add artifact", signer, |tx| tx.add_artifact(cid, name))
+        self.transaction("Register artifact", signer, |tx| {
+            tx.register_artifact(cid, name)
+        })
     }
 
     /// Add a discovery location for an artifact.
@@ -1048,9 +1053,9 @@ where
         self.0.push(Action::Create { oid, tag })
     }
 
-    /// Add an artifact to the transaction.
-    fn add_artifact(&mut self, cid: Cid, name: String) -> Result<(), store::Error> {
-        self.0.push(Action::AddArtifact { cid, name })
+    /// Register an artifact in the transaction.
+    fn register_artifact(&mut self, cid: Cid, name: String) -> Result<(), store::Error> {
+        self.0.push(Action::RegisterArtifact { cid, name })
     }
 
     /// Add a location for an artifact.
@@ -1145,10 +1150,10 @@ mod test {
         let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
-        // Alice adds an artifact.
+        // Alice registers an artifact.
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         // Alice adds a location for the artifact.
@@ -1221,7 +1226,7 @@ mod test {
     }
 
     #[test]
-    fn idempotent_add_artifact() {
+    fn idempotent_register_artifact() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -1231,11 +1236,11 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "first name".into(), &alice.signer)
+            .register_artifact(cid, "first name".into(), &alice.signer)
             .unwrap();
         // Second add with different name updates it.
         release
-            .add_artifact(cid, "second name".into(), &alice.signer)
+            .register_artifact(cid, "second name".into(), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1244,7 +1249,7 @@ mod test {
     }
 
     #[test]
-    fn add_artifact_records_author() {
+    fn register_artifact_records_author() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -1254,7 +1259,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1273,12 +1278,12 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "original name".into(), &alice.signer)
+            .register_artifact(cid, "original name".into(), &alice.signer)
             .unwrap();
 
         // Bob tries to rename — should be ignored.
         release
-            .add_artifact(cid, "bobs name".into(), &bob.signer)
+            .register_artifact(cid, "bobs name".into(), &bob.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1356,7 +1361,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         // Alice adds two different URLs for the same artifact.
@@ -1416,7 +1421,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
@@ -1438,7 +1443,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
         // Reload from store and verify the artifact is still present.
@@ -1460,7 +1465,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         // Bob and Carol attest; Alice's self-attestation is a no-op (she's the author).
@@ -1486,7 +1491,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
         // The author already vouches by creating the artifact.
@@ -1509,7 +1514,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
         // Attesting twice from the same non-author node should be a no-op.
@@ -1548,7 +1553,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
         release.attest(cid, &bob.signer).unwrap();
 
@@ -1570,7 +1575,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
         release
             .redact(cid, "compromised build".into(), &alice.signer)
@@ -1596,7 +1601,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         release
@@ -1630,7 +1635,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         // Both users redact with the same reason — both are recorded independently.
@@ -1658,7 +1663,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
         release
             .redact(cid, "initial reason".into(), &alice.signer)
@@ -1684,7 +1689,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
         release
             .redact(cid, "compromised".into(), &alice.signer)
@@ -1710,7 +1715,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         // Attest then redact — redaction should supersede the attestation.
@@ -1737,7 +1742,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         // Redact first, then attempt to attest — the attestation should be
@@ -1765,7 +1770,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         // Bob attests; Alice's self-attestation is a no-op (she's the author).
@@ -1791,7 +1796,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
         release.redact(cid, "".into(), &alice.signer).unwrap();
 
@@ -1812,7 +1817,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64 binary".into(), &alice.signer)
             .unwrap();
 
         let long_reason = "x".repeat(crate::MAX_REDACT_REASON_LEN + 1);
@@ -1862,7 +1867,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
         let https_url = Url::parse("https://example.com/file.tar.gz").unwrap();
@@ -1913,7 +1918,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "test artifact".into(), &alice.signer)
+            .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
 
         // Both Alice and Bob add the same bare radiroh:// URL.
@@ -1955,12 +1960,12 @@ mod test {
         // Create two releases with different artifacts.
         {
             let mut r1 = releases.create(oid1, None, &alice.signer).unwrap();
-            r1.add_artifact(cid1, "artifact-one".into(), &alice.signer)
+            r1.register_artifact(cid1, "artifact-one".into(), &alice.signer)
                 .unwrap();
         }
         {
             let mut r2 = releases.create(oid2, None, &alice.signer).unwrap();
-            r2.add_artifact(cid2, "artifact-two".into(), &alice.signer)
+            r2.register_artifact(cid2, "artifact-two".into(), &alice.signer)
                 .unwrap();
         }
 
@@ -1995,12 +2000,12 @@ mod test {
         let cid = test_cid(1);
         {
             let mut r = releases.create(oid, None, &alice.signer).unwrap();
-            r.add_artifact(cid, "alice-built".into(), &alice.signer)
+            r.register_artifact(cid, "alice-built".into(), &alice.signer)
                 .unwrap();
         }
         {
             let mut r = releases.create(oid, None, &bob.signer).unwrap();
-            r.add_artifact(cid, "bob-built".into(), &bob.signer)
+            r.register_artifact(cid, "bob-built".into(), &bob.signer)
                 .unwrap();
         }
 
@@ -2024,11 +2029,13 @@ mod test {
         let cid = test_cid(1);
         {
             let mut r = releases.create(oid1, None, &alice.signer).unwrap();
-            r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
+            r.register_artifact(cid, "shared".into(), &alice.signer)
+                .unwrap();
         }
         {
             let mut r = releases.create(oid2, None, &alice.signer).unwrap();
-            r.add_artifact(cid, "shared".into(), &alice.signer).unwrap();
+            r.register_artifact(cid, "shared".into(), &alice.signer)
+                .unwrap();
         }
 
         let found = releases.find_by_cid(&cid).unwrap();
@@ -2197,6 +2204,26 @@ mod test {
         }
     }
 
+    #[test]
+    fn register_artifact_wire_name_stays_add_artifact() {
+        // RegisterArtifact must serialize under the legacy `AddArtifact`
+        // tag so COBs written before the rename still deserialize. Guards
+        // the #[serde(rename)] on the variant.
+        use crate::Action;
+        let action = Action::RegisterArtifact {
+            cid: test_cid(1),
+            name: "linux-amd64 binary".into(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(
+            json.contains(r#""AddArtifact""#),
+            "expected legacy wire tag, got {json}"
+        );
+        // A legacy-tagged payload round-trips back into RegisterArtifact.
+        let parsed: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, action);
+    }
+
     /// Visual smoke test: render a release with one artifact, one location and
     /// one attestation in both compact (list) and detailed (show) styles. We
     /// assert key visible substrings so the structure is locked in, and dump
@@ -2217,7 +2244,7 @@ mod test {
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "linux-amd64.tar.gz".into(), &alice.signer)
+            .register_artifact(cid, "linux-amd64.tar.gz".into(), &alice.signer)
             .unwrap();
         release
             .add_location(
@@ -2278,7 +2305,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
         release
             .set_metadata(cid, "build-env".into(), "nix --pure".into(), &alice.signer)
@@ -2302,7 +2329,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
         let value = serde_json::json!({
             "format": "cyclonedx",
@@ -2332,7 +2359,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
         release
             .set_metadata(cid, "key".into(), "first".into(), &alice.signer)
@@ -2358,7 +2385,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
         release
             .set_metadata(cid, "a".into(), "1".into(), &alice.signer)
@@ -2386,7 +2413,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
 
         assert!(matches!(
@@ -2420,7 +2447,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
 
         // A string of MAX+1 bytes serializes to MAX+3 with the surrounding quotes.
@@ -2460,7 +2487,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
         release
             .remove_metadata(cid, "missing".into(), &alice.signer)
@@ -2480,7 +2507,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
         release
             .set_metadata(cid, "build".into(), "ok".into(), &alice.signer)
@@ -2510,7 +2537,7 @@ mod test {
 
         let cid = test_cid(1);
         release
-            .add_artifact(cid, "binary".into(), &alice.signer)
+            .register_artifact(cid, "binary".into(), &alice.signer)
             .unwrap();
         release
             .set_metadata(cid, "build".into(), "ok".into(), &alice.signer)

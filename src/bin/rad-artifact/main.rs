@@ -403,7 +403,7 @@ where
     };
     let id = *release.id();
     release
-        .add_artifact(cid, name.clone(), signer)
+        .register_artifact(cid, name.clone(), signer)
         .map_err(|err| error::Register::Store { id, err })?;
     let short_oid = &oid.to_string()[..7];
     let short_id = &id.to_string()[..7];
