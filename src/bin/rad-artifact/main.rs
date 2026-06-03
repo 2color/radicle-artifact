@@ -147,7 +147,7 @@ fn release_visible(
     all_authors || delegates.contains(release.creator()) || release.creator() == local
 }
 
-fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
+pub(crate) fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
     let mut node = Node::new(profile.home.socket_from_env());
 
     // Check seed sync status for the local node's namespace, matching the
@@ -204,12 +204,15 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         let Args {
             command,
             repository,
+            no_sync,
             ..
         } = args;
         return match command {
-            Command::Node(cmd) => node::run(cmd, repository, &profile).map_err(Into::into),
-            Command::Seed(cmd) => run_seed(cmd, repository, &profile).map_err(Into::into),
-            Command::Unseed(cmd) => run_unseed(cmd, repository, &profile).map_err(Into::into),
+            Command::Node(cmd) => node::run(cmd, repository, no_sync, &profile).map_err(Into::into),
+            Command::Seed(cmd) => run_seed(cmd, repository, no_sync, &profile).map_err(Into::into),
+            Command::Unseed(cmd) => {
+                run_unseed(cmd, repository, no_sync, &profile).map_err(Into::into)
+            }
             Command::Reconcile(cmd) => {
                 reconcile::run(cmd, repository, &profile).map_err(Into::into)
             }
@@ -1216,6 +1219,7 @@ fn run_fetch(
 fn run_seed(
     cmd: command::Seed,
     repo_override: Option<RepoId>,
+    no_sync: bool,
     profile: &Profile,
 ) -> Result<(), node::Error> {
     node::seed_artifact(
@@ -1223,6 +1227,7 @@ fn run_seed(
         cmd.release,
         cmd.reference,
         cmd.no_announce,
+        no_sync,
         repo_override,
         profile,
     )
@@ -1232,9 +1237,10 @@ fn run_seed(
 fn run_unseed(
     cmd: command::Unseed,
     repo_override: Option<RepoId>,
+    no_sync: bool,
     profile: &Profile,
 ) -> Result<(), node::Error> {
-    node::unseed_artifact(cmd.cid, cmd.release, repo_override, profile)
+    node::unseed_artifact(cmd.cid, cmd.release, no_sync, repo_override, profile)
 }
 
 /// Convert locations from one or more artifacts into fetch locations.

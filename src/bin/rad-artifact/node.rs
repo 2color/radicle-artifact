@@ -162,17 +162,25 @@ pub enum Error {
     /// JSON encoding error when emitting `--json` output.
     #[error("JSON encode failed")]
     Json(#[source] serde_json::Error),
+    /// Failed to announce the COB change to the network after seed/unseed.
+    #[error(transparent)]
+    Announce(#[from] crate::error::Announce),
 }
 
 /// Entry point for `rad-artifact node ...`.
-pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result<(), Error> {
+pub fn run(
+    cli: Cli,
+    repo_override: Option<RepoId>,
+    no_sync: bool,
+    profile: &Profile,
+) -> Result<(), Error> {
     match cli.command {
         Subcommand::Start(c) => start(c, profile),
         Subcommand::Stop => stop(profile),
         Subcommand::Status(c) => status(c, profile),
         Subcommand::List(c) => list(c, repo_override, profile),
-        Subcommand::Seed(c) => seed(c, repo_override, profile),
-        Subcommand::Unseed(c) => unseed(c, repo_override, profile),
+        Subcommand::Seed(c) => seed(c, repo_override, no_sync, profile),
+        Subcommand::Unseed(c) => unseed(c, repo_override, no_sync, profile),
         Subcommand::Logs(c) => logs(c, profile),
     }
 }
@@ -312,12 +320,18 @@ fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Resu
     Ok(())
 }
 
-fn seed(cmd: Seed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(), Error> {
+fn seed(
+    cmd: Seed,
+    repo_override: Option<RepoId>,
+    no_sync: bool,
+    profile: &Profile,
+) -> Result<(), Error> {
     seed_artifact(
         cmd.path,
         cmd.release,
         cmd.reference,
         cmd.no_announce,
+        no_sync,
         repo_override,
         profile,
     )
@@ -334,6 +348,7 @@ pub(crate) fn seed_artifact(
     release_override: Option<String>,
     reference: bool,
     no_announce: bool,
+    no_sync: bool,
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), Error> {
@@ -410,6 +425,13 @@ pub(crate) fn seed_artifact(
         return Err(e);
     }
     eprintln!("Added radiroh:// location to release {release_id}");
+
+    // Announce the new location so peers can discover it. Without this the
+    // COB write stays local until something else announces. `--no-sync`
+    // defers the announce; `rad sync -a` publishes it later.
+    if !no_sync {
+        crate::announce(profile, rid)?;
+    }
     Ok(())
 }
 
@@ -437,8 +459,13 @@ fn register_location(
     Ok(())
 }
 
-fn unseed(cmd: Unseed, repo_override: Option<RepoId>, profile: &Profile) -> Result<(), Error> {
-    unseed_artifact(cmd.cid, cmd.release, repo_override, profile)
+fn unseed(
+    cmd: Unseed,
+    repo_override: Option<RepoId>,
+    no_sync: bool,
+    profile: &Profile,
+) -> Result<(), Error> {
+    unseed_artifact(cmd.cid, cmd.release, no_sync, repo_override, profile)
 }
 
 /// Shared implementation for `rad-artifact unseed <CID>` and
@@ -451,6 +478,7 @@ fn unseed(cmd: Unseed, repo_override: Option<RepoId>, profile: &Profile) -> Resu
 pub(crate) fn unseed_artifact(
     cid: Cid,
     release_override: Option<String>,
+    no_sync: bool,
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), Error> {
@@ -516,6 +544,11 @@ pub(crate) fn unseed_artifact(
     }
     if removed > 0 {
         eprintln!("Removed {removed} iroh location(s) from COB");
+        // Publish the retractions so peers stop advertising us as a source.
+        // `--no-sync` defers this to a later `rad sync -a`.
+        if !no_sync {
+            crate::announce(profile, rid)?;
+        }
     }
     Ok(())
 }
