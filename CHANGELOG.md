@@ -56,6 +56,8 @@ The CLI command `add` is renamed to `register`, drawing a clear line between the
 
 `register <PATH> --seed` registers and seeds in a single step: it reuses the CID computed during registration to hand the bytes to the node and announce a `radiroh://` location, so the artifact is hashed once instead of twice and the common publish flow drops from two commands to one. Requires a running node and a local path (it conflicts with `--cid`).
 
+`register --json` emits `{cid, release_id, revision}` on stdout instead of the human-readable summary, so a script can capture the release id and CID — for example to drive a later `--release <id>` call — without re-deriving the CID or scraping stderr.
+
 For library consumers this is a **breaking API change**: `Release::add_artifact` is now `register_artifact`, and the COB action `Action::AddArtifact` is now `Action::RegisterArtifact`. The on-the-wire format is unchanged — the action still serializes as `AddArtifact` via `#[serde(rename)]`, so existing COBs deserialize as before and no migration is needed.
 
 ## [0.14.0] - 2026-05-12

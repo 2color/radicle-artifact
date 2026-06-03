@@ -321,6 +321,7 @@ fn register_artifact<G>(
         release,
         name,
         seed,
+        json,
         all_authors,
     }: command::Register,
     no_input: bool,
@@ -431,6 +432,22 @@ where
     release
         .register_artifact(cid, name.clone(), signer)
         .map_err(|err| error::Register::Store { id, err })?;
+    // Machine-readable output: emit only the JSON object on stdout so the
+    // release id and CID are capturable without scraping stderr. Any
+    // --seed progress still goes to stderr, keeping stdout a clean object.
+    if json {
+        let out = serde_json::json!({
+            "cid": cid.to_string(),
+            "release_id": id.to_string(),
+            "revision": oid.to_string(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&out).map_err(error::Register::Json)?
+        );
+        return Ok((id, cid));
+    }
+
     let short_oid = &oid.to_string()[..7];
     let short_id = &id.to_string()[..7];
     eprintln!("Added artifact '{name}' to release {short_id} (commit {short_oid})");
@@ -2185,6 +2202,11 @@ Examples:
         /// local `<PATH>` and a running node; conflicts with --cid.
         #[clap(long, conflicts_with = "cid")]
         pub seed: bool,
+        /// Emit `{cid, release_id, revision}` as JSON on stdout instead of
+        /// the human-readable summary, so scripts can capture the release
+        /// id and CID without scraping stderr.
+        #[clap(long)]
+        pub json: bool,
         /// Also consider releases authored by users who are not
         /// repository delegates (and not the local user) when matching
         /// a `<revision>`. By default only delegate-authored or
@@ -2606,6 +2628,8 @@ mod error {
         Io(#[source] std::io::Error),
         #[error(transparent)]
         Protocol(radicle_artifact::share::Error),
+        #[error("failed to serialize register output to JSON")]
+        Json(#[source] serde_json::Error),
     }
 
     fn display_ids(ids: &[ReleaseId]) -> String {
