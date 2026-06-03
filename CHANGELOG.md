@@ -48,6 +48,14 @@ The host encoding is unchanged: the iroh endpoint id as lowercase base32, no pad
 
 This is a **hard break** on read: legacy `iroh://` URLs are no longer parsed, and fetch ignores them. There is no automatic dual-read; instead, `rad-artifact reconcile --remove-orphaned-self` migrates your locations in a single run. It retracts the legacy URLs and re-adds fresh `radiroh://` URLs.
 
+#### Rename `add` to `register`
+
+The CLI command `add` is renamed to `register`, drawing a clear line between the two layers of the tool. **Registering** records signed releases, content-addressed artifacts, and download locations in the artifact COB, synced over the radicle protocol — discovery metadata, never bytes. **Seeding** is a node holding an artifact's bytes and serving them to peers over iroh.
+
+`add` stays as a hidden alias, so existing scripts and pipelines keep working.
+
+For library consumers this is a **breaking API change**: `Release::add_artifact` is now `register_artifact`, and the COB action `Action::AddArtifact` is now `Action::RegisterArtifact`. The on-the-wire format is unchanged — the action still serializes as `AddArtifact` via `#[serde(rename)]`, so existing COBs deserialize as before and no migration is needed.
+
 ## [0.14.0] - 2026-05-12
 
 ### ⭐️ Highlights
