@@ -30,7 +30,7 @@ Together this means your published artifacts stay reachable peer-to-peer without
 
 #### 🌱 `seed` / `unseed`, with automatic cleanup
 
-`serve` is renamed to `seed`, with a matching `unseed`, available both under `rad-artifact node …` and as top-level `rad-artifact seed` / `unseed`. `seed <PATH>` computes the CID, hands the bytes to the node, and registers a `radiroh://` location on the release in one step; `unseed <CID>` stops seeding and retracts your `radiroh://` locations. The node also runs periodic blob garbage collection, so space from unseeded artifacts is reclaimed automatically rather than growing without bound.
+`serve` is renamed to `seed`, with a matching `unseed`, available both under `rad-artifact node …` and as top-level `rad-artifact seed` / `unseed`. `seed <PATH>` computes the CID, hands the bytes to the node, and registers a `radiroh://` location on the release in one step; `unseed <CID>` stops seeding and retracts your `radiroh://` locations. Both announce the COB change to the network when they write one (like the other mutating commands) so peers discover. The node also runs periodic blob garbage collection, so space from unseeded artifacts is reclaimed automatically rather than growing without bound.
 
 #### 🤝 Keep your locations honest with `reconcile`
 
