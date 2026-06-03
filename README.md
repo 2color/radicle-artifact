@@ -7,8 +7,8 @@ Git was never built to distribute large files and binaries. Existing solutions l
 `radicle-artifact` makes artifact distribution:
 
 - **Verifiable and signed** — every artifact is content-addressed via a [CID] (a [BLAKE3] hash) and bound to the exact commit it was built from. Every [action](#actions) (`AddArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
-- **Decentralized** — anyone can help serve artifacts, or independently rebuild and verify, increasing resilience, and making serving participatory.
-- **Transport-agnostic** — artifacts can have multiple _locations_ and be shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer serving and fetching of artifacts with incremental verification.
+- **Decentralized** — anyone can help seed artifacts, or independently rebuild and verify, increasing resilience, and making seeding participatory.
+- **Transport-agnostic** — artifacts can have multiple _locations_ and be shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer seeding and fetching of artifacts with incremental verification.
 
 Trust is multi-party and follows the repository's **delegates** — the maintainers who establish canonical branches and tags.
 
@@ -34,8 +34,8 @@ cargo install radicle-artifact
 
 1. **Tag** — Create a release tag or commit — ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references).
 2. **Build** — Build your release artifacts.
-3. **Add** — Add artifacts to a release using the `rad-artifact add <PATH>` command, which creates the release if it doesn't exist and records the artifact CID.
-4. **Seed** — Upload artifacts to an HTTP server and register the location with `rad-artifact location add`, or serve directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
+3. **Register** — Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. This is signed discovery metadata in the COB, synced over the radicle protocol — not the bytes.
+4. **Seed** — Upload artifacts to an HTTP server and register the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
 5. **Fetch** — Fetch artifacts using the `rad-artifact fetch` command.
 6. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
 7. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
@@ -130,8 +130,8 @@ These global options apply to every command:
 ### COB-facing commands
 
 ```
-rad-artifact add <PATH> [--revision <REVISION>] [-n <NAME>]      # add artifact (creates release if needed)
-rad-artifact add --cid <CID> --revision <REVISION> -n <NAME>     # register a precomputed CID without local bytes
+rad-artifact register <PATH> [--revision <REVISION>] [-n <NAME>] # register artifact (creates release if needed)
+rad-artifact register --cid <CID> --revision <REVISION> -n <NAME>  # register a precomputed CID without local bytes
 rad-artifact location add --revision <REVISION> --cid <CID> <URL>    # add discovery URL
 rad-artifact location remove --revision <REVISION> --cid <CID> <URL> # remove discovery URL
 rad-artifact attest <REVISION> --cid <CID>                       # attest to an artifact
