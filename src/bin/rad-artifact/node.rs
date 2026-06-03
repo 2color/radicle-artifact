@@ -362,8 +362,6 @@ pub(crate) fn seed_artifact(
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
     let rid = repo.id;
-    let socket = Client::default_socket(profile.home.path());
-    let client = Client::new(socket);
 
     // Resolve target release: --release wins, else most recent matching.
     let release_id = if let Some(s) = release_override.as_deref() {
@@ -377,6 +375,47 @@ pub(crate) fn seed_artifact(
         id
     };
 
+    seed_to_release(
+        &path,
+        cid,
+        release_id,
+        reference,
+        no_announce,
+        rid,
+        &mut releases,
+        profile,
+    )?;
+
+    // Announce the new location so peers can discover it. Without this the
+    // COB write stays local until something else announces. `--no-sync`
+    // defers the announce; `rad sync -a` publishes it later. Skip when
+    // nothing was written to the COB (`--no-announce`).
+    if !no_announce && !no_sync {
+        crate::announce(profile, rid)?;
+    }
+    Ok(())
+}
+
+/// Hand an artifact's bytes to the running node and, unless `no_announce`,
+/// sign its `radiroh://` location into `release_id`.
+///
+/// `cid` must already be the CID of `path`'s contents: the caller computed
+/// it, so this does not hash the file again — this is what lets `register
+/// --seed` register and seed in a single pass. Does not announce; the
+/// caller announces once every COB write for the run is done.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn seed_to_release(
+    path: &std::path::Path,
+    cid: Cid,
+    release_id: ReleaseId,
+    reference: bool,
+    no_announce: bool,
+    rid: RepoId,
+    releases: &mut Releases<'_, Repository>,
+    profile: &Profile,
+) -> Result<(), Error> {
+    let socket = Client::default_socket(profile.home.path());
+    let client = Client::new(socket);
     let kind = share::artifact_kind(&cid).map_err(Error::Protocol)?;
     let mode = if reference {
         ImportMode::Reference
@@ -419,19 +458,12 @@ pub(crate) fn seed_artifact(
     // The node has already tagged the artifact. If announcing the COB
     // location now fails, leave the tag in place and tell the user how
     // to retry
-    if let Err(e) = register_location(&mut releases, release_id, cid, &receipt, profile) {
+    if let Err(e) = register_location(releases, release_id, cid, &receipt, profile) {
         eprintln!("Seed tagged, but registering the artifact location failed: {e}");
         eprintln!("Retry with: rad-artifact seed {}", path.display());
         return Err(e);
     }
     eprintln!("Added radiroh:// location to release {release_id}");
-
-    // Announce the new location so peers can discover it. Without this the
-    // COB write stays local until something else announces. `--no-sync`
-    // defers the announce; `rad sync -a` publishes it later.
-    if !no_sync {
-        crate::announce(profile, rid)?;
-    }
     Ok(())
 }
 

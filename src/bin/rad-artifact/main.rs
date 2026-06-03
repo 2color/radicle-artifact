@@ -227,8 +227,28 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Node(_) => unreachable!(),       // handled above
         Command::Register(cmd) => {
+            // Capture the seed source before `cmd` is consumed; clap
+            // guarantees a `<PATH>` is present whenever --seed is set
+            // (--seed conflicts with --cid, and the source group is
+            // required).
+            let seed = cmd.seed;
+            let seed_path = cmd.path.clone();
             let signer = profile.signer().map_err(error::Signer)?;
-            register_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
+            let (release_id, cid) =
+                register_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
+            if seed {
+                let path = seed_path.expect("clap requires <PATH> with --seed");
+                node::seed_to_release(
+                    &path,
+                    cid,
+                    release_id,
+                    false,
+                    false,
+                    repo.id,
+                    &mut releases,
+                    &profile,
+                )?;
+            }
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -291,6 +311,8 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     Ok(())
 }
 
+/// Register the artifact and return the release it landed in plus its CID,
+/// so the caller can reuse the CID for `--seed` and announce once.
 fn register_artifact<G>(
     command::Register {
         path,
@@ -298,6 +320,7 @@ fn register_artifact<G>(
         revision,
         release,
         name,
+        seed,
         all_authors,
     }: command::Register,
     no_input: bool,
@@ -305,7 +328,7 @@ fn register_artifact<G>(
     repo: &Repository,
     profile: &Profile,
     signer: &Device<G>,
-) -> Result<(), error::Register>
+) -> Result<(ReleaseId, Cid), error::Register>
 where
     G: Signer<crypto::Signature>,
 {
@@ -411,7 +434,9 @@ where
     let short_oid = &oid.to_string()[..7];
     let short_id = &id.to_string()[..7];
     eprintln!("Registered artifact '{name}' in release {short_id} (commit {short_oid})");
-    if std::io::stderr().is_terminal() {
+    // Skip the discovery hints when --seed is set: the caller is about to
+    // seed and announce a location, so they'd be noise.
+    if !seed && std::io::stderr().is_terminal() {
         eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {cid} <url>` to register a download location");
         if let Some(p) = path.as_deref() {
             eprintln!(
@@ -421,7 +446,7 @@ where
         }
     }
     println!("{cid}");
-    Ok(())
+    Ok((id, cid))
 }
 
 /// Compute a CID by hashing the file or directory at `path`. Mirrors the
@@ -2122,6 +2147,9 @@ Examples:
   Fully non-interactive:
     $ rad-artifact register ./my-binary --revision v1.0 --name \"my-binary v1.0\"
 
+  Register and seed in one step (reuses the computed CID; needs a running node):
+    $ rad-artifact register ./my-binary --revision v1.0 --name \"my-binary v1.0\" --seed
+
   Target an existing release by id (no commit/tag resolution):
     $ rad-artifact register ./my-binary --release <release-id> --name \"my-binary v1.0\"
 
@@ -2150,6 +2178,13 @@ Examples:
         /// when omitted (with the path basename as the default).
         #[clap(short, long)]
         pub name: Option<String>,
+        /// After registering, also seed the artifact via the local node
+        /// and announce a `radiroh://` location for it — the same as a
+        /// follow-up `rad-artifact seed <PATH>`, but reusing the CID
+        /// already computed here (one hash pass, one command). Requires a
+        /// local `<PATH>` and a running node; conflicts with --cid.
+        #[clap(long, conflicts_with = "cid")]
+        pub seed: bool,
         /// Also consider releases authored by users who are not
         /// repository delegates (and not the local user) when matching
         /// a `<revision>`. By default only delegate-authored or
