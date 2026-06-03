@@ -223,9 +223,9 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     match args.command {
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Node(_) => unreachable!(),       // handled above
-        Command::Add(cmd) => {
+        Command::Register(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
-            add_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
+            register_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
             if !args.no_sync {
                 announce(&profile, repo.id)?;
             }
@@ -288,21 +288,21 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     Ok(())
 }
 
-fn add_artifact<G>(
-    command::Add {
+fn register_artifact<G>(
+    command::Register {
         path,
         cid,
         revision,
         release,
         name,
         all_authors,
-    }: command::Add,
+    }: command::Register,
     no_input: bool,
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
     signer: &Device<G>,
-) -> Result<(), error::Add>
+) -> Result<(), error::Register>
 where
     G: Signer<crypto::Signature>,
 {
@@ -315,13 +315,13 @@ where
         (Some(path), None) => compute_cid_from_path(path)?,
         (None, Some(cid)) => cid,
         (Some(_), Some(_)) => {
-            return Err(error::Add::Usage(
+            return Err(error::Register::Usage(
                 "cannot pass --cid together with a path; the CID is computed from the contents"
                     .into(),
             ));
         }
         (None, None) => {
-            return Err(error::Add::Usage(
+            return Err(error::Register::Usage(
                 "missing artifact source; pass a <PATH> or --cid <CID>".into(),
             ));
         }
@@ -334,7 +334,7 @@ where
                 .as_deref()
                 .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str());
-            prompt::prompt_name(no_input, default).map_err(error::Add::Usage)?
+            prompt::prompt_name(no_input, default).map_err(error::Register::Usage)?
         }
     };
 
@@ -343,7 +343,7 @@ where
             let release_id = parse_release_id(s, repo)?;
             let release = releases.get_mut(&release_id).map_err(|err| match err {
                 cob::store::Error::NotFound(_, _) => error::Find::NoReleaseId(release_id).into(),
-                err => error::Add::Find(error::Find::LookupId { release_id, err }),
+                err => error::Register::Find(error::Find::LookupId { release_id, err }),
             })?;
             let oid = *release.oid();
             (release, oid)
@@ -351,7 +351,9 @@ where
         None => {
             let resolved = match revision.as_deref() {
                 Some(rev) => resolve_ref(rev, repo)?,
-                None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::Add::Usage)?,
+                None => {
+                    prompt::pick_commit_or_tag(no_input, repo).map_err(error::Register::Usage)?
+                }
             };
             let oid = resolved.commit;
             let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
@@ -373,27 +375,27 @@ where
             let release = if candidates.is_empty() {
                 releases
                     .create(oid, resolved.tag, signer)
-                    .map_err(|err| error::Add::Create { oid, err })?
+                    .map_err(|err| error::Register::Create { oid, err })?
             } else if !needs_disambiguation {
                 let id = candidates[0].0;
                 releases
                     .get_mut(&id)
-                    .map_err(|err| error::Add::Store { id, err })?
+                    .map_err(|err| error::Register::Store { id, err })?
             } else if no_input {
-                return Err(error::Add::NeedsDisambiguation {
+                return Err(error::Register::NeedsDisambiguation {
                     oid,
                     candidates: candidates.iter().map(|(id, _)| *id).collect(),
                 });
             } else {
                 match prompt::pick_release_or_create(&candidates, resolved.tag, repo, aliases)
-                    .map_err(error::Add::Usage)?
+                    .map_err(error::Register::Usage)?
                 {
                     prompt::ReleaseChoice::Existing(id) => releases
                         .get_mut(&id)
-                        .map_err(|err| error::Add::Store { id, err })?,
+                        .map_err(|err| error::Register::Store { id, err })?,
                     prompt::ReleaseChoice::CreateNew => releases
                         .create(oid, resolved.tag, signer)
-                        .map_err(|err| error::Add::Create { oid, err })?,
+                        .map_err(|err| error::Register::Create { oid, err })?,
                 }
             };
             (release, oid)
@@ -402,7 +404,7 @@ where
     let id = *release.id();
     release
         .add_artifact(cid, name.clone(), signer)
-        .map_err(|err| error::Add::Store { id, err })?;
+        .map_err(|err| error::Register::Store { id, err })?;
     let short_oid = &oid.to_string()[..7];
     let short_id = &id.to_string()[..7];
     eprintln!("Added artifact '{name}' to release {short_id} (commit {short_oid})");
@@ -422,11 +424,11 @@ where
 /// Compute a CID by hashing the file or directory at `path`. Mirrors the
 /// dispatch used by `serve` so both commands agree on what CID a given path
 /// produces.
-fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::Add> {
+fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::Register> {
     if path.is_dir() {
-        share::compute_content_id(path).map_err(error::Add::Io)
+        share::compute_content_id(path).map_err(error::Register::Io)
     } else {
-        share::compute_blob_cid(path).map_err(error::Add::Protocol)
+        share::compute_blob_cid(path).map_err(error::Register::Protocol)
     }
 }
 
@@ -1880,7 +1882,7 @@ enum RadArtifactError {
     #[error(transparent)]
     List(#[from] error::List),
     #[error(transparent)]
-    Add(#[from] error::Add),
+    Register(#[from] error::Register),
     #[error(transparent)]
     Locate(#[from] error::Locate),
     #[error(transparent)]
@@ -1913,7 +1915,9 @@ mod command {
 
     #[derive(Parser)]
     pub enum Command {
-        Add(Add),
+        // `add` is kept as a hidden alias for backward compatibility.
+        #[clap(alias = "add")]
+        Register(Register),
         /// Manage discovery locations for artifacts.
         Location(Location),
         Attest(Attest),
@@ -2084,13 +2088,17 @@ Examples:
         pub release: Option<String>,
     }
 
-    /// Add an artifact to a release, creating the release if needed.
+    /// Register an artifact in a release, creating the release if needed.
     ///
-    /// The artifact is identified by a content identifier (CID). Pass a
-    /// local `<PATH>` to compute the CID from the file or directory
-    /// contents, or use --cid to register a precomputed CID for an
-    /// artifact you don't have locally. Exactly one of `<PATH>` or --cid
-    /// must be provided.
+    /// Records a signed artifact entry (CID + name) in the release COB,
+    /// which is synced over the radicle protocol. Pass a local `<PATH>`
+    /// to compute the CID from the file or directory contents, or use
+    /// --cid to register a precomputed CID for an artifact you don't have
+    /// locally. Exactly one of `<PATH>` or --cid must be provided.
+    ///
+    /// Registering records discovery metadata only; it does not hold or
+    /// serve the bytes. To do that, seed the artifact with
+    /// `rad-artifact seed <PATH>`.
     ///
     /// The release revision and artifact name are prompted interactively
     /// when not given. Pass --revision and -n/--name to skip prompts (or
@@ -2103,18 +2111,18 @@ Examples:
         after_long_help = "\
 Examples:
   Interactive: compute CID from a file, pick commit/tag, prompt for name:
-    $ rad-artifact add ./my-binary
+    $ rad-artifact register ./my-binary
 
   Fully non-interactive:
-    $ rad-artifact add ./my-binary --revision v1.0 --name \"my-binary v1.0\"
+    $ rad-artifact register ./my-binary --revision v1.0 --name \"my-binary v1.0\"
 
   Target an existing release by id (no commit/tag resolution):
-    $ rad-artifact add ./my-binary --release <release-id> --name \"my-binary v1.0\"
+    $ rad-artifact register ./my-binary --release <release-id> --name \"my-binary v1.0\"
 
   Register a precomputed CID without local bytes:
-    $ rad-artifact add --cid baf...abc --revision v1.0 --name \"my-binary v1.0\""
+    $ rad-artifact register --cid baf...abc --revision v1.0 --name \"my-binary v1.0\""
     )]
-    pub struct Add {
+    pub struct Register {
         /// Path to the local file or directory to register.
         ///
         /// The CID is computed from the contents: files use the raw codec
@@ -2527,7 +2535,7 @@ mod error {
     }
 
     #[derive(Debug, Error)]
-    pub enum Add {
+    pub enum Register {
         #[error("{0}")]
         Usage(String),
         #[error(transparent)]
