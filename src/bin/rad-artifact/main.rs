@@ -407,7 +407,7 @@ where
         .map_err(|err| error::Register::Store { id, err })?;
     let short_oid = &oid.to_string()[..7];
     let short_id = &id.to_string()[..7];
-    eprintln!("Added artifact '{name}' to release {short_id} (commit {short_oid})");
+    eprintln!("Registered artifact '{name}' in release {short_id} (commit {short_oid})");
     if std::io::stderr().is_terminal() {
         eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {cid} <url>` to register a download location");
         if let Some(p) = path.as_deref() {
