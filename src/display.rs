@@ -404,6 +404,11 @@ pub struct Release {
     #[serde(skip_serializing_if = "Option::is_none")]
     creator_alias: Option<String>,
     artifacts: Vec<Artifact>,
+    /// Local user's DID, used to derive the 🌱 seeding badge at render
+    /// time. Not serialized — JSON consumers can compute seeding from
+    /// `locations` and their own DID.
+    #[serde(skip)]
+    local: Option<Did>,
 }
 
 impl Release {
@@ -490,24 +495,12 @@ impl Release {
                     .collect();
                 // Sort by DID for deterministic output.
                 redactions.sort_by_key(|a| a.did);
-                // We're a published provider when the artifact carries a
-                // radiroh:// location under our own DID that resolves to
-                // our endpoint — see [`EndpointId::matches_url`].
-                let seeding = filters.local.is_some_and(|local| {
-                    EndpointId::try_from(local).is_ok_and(|me| {
-                        artifact
-                            .locations()
-                            .get(local)
-                            .is_some_and(|urls| urls.iter().any(|url| me.matches_url(url)))
-                    })
-                });
                 let artifact_author = *artifact.author();
                 Artifact {
                     cid: cid.to_string(),
                     author_alias: resolve(&artifact_author, aliases),
                     author: artifact_author,
                     name: artifact.name().to_owned(),
-                    seeding,
                     locations,
                     attestations,
                     redactions,
@@ -529,7 +522,23 @@ impl Release {
             creator,
             creator_alias: resolve(&creator, aliases),
             artifacts,
+            local: filters.local.copied(),
         }
+    }
+
+    /// Whether the local user advertises itself as a provider for this
+    /// artifact: it carries a `radiroh://` location under our own DID
+    /// that resolves to our endpoint id — computed identically to how
+    /// any peer decides we're a provider. See [`EndpointId::matches_url`].
+    fn seeding(&self, artifact: &Artifact) -> bool {
+        self.local.is_some_and(|local| {
+            EndpointId::try_from(&local).is_ok_and(|me| {
+                artifact
+                    .locations
+                    .iter()
+                    .any(|l| l.did == local && me.matches_url(&l.url))
+            })
+        })
     }
 
     /// Build the colored release header line: bullet, short id, ref
@@ -628,7 +637,7 @@ impl Release {
             let mut badges = String::new();
             // Lead with the seedling so a glance down the column shows
             // which artifacts we're providing.
-            if artifact.seeding {
+            if self.seeding(artifact) {
                 badges.push('🌱');
             }
             if !artifact.attestations.is_empty() {
@@ -693,7 +702,7 @@ impl Release {
             s.push('\n');
             // Artifact heading: name in bold with badges.
             let mut badges = String::new();
-            if artifact.seeding {
+            if self.seeding(artifact) {
                 badges.push_str(" 🌱");
             }
             if !artifact.attestations.is_empty() {
@@ -794,12 +803,6 @@ struct Artifact {
     author_alias: Option<String>,
     author: Did,
     name: String,
-    /// True when the local user is a published provider for this
-    /// artifact: it carries a `radiroh://` location under our own DID
-    /// that resolves to our endpoint id. This reflects the advertised
-    /// claim in the COB — computed identically to how any peer decides
-    /// we're a provider — not live blob presence in the local store.
-    seeding: bool,
     locations: Vec<Location>,
     attestations: Vec<Attestation>,
     redactions: Vec<Redaction>,
