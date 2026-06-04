@@ -25,6 +25,15 @@ Tracked locally by a Seeded Tag; advertised to peers by a `radiroh://`
 Location.
 _Avoid_: serve/serving, host, mirror (use "seed"/"seeding").
 
+**Seeder**:
+A node that seeds an Artifact. You are a Seeder of an Artifact by virtue of
+running an artifact node seeding the bytes for an artifact CID; holding the bytes and
+serving them is what makes you one. Distinct from a Radicle seed node,
+which holds the repo's git/COB; one machine can be both, but "Seeder" here
+always means the iroh bytes role.
+_Avoid_: host, mirror; "provider" is tolerated only as iroh-blobs' internal
+term (its download-side name for a Seeder's endpoint).
+
 **Release**:
 A COB entry, keyed by a commit, holding a set of Artifacts for a repository.
 
@@ -35,7 +44,7 @@ A named, content-addressed file or collection of files within a Release, identif
 The BLAKE3 content identifier of an Artifact's bytes.
 
 **Location**:
-A URL under a contributor's DID asserting where an Artifact can be fetched — an HTTPS download URL, or a `radiroh://{endpoint}` iroh endpoint for peer-to-peer fetch.
+A URL under a contributor's DID asserting where an Artifact can be fetched — an HTTPS download URL, or a `radiroh://{endpoint}` iroh endpoint for peer-to-peer fetch. The supertype of every fetch candidate, so fetch-progress events speak of Locations (`TryingLocation`, `LocationFailed`) — never "providers".
 _Avoid_: source, mirror, provider.
 
 **Seeded Tag**:
