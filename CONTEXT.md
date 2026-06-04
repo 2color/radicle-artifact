@@ -1,24 +1,47 @@
 # rad-artifact
 
-Two distinct layers. **Registering** records signed Releases,
-content-addressed Artifacts, and download Locations in a Radicle
-collaborative object (COB) in the git storage, synced over the radicle protocol; discovery
-metadata, never bytes. **Seeding** is a node holding an Artifact's bytes
+Two distinct layers. You **create** a Release tied to a tag/commit,
+**register** Artifacts against it, and **add** download Locations, all in a
+Radicle collaborative object (COB) in the git storage, synced over the radicle
+protocol; discovery metadata, never bytes. **Seeding** is a node holding an Artifact's bytes
 and serving them to peers over iroh. The COB says where bytes can be
 fetched; a seeding node is what actually answers.
 
 ## Language
 
+**Create** (verb):
+Open a new signed Release in the COB associated with a commit OID and optionally a tag.
+_Avoid_: register (you register into a Release, not the Release itself).
+
 **Register** (verb):
-Record a signed Release, Artifact, or Location in the COB. Synced over
-the radicle protocol; carries discovery metadata only — never the bytes.
+Record an Artifact against a Release in the COB.
 _Avoid_: add (the CLI command was renamed from `add` to `register`), publish.
 
 **Seed** (verb):
 Hold an Artifact's bytes on a node and serve them to peers over iroh.
-Tracked locally by a Seeded Tag; advertised to peers by a `radiroh://`
-Location.
+Tracked locally by a Seeded Tag; paired with Announce to make your artifact node discoverable as a download location.
 _Avoid_: serve/serving, host, mirror (use "seed"/"seeding").
+
+**Announce** (verb):
+Add a Location to the COB under your DID, asserting that an artifact's
+bytes are retrievable at that URL. Applies to any URL scheme. For
+`radiroh://` Locations specifically, Announcing is the COB-side complement
+to Seeding: a node that announces without seeding creates an Orphaned
+Location; a node that seeds without announcing creates a Dangling Tag. Announcing typically includes both the local COB operation and syncing the changes to the network.
+_Avoid_: don't confuse with Sync (pushing the COB change to the network).
+
+**Sync** (verb):
+Push a COB change to the radicle network so peers can discover it.
+Triggered automatically after writes; deferred with `--no-sync` and
+published later with `rad sync -a`.
+
+
+**Seeder**:
+A node that seeds an Artifact's bytes. Distinct from a Radicle seed node,
+which holds the repo's git/COB; one machine can be both, but "Seeder" here
+always means the iroh bytes role.
+_Avoid_: host, mirror; "provider" is tolerated only as iroh-blobs' internal
+term (its download-side name for a Seeder's endpoint).
 
 **Release**:
 A COB entry, keyed by a commit, holding a set of Artifacts for a repository.
@@ -30,8 +53,8 @@ A named, content-addressed file or collection of files within a Release, identif
 The BLAKE3 content identifier of an Artifact's bytes.
 
 **Location**:
-A URL under a contributor's DID asserting where an Artifact can be fetched — an HTTPS download URL, or a `radiroh://{endpoint}` iroh endpoint for peer-to-peer fetch.
-_Avoid_: source, mirror, provider.
+A URL under a contributor's DID asserting where an Artifact can be fetched; a `radiroh://{endpoint}` URL is an iroh endpoint for peer-to-peer fetch. _Announced_ and _removed_ (`location add`/`remove`, `add_location`/`remove_location`).
+_Avoid_: source, mirror, provider; register (that's for Artifacts).
 
 **Seeded Tag**:
 A `seeded/{rid}/{cid}` marker in the node's blob store asserting the node is actively seeding that Artifact's bytes.
@@ -50,4 +73,4 @@ _Avoid_: stale location (a Stale Endpoint is the distinct case where the URL is 
 - A **Release** contains one or more **Artifacts**
 - An **Artifact** has zero or more **Locations**, grouped by contributor **DID**
 - A **Seeded Tag** should correspond to an **Artifact** in some **Release**; when it doesn't, it is a **Dangling Tag**
-- **Seeding** a CID should be advertised by a `radiroh://` **Location** registered for the same CID; the two drift apart as **Dangling Tags** (seeded, never registered) and **Orphaned Locations** (registered, no longer seeded)
+- **Seeding** and **Announcing** are the two halves of making an artifact available over iroh: a node seeds the bytes and announces the `radiroh://` **Location** so peers can discover it; the two drift apart as **Dangling Tags** (seeded, not announced) and **Orphaned Locations** (announced, no longer seeded)
