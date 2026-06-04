@@ -1,1 +1,1 @@
-{"target":"delegates","title":"DX refinements","type":"edit"}
+{"description":"- Use register over add consistently\n- announce COB changes after seed/unseed\n- add `register --seed` to register and seed in one step\n- add `--json` to register (for json output)","revision":"041d05930cec1b75efdd1c522b16719f95d351b6","type":"revision.edit"}
