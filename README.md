@@ -30,6 +30,19 @@ cargo install radicle-artifact
 
 > **Note:** radicle-artifact requires radicle installed.
 
+## Relationship to the radicle node
+
+radicle-artifact is a companion to radicle, not a replacement for it. It links the [`radicle`](https://crates.io/crates/radicle) crate as a library (it never shells out to the `rad` CLI) and borrows two things from your local radicle installation:
+
+- **Identity** — your Ed25519 keystore. The same secret signs every COB op and derives the iroh seeder's endpoint id, so an encrypted keystore needs `RAD_PASSPHRASE` (or an interactive prompt). Your DID is your radicle NodeID.
+- **Storage** — your radicle profile home and git storage, where releases are read and written as COBs.
+
+A COB write (`register`, `attest`, `location add`, ...) is a local git operation. By default the CLI then **announces** the change to the network by calling the running radicle node over its control socket; this is the only step that needs the node up. Pass `--no-sync` to skip it and announce later with `rad sync -a`.
+
+For other peers to actually discover an artifact, the radicle node must keep running after you register its location, announcing is a one-time broadcast, but other seeders nodes need to fetch the COB refs from your node.
+
+Everything else works without the radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder (`rad-artifact node start`) is a **separate process** from the radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
+
 ## Workflow
 
 1. **Tag** — Create a release tag or commit — ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references).
