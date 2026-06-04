@@ -22,7 +22,7 @@ use radicle::{
 use radicle_artifact::client::{self, Client, ClientError};
 use radicle_artifact::node;
 use radicle_artifact::protocol::{
-    Command as NodeMsg, ImportMode, SeedReceipt, SeededEntry, Status, UnseedReceipt,
+    Command as NodeMsg, ImportMode, RelayStats, SeedReceipt, SeededEntry, Status, UnseedReceipt,
 };
 use radicle_artifact::share;
 use radicle_artifact::share::keys::{radicle_secret_to_iroh, EndpointId};
@@ -241,7 +241,11 @@ fn start(cmd: Start, profile: &Profile) -> Result<(), Error> {
         return Err(Error::StartupTimeout(node::lifecycle::STARTUP_TIMEOUT, log));
     }
 
-    eprintln!("Node started (socket: {})", socket.display());
+    eprintln!(
+        "🌱 Node awake and seeding — listening on {}",
+        socket.display()
+    );
+    eprintln!("   tip: check on it anytime with `rad-artifact node status`");
     Ok(())
 }
 
@@ -277,7 +281,7 @@ fn stop(profile: &Profile) -> Result<(), Error> {
     client
         .call_blocking::<()>(&NodeMsg::Shutdown, client::DEFAULT_TIMEOUT)
         .map_err(client_err)?;
-    eprintln!("Node stopped");
+    eprintln!("💤 Node stopped — the seeds rest");
     Ok(())
 }
 
@@ -310,10 +314,10 @@ fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Resu
         return Ok(());
     }
     if entries.is_empty() {
-        println!("No artifacts are being seeded for {rid}.");
+        println!("🌾 Nothing seeded for {rid} yet.");
         return Ok(());
     }
-    println!("Seeding {} artifact(s) for {rid}:", entries.len());
+    println!("🌱 Seeding {} artifact(s) for {rid}:", entries.len());
     for entry in entries {
         println!("  {} ({})", entry.cid, human_bytes(entry.bytes));
     }
@@ -445,13 +449,13 @@ pub(crate) fn seed_to_release(
 
     let new_or_dup = if receipt.was_new { "new" } else { "already" };
     eprintln!(
-        "Seeded {} ({}, {new_or_dup} tagged)",
+        "🌱 Seeded {} ({}, {new_or_dup} tagged)",
         cid,
         human_bytes(receipt.bytes)
     );
 
     if no_announce {
-        eprintln!("Skipped COB location write (--no-announce)");
+        eprintln!("🤫 Keeping it local — no COB location written (--no-announce)");
         return Ok(());
     }
 
@@ -459,11 +463,11 @@ pub(crate) fn seed_to_release(
     // location now fails, leave the tag in place and tell the user how
     // to retry
     if let Err(e) = register_location(releases, release_id, cid, &receipt, profile) {
-        eprintln!("Seed tagged, but registering the artifact location failed: {e}");
-        eprintln!("Retry with: rad-artifact seed {}", path.display());
+        eprintln!("⚠️  Seed tagged, but registering the artifact location failed: {e}");
+        eprintln!("   Retry with: rad-artifact seed {}", path.display());
         return Err(e);
     }
-    eprintln!("Added radiroh:// location to release {release_id}");
+    eprintln!("📡 Registered a radiroh:// location in release {release_id}");
     Ok(())
 }
 
@@ -525,9 +529,9 @@ pub(crate) fn unseed_artifact(
         .map_err(client_err)?;
 
     if receipt.was_removed {
-        eprintln!("Unseeded {cid}");
+        eprintln!("🍂 Unseeded {cid} — no longer holding its bytes");
     } else {
-        eprintln!("Note: {cid} was not being seeded");
+        eprintln!("🤷 Nothing to do — {cid} wasn't being seeded");
     }
 
     let local_did = Did::from(*profile.id());
@@ -575,7 +579,7 @@ pub(crate) fn unseed_artifact(
         }
     }
     if removed > 0 {
-        eprintln!("Removed {removed} iroh location(s) from COB");
+        eprintln!("🧹 Swept {removed} iroh location(s) from the COB");
         // Publish the retractions so peers stop advertising us as a source.
         // `--no-sync` defers this to a later `rad sync -a`.
         if !no_sync {
@@ -655,6 +659,37 @@ fn print_status_pretty(s: &Status) {
         "Traffic       {} out · {} in",
         human_bytes(tr.out_bytes),
         human_bytes(tr.in_bytes)
+    );
+    print_relay(&s.relay);
+}
+
+fn print_relay(r: &RelayStats) {
+    if r.relays.is_empty() {
+        println!("Relay         none assigned — node may be unreachable");
+        return;
+    }
+    for relay in &r.relays {
+        let state = if relay.connected {
+            "connected"
+        } else {
+            "DISCONNECTED"
+        };
+        let latency = match relay.latency_ms {
+            Some(ms) => format!(" · {ms}ms"),
+            None => String::new(),
+        };
+        // Show the last error only when it adds signal (disconnected).
+        let err = match (&relay.last_error, relay.connected) {
+            (Some(e), false) => format!(" · {e}"),
+            _ => String::new(),
+        };
+        println!("Relay         {state} · {}{latency}{err}", relay.url);
+    }
+    // UDP reachability decides whether peers can holepunch a direct path.
+    println!(
+        "Reachability  UDP {} · {}",
+        if r.udp_v4 { "v4" } else { "no-v4" },
+        if r.udp_v6 { "v6" } else { "no-v6" },
     );
 }
 

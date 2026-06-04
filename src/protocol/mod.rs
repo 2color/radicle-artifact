@@ -371,6 +371,8 @@ pub struct Status {
     pub connections: ConnectionStats,
     /// Bytes-on-the-wire counters from iroh's socket metrics.
     pub traffic: TrafficStats,
+    /// Home-relay connectivity and measured latency.
+    pub relay: RelayStats,
     /// Soft warnings rendered as advice to the user.
     pub warnings: Warnings,
 }
@@ -428,11 +430,48 @@ pub struct TrafficStats {
     pub in_bytes: u64,
 }
 
-/// Soft warnings surfaced in `Status`. Empty for now — reserved as an
-/// extension point for advice the node can attach to a status reply.
+/// Home-relay connectivity. The relay is how peers that can't holepunch a
+/// direct path reach this node, so a disconnected relay means reduced
+/// reachability even while the local socket is bound.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Warnings {}
+pub struct RelayStats {
+    /// Per-home-relay status. Empty before a relay is selected, or when
+    /// relays are disabled.
+    pub relays: Vec<RelayHealth>,
+    /// URL of the lowest-latency relay net_report would prefer, if a report
+    /// has landed yet.
+    pub preferred: Option<String>,
+    /// A QAD (UDP) round trip completed over IPv4 — i.e. direct UDP works.
+    pub udp_v4: bool,
+    /// A QAD (UDP) round trip completed over IPv6.
+    pub udp_v6: bool,
+}
+
+/// Connection status and measured latency of a single home relay.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayHealth {
+    /// Relay URL.
+    pub url: String,
+    /// `true` when the endpoint currently holds a connection to the relay.
+    pub connected: bool,
+    /// Lowest round-trip latency measured by net_report, in milliseconds.
+    /// `None` until a probe lands.
+    pub latency_ms: Option<u64>,
+    /// Most recent connection error when disconnected; `None` when connected
+    /// or before any failure was observed.
+    pub last_error: Option<String>,
+}
+
+/// Soft warnings surfaced in `Status`, rendered as advice to the user.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Warnings {
+    /// Set when no home relay is connected; peers that can't holepunch may
+    /// be unable to reach this node.
+    pub relay_unreachable: bool,
+}
 
 #[cfg(test)]
 mod tests {
@@ -615,6 +654,7 @@ mod tests {
             disk: DiskStats::default(),
             connections: ConnectionStats::default(),
             traffic: TrafficStats::default(),
+            relay: RelayStats::default(),
             warnings: Warnings::default(),
         };
         assert_eq!(
@@ -634,7 +674,13 @@ mod tests {
                     "paths_relayed": 0,
                 },
                 "traffic": {"out_bytes": 0, "in_bytes": 0},
-                "warnings": {},
+                "relay": {
+                    "relays": [],
+                    "preferred": null,
+                    "udp_v4": false,
+                    "udp_v6": false,
+                },
+                "warnings": {"relay_unreachable": false},
             })
         );
     }
