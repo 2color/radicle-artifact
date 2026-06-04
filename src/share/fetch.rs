@@ -141,15 +141,15 @@ pub(crate) async fn download_iroh_to_store(
             Ok(None) => break, // Download completed!
             Ok(Some(item)) => match item {
                 DownloadProgressItem::TryProvider { id, .. } => {
-                    on_progress(FetchProgress::TryingProvider {
+                    on_progress(FetchProgress::TryingLocation {
                         endpoint_id: EndpointId::from(id),
                     });
                 }
                 DownloadProgressItem::ProviderFailed { id, .. } => {
                     let endpoint_id = EndpointId::from(id);
-                    on_progress(FetchProgress::ProviderFailed { endpoint_id });
+                    on_progress(FetchProgress::LocationFailed { endpoint_id });
                     errors.push(Error::Iroh(format!(
-                        "provider {endpoint_id}: download failed"
+                        "location {endpoint_id}: download failed"
                     )));
                 }
                 DownloadProgressItem::Progress(offset) => {
