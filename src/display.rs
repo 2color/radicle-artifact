@@ -10,6 +10,7 @@ use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repositor
 use serde::Serialize;
 use url::Url;
 
+use crate::share::keys::EndpointId;
 use crate::ReleaseId;
 
 /// Resolve a DID's alias via an [`AliasStore`], returning the string if found.
@@ -403,6 +404,11 @@ pub struct Release {
     #[serde(skip_serializing_if = "Option::is_none")]
     creator_alias: Option<String>,
     artifacts: Vec<Artifact>,
+    /// Local user's DID, used to derive the 🌱 seeding badge at render
+    /// time. Not serialized — JSON consumers can compute seeding from
+    /// `locations` and their own DID.
+    #[serde(skip)]
+    local: Option<Did>,
 }
 
 impl Release {
@@ -516,7 +522,23 @@ impl Release {
             creator,
             creator_alias: resolve(&creator, aliases),
             artifacts,
+            local: filters.local.copied(),
         }
+    }
+
+    /// Whether the local user advertises itself as a provider for this
+    /// artifact: it carries a `radiroh://` location under our own DID
+    /// that resolves to our endpoint id — computed identically to how
+    /// any peer decides we're a provider. See [`EndpointId::matches_url`].
+    fn seeding(&self, artifact: &Artifact) -> bool {
+        self.local.is_some_and(|local| {
+            EndpointId::try_from(&local).is_ok_and(|me| {
+                artifact
+                    .locations
+                    .iter()
+                    .any(|l| l.did == local && me.matches_url(&l.url))
+            })
+        })
     }
 
     /// Build the colored release header line: bullet, short id, ref
@@ -600,18 +622,26 @@ impl Release {
             let cid_cell = artifact.cid.clone();
             let author = format_did(&artifact.author, &artifact.author_alias, style.verbose);
 
-            // Summarise location counts by URL scheme to keep the row compact.
-            let mut scheme_counts: std::collections::BTreeMap<&str, usize> =
-                std::collections::BTreeMap::new();
-            for loc in artifact.locations.iter() {
-                *scheme_counts.entry(loc.url.scheme()).or_insert(0) += 1;
-            }
-            let locations_cell = scheme_counts
-                .iter()
-                .map(|(scheme, count)| format!("{scheme}: {count}"))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let locations_cell = if style.verbose {
+                let mut counts: std::collections::BTreeMap<&str, usize> =
+                    std::collections::BTreeMap::new();
+                for loc in artifact.locations.iter() {
+                    *counts.entry(loc.url.scheme()).or_insert(0) += 1;
+                }
+                counts
+                    .iter()
+                    .map(|(scheme, count)| format!("{scheme}: {count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                format!("({} 📍)", artifact.locations.len())
+            };
 
+            let seed = if self.seeding(artifact) {
+                "🌱".to_string()
+            } else {
+                String::new()
+            };
             let mut badges = String::new();
             if !artifact.attestations.is_empty() {
                 badges.push_str(&style.green(&format!("✓{}", artifact.attestations.len())));
@@ -627,6 +657,7 @@ impl Release {
                 style.magenta(&cid_cell),
                 style.bold(&artifact.name),
                 style.dim(&author),
+                seed,
                 locations_cell,
                 badges,
             ]);
@@ -672,6 +703,9 @@ impl Release {
             s.push('\n');
             // Artifact heading: name in bold with badges.
             let mut badges = String::new();
+            if self.seeding(artifact) {
+                badges.push_str(" 🌱");
+            }
             if !artifact.attestations.is_empty() {
                 badges.push_str(&style.green(&format!(" ✓{}", artifact.attestations.len())));
             }

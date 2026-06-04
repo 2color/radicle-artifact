@@ -32,6 +32,10 @@ Together this means your published artifacts stay reachable peer-to-peer without
 
 `serve` is renamed to `seed`, with a matching `unseed`, available both under `rad-artifact node …` and as top-level `rad-artifact seed` / `unseed`. `seed <PATH>` computes the CID, hands the bytes to the node, and registers a `radiroh://` location on the release in one step; `unseed <CID>` stops seeding and retracts your `radiroh://` locations. Both announce the COB change to the network when they write one (like the other mutating commands) so peers discover. The node also runs periodic blob garbage collection, so space from unseeded artifacts is reclaimed automatically rather than growing without bound.
 
+#### 🌱 See which artifacts you've announced at a glance
+
+`list` and `show` now mark artifacts you've announced as a seeder with 🌱, derived from the COB and your DID, no node RPC required, so it reflects what the network sees even when the node is offline.
+
 #### 🤝 Keep your locations honest with `reconcile`
 
 `rad-artifact reconcile` brings the artifact COB back in line with what your node is actually seeding. It auto-adds missing `radiroh://` locations for artifacts you're serving, flags drift in the other direction (locations you left behind, stale endpoint ids) without deleting anything until you ask, and reports **dangling tags** — CIDs the node is seeding that no release references. Pass `--remove-orphaned <CID>` or `--remove-orphaned-self` to prune explicitly, and `--all-repos` to sweep everything at once. This is also the supported one-run migration off the legacy `iroh://` scheme (see below).
@@ -50,7 +54,7 @@ This is a **hard break** on read: legacy `iroh://` URLs are no longer parsed, an
 
 #### Rename `add` to `register`
 
-The CLI command `add` is renamed to `register`, drawing a clear line between the two layers of the tool. **Registering** records signed releases, content-addressed artifacts, and download locations in the artifact COB, synced over the radicle protocol — discovery metadata, never bytes. **Seeding** is a node holding an artifact's bytes and serving them to peers over iroh.
+The CLI command `add` is renamed to `register`, drawing a clear line between **Registering** artifacts and download location synced over the radicle protocol (discovery metadata, never bytes) and **Seeding**, the node holding the artifact's bytes and seeding them to peers over iroh.
 
 `add` stays as a hidden alias, so existing scripts and pipelines keep working.
 
