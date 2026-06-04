@@ -1,1 +1,1 @@
-{"description":"- Use register over add consistently\n- announce COB changes after seed/unseed\n- add `register --seed` to register and seed in one step\n- add `--json` to register (for json output)","revision":"041d05930cec1b75efdd1c522b16719f95d351b6","type":"revision.edit"}
+{"commit":"6982b76c165e20469bd54378bbf144a2a65348ba","revision":"c98d1bbc866edec59ed47fd222ad8ed0bb8aee8d","type":"merge"}
