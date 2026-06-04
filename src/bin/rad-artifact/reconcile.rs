@@ -151,17 +151,10 @@ fn classify_locations(
 ) -> Classified {
     let mut out = Classified::default();
     for loc in locations {
-        let eid = match EndpointId::from_url(&loc.url) {
-            Ok(Some(eid)) => eid,
-            // Bare radiroh:// falls back to the location author's DID, which is us.
-            Ok(None) => endpoint_id,
-            // Undecodable host or a legacy `iroh://` scheme: treat as stale.
-            Err(_) => {
-                out.stale_endpoint.push((loc.release_id, loc.cid, loc.url));
-                continue;
-            }
-        };
-        if eid == endpoint_id {
+        // A bare radiroh:// resolves to the location author's DID (us);
+        // a hosted one must match our endpoint. Foreign, undecodable, or
+        // legacy `iroh://` URLs don't match and fall to the stale bucket.
+        if endpoint_id.matches_url(&loc.url) {
             out.current_endpoint_have.insert(loc.cid);
             if !seeded.contains(&loc.cid) {
                 out.orphaned_self.push((loc.release_id, loc.cid, loc.url));

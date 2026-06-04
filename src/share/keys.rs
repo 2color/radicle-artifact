@@ -90,6 +90,20 @@ impl EndpointId {
         url.scheme() == Self::URL_SCHEME
     }
 
+    /// Whether `url` advertises this endpoint as a provider.
+    ///
+    /// A bare `radiroh://` (no host) matches any endpoint — it resolves
+    /// to the location author's DID-derived endpoint. A hosted
+    /// `radiroh://<id>` matches only when `<id>` equals this endpoint.
+    /// Non-endpoint URLs (wrong scheme, malformed host) never match.
+    pub fn matches_url(&self, url: &Url) -> bool {
+        match Self::from_url(url) {
+            Ok(Some(id)) => id == *self,
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
     /// `true` iff `url.scheme()` is the pre-rename `iroh://` scheme.
     ///
     /// Used only by `rad-artifact reconcile` to sweep legacy locations
@@ -335,6 +349,20 @@ mod tests {
         assert!(!EndpointId::is_legacy_endpoint_url(
             &Url::parse("https://example.com").unwrap()
         ));
+    }
+
+    #[test]
+    fn matches_url_rules() {
+        let id = fixed_id();
+        let other = iroh::SecretKey::from_bytes(&[9u8; 32]).public().into();
+        // Bare radiroh:// matches any endpoint (DID-derived fallback).
+        assert!(id.matches_url(&Url::parse("radiroh://").unwrap()));
+        // Hosted matches only the same endpoint.
+        assert!(id.matches_url(&id.to_url()));
+        assert!(!id.matches_url(&EndpointId::to_url(&other)));
+        // Wrong scheme and malformed host never match.
+        assert!(!id.matches_url(&Url::parse("https://example.com").unwrap()));
+        assert!(!id.matches_url(&Url::parse("radiroh://abc123").unwrap()));
     }
 
     #[test]
