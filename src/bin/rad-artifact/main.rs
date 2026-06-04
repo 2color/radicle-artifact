@@ -1226,7 +1226,7 @@ fn run_fetch(
     let receipt = client
         .fetch_blocking(fetch_args, FETCH_IDLE_TIMEOUT, |p| match p {
             FetchProgress::Connecting => pb.set_message("connecting"),
-            FetchProgress::TryingProvider { endpoint_id } => {
+            FetchProgress::TryingLocation { endpoint_id } => {
                 pb.set_message(format!("trying {endpoint_id}"))
             }
             FetchProgress::Downloading { offset, .. } => pb.set_position(*offset),
@@ -2850,7 +2850,7 @@ mod error {
         // Distinct from `ArtifactNotFound`: the artifact is known, but no
         // usable source has been announced. Surface the actionable recovery
         // paths so the user doesn't get a generic "no locations" error.
-        #[error("no download locations known for artifact {cid}\n  hint: pass --url <URL> to fetch directly, or ask a seed to run `rad-artifact seed`")]
+        #[error("no download locations known for artifact {cid}\n  hint: pass --url <URL> to fetch directly, or ask a seeder to run `rad-artifact seed`")]
         NoLocationsForCid { cid: radicle_artifact::Cid },
         #[error(transparent)]
         Protocol(radicle_artifact::share::Error),

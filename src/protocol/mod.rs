@@ -184,7 +184,7 @@ pub enum StreamEvent<T> {
 
 /// One progress frame for a streaming command.
 ///
-/// An enum, not a struct, so provider-level events (which carry no byte
+/// An enum, not a struct, so Location-level events (which carry no byte
 /// offset) and byte-movement events are modeled distinctly. The variants
 /// map onto the iroh `DownloadProgressItem` kinds the download loop
 /// already produces. `Export` only ever emits [`FetchProgress::Exporting`].
@@ -192,16 +192,16 @@ pub enum StreamEvent<T> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum FetchProgress {
-    /// Endpoint/relay setup, before any provider is tried.
+    /// Endpoint/relay setup, before any Location is tried.
     Connecting,
-    /// Now attempting this provider.
-    TryingProvider {
-        /// Provider being tried.
+    /// Now attempting this Location.
+    TryingLocation {
+        /// Endpoint being tried.
         endpoint_id: EndpointId,
     },
-    /// This provider failed; moving on to the next.
-    ProviderFailed {
-        /// Provider that failed.
+    /// This Location failed; moving on to the next.
+    LocationFailed {
+        /// Endpoint that failed.
         endpoint_id: EndpointId,
     },
     /// Byte movement during download.
@@ -748,11 +748,11 @@ mod tests {
 
         let err: StreamEvent<u32> = StreamEvent::Error(CommandError {
             code: ErrorCode::AllFailed,
-            message: "no providers".into(),
+            message: "no locations".into(),
         });
         assert_eq!(
             serde_json::to_value(&err).unwrap(),
-            json!({"error": {"code": "all-failed", "message": "no providers"}})
+            json!({"error": {"code": "all-failed", "message": "no locations"}})
         );
     }
 
@@ -762,12 +762,12 @@ mod tests {
         let cases = [
             (FetchProgress::Connecting, json!({"kind": "connecting"})),
             (
-                FetchProgress::TryingProvider { endpoint_id },
-                json!({"kind": "trying-provider", "endpoint_id": endpoint_id.to_string()}),
+                FetchProgress::TryingLocation { endpoint_id },
+                json!({"kind": "trying-location", "endpoint_id": endpoint_id.to_string()}),
             ),
             (
-                FetchProgress::ProviderFailed { endpoint_id },
-                json!({"kind": "provider-failed", "endpoint_id": endpoint_id.to_string()}),
+                FetchProgress::LocationFailed { endpoint_id },
+                json!({"kind": "location-failed", "endpoint_id": endpoint_id.to_string()}),
             ),
             (
                 FetchProgress::Downloading {
