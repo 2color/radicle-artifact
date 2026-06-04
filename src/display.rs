@@ -10,6 +10,7 @@ use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repositor
 use serde::Serialize;
 use url::Url;
 
+use crate::share::keys::EndpointId;
 use crate::ReleaseId;
 
 /// Resolve a DID's alias via an [`AliasStore`], returning the string if found.
@@ -403,6 +404,11 @@ pub struct Release {
     #[serde(skip_serializing_if = "Option::is_none")]
     creator_alias: Option<String>,
     artifacts: Vec<Artifact>,
+    /// Local user's DID, used to derive the 🌱 seeding badge at render
+    /// time. Not serialized — JSON consumers can compute seeding from
+    /// `locations` and their own DID.
+    #[serde(skip)]
+    local: Option<Did>,
 }
 
 impl Release {
@@ -516,7 +522,23 @@ impl Release {
             creator,
             creator_alias: resolve(&creator, aliases),
             artifacts,
+            local: filters.local.copied(),
         }
+    }
+
+    /// Whether the local user advertises itself as a provider for this
+    /// artifact: it carries a `radiroh://` location under our own DID
+    /// that resolves to our endpoint id — computed identically to how
+    /// any peer decides we're a provider. See [`EndpointId::matches_url`].
+    fn seeding(&self, artifact: &Artifact) -> bool {
+        self.local.is_some_and(|local| {
+            EndpointId::try_from(&local).is_ok_and(|me| {
+                artifact
+                    .locations
+                    .iter()
+                    .any(|l| l.did == local && me.matches_url(&l.url))
+            })
+        })
     }
 
     /// Build the colored release header line: bullet, short id, ref
@@ -613,7 +635,15 @@ impl Release {
                 .join(", ");
 
             let mut badges = String::new();
+            // Lead with the seedling so a glance down the column shows
+            // which artifacts we're providing.
+            if self.seeding(artifact) {
+                badges.push('🌱');
+            }
             if !artifact.attestations.is_empty() {
+                if !badges.is_empty() {
+                    badges.push(' ');
+                }
                 badges.push_str(&style.green(&format!("✓{}", artifact.attestations.len())));
             }
             if !artifact.redactions.is_empty() {
@@ -672,6 +702,9 @@ impl Release {
             s.push('\n');
             // Artifact heading: name in bold with badges.
             let mut badges = String::new();
+            if self.seeding(artifact) {
+                badges.push_str(" 🌱");
+            }
             if !artifact.attestations.is_empty() {
                 badges.push_str(&style.green(&format!(" ✓{}", artifact.attestations.len())));
             }
