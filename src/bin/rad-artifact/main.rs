@@ -2090,6 +2090,11 @@ Examples:
     /// `radiroh://{endpoint_id}` location to the COB unless
     /// `--no-announce`. Requires a running node — start one with
     /// `rad-artifact node start`.
+    ///
+    /// When multiple releases contain the same CID and `--release` is
+    /// not given, the location is written to the most recently created
+    /// matching release. Use `--release` to target a specific one, or
+    /// prefer `register --seed` which resolves this automatically.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
