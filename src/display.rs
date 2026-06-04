@@ -10,6 +10,7 @@ use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repositor
 use serde::Serialize;
 use url::Url;
 
+use crate::share::keys::EndpointId;
 use crate::ReleaseId;
 
 /// Resolve a DID's alias via an [`AliasStore`], returning the string if found.
@@ -489,12 +490,30 @@ impl Release {
                     .collect();
                 // Sort by DID for deterministic output.
                 redactions.sort_by_key(|a| a.did);
+                // We're a published provider when the artifact carries a
+                // radiroh:// location under our own DID. A bare radiroh://
+                // (no host) counts — it resolves to our DID-derived
+                // endpoint; a hosted one must match that endpoint id.
+                let seeding = filters.local.is_some_and(|local| {
+                    let me = EndpointId::try_from(local).ok();
+                    artifact.locations().get(local).is_some_and(|urls| {
+                        urls.iter().any(|url| {
+                            EndpointId::is_endpoint_url(url)
+                                && match EndpointId::from_url(url) {
+                                    Ok(Some(id)) => Some(id) == me,
+                                    Ok(None) => true,
+                                    Err(_) => false,
+                                }
+                        })
+                    })
+                });
                 let artifact_author = *artifact.author();
                 Artifact {
                     cid: cid.to_string(),
                     author_alias: resolve(&artifact_author, aliases),
                     author: artifact_author,
                     name: artifact.name().to_owned(),
+                    seeding,
                     locations,
                     attestations,
                     redactions,
@@ -613,7 +632,15 @@ impl Release {
                 .join(", ");
 
             let mut badges = String::new();
+            // Lead with the seedling so a glance down the column shows
+            // which artifacts we're providing.
+            if artifact.seeding {
+                badges.push('🌱');
+            }
             if !artifact.attestations.is_empty() {
+                if !badges.is_empty() {
+                    badges.push(' ');
+                }
                 badges.push_str(&style.green(&format!("✓{}", artifact.attestations.len())));
             }
             if !artifact.redactions.is_empty() {
@@ -672,6 +699,9 @@ impl Release {
             s.push('\n');
             // Artifact heading: name in bold with badges.
             let mut badges = String::new();
+            if artifact.seeding {
+                badges.push_str(" 🌱");
+            }
             if !artifact.attestations.is_empty() {
                 badges.push_str(&style.green(&format!(" ✓{}", artifact.attestations.len())));
             }
@@ -770,6 +800,12 @@ struct Artifact {
     author_alias: Option<String>,
     author: Did,
     name: String,
+    /// True when the local user is a published provider for this
+    /// artifact: it carries a `radiroh://` location under our own DID
+    /// that resolves to our endpoint id. This reflects the advertised
+    /// claim in the COB — computed identically to how any peer decides
+    /// we're a provider — not live blob presence in the local store.
+    seeding: bool,
     locations: Vec<Location>,
     attestations: Vec<Attestation>,
     redactions: Vec<Redaction>,

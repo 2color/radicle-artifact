@@ -2559,4 +2559,61 @@ mod test {
         assert!(detailed.contains("build"));
         assert!(detailed.contains("ok"));
     }
+
+    #[test]
+    fn display_marks_seeding_for_local_endpoint_location() {
+        use std::collections::HashMap;
+
+        use crate::display;
+        use crate::share::keys::EndpointId;
+
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let alice_did = Did::from(alice.signer.public_key());
+        // Our own radiroh:// endpoint URL, derived from our DID.
+        let endpoint_url = EndpointId::try_from(&alice_did).unwrap().to_url();
+
+        let seeded = test_cid(1);
+        let unseeded = test_cid(2);
+        release
+            .register_artifact(seeded, "seeded".into(), &alice.signer)
+            .unwrap();
+        release
+            .register_artifact(unseeded, "unseeded".into(), &alice.signer)
+            .unwrap();
+        // Advertise ourselves as a provider for `seeded` only.
+        release
+            .add_location(seeded, endpoint_url, &alice.signer)
+            .unwrap();
+        let id = *release.id();
+        drop(release);
+
+        let release = releases.get(&id).unwrap().unwrap();
+        let delegates: BTreeSet<Did> = BTreeSet::new();
+        let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
+        let filters = display::Filters {
+            delegates: &delegates,
+            redacted: false,
+            all_authors: true,
+            local: Some(&alice_did),
+        };
+        let shown = display::Release::new(id, &release, &aliases, filters, None, None);
+        let out = shown.pretty(display::Style::plain(false));
+        // The seedling appears once: for the artifact we provide.
+        assert_eq!(out.matches('🌱').count(), 1);
+
+        // Without a local DID nothing is marked as seeded.
+        let anon = display::Filters {
+            local: None,
+            ..filters
+        };
+        let anon_out = display::Release::new(id, &release, &aliases, anon, None, None)
+            .pretty(display::Style::plain(false));
+        assert!(!anon_out.contains('🌱'));
+    }
 }
