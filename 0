@@ -1,1 +1,1 @@
-{"base":"a4cce127b376dfd5bd0e076f77dfbbb45919a001","description":"- Rename IROH_RELAY_URL to IROH_RELAY_URLS\n- Accept comma-separated list of relay URLs for redundancy\n- Empty/unset still falls back to Radworks default\n- Add parse_relay_urls helper and update tests","oid":"d64bb2a876599f7b2e65dded0faa48a72a903ede","type":"revision"}
+{"base":"a4cce127b376dfd5bd0e076f77dfbbb45919a001","description":"Support multiple iroh relays","oid":"e0b76a45b410cfc6e0f8fc60e8e0256fed852749","type":"revision"}
