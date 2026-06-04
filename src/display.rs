@@ -491,20 +491,14 @@ impl Release {
                 // Sort by DID for deterministic output.
                 redactions.sort_by_key(|a| a.did);
                 // We're a published provider when the artifact carries a
-                // radiroh:// location under our own DID. A bare radiroh://
-                // (no host) counts — it resolves to our DID-derived
-                // endpoint; a hosted one must match that endpoint id.
+                // radiroh:// location under our own DID that resolves to
+                // our endpoint — see [`EndpointId::matches_url`].
                 let seeding = filters.local.is_some_and(|local| {
-                    let me = EndpointId::try_from(local).ok();
-                    artifact.locations().get(local).is_some_and(|urls| {
-                        urls.iter().any(|url| {
-                            EndpointId::is_endpoint_url(url)
-                                && match EndpointId::from_url(url) {
-                                    Ok(Some(id)) => Some(id) == me,
-                                    Ok(None) => true,
-                                    Err(_) => false,
-                                }
-                        })
+                    EndpointId::try_from(local).is_ok_and(|me| {
+                        artifact
+                            .locations()
+                            .get(local)
+                            .is_some_and(|urls| urls.iter().any(|url| me.matches_url(url)))
                     })
                 });
                 let artifact_author = *artifact.author();
