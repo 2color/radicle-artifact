@@ -454,7 +454,7 @@ where
     // Skip the discovery hints when --seed is set: the caller is about to
     // seed and announce a location, so they'd be noise.
     if !seed && std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {cid} <url>` to register a download location");
+        eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {cid} <url>` to add a download location");
         if let Some(p) = path.as_deref() {
             eprintln!(
                 "      or `rad-artifact seed {}` to seed it yourself via the local node",
@@ -902,7 +902,7 @@ where
         _ => unreachable!("clap enforces a target arg with --cid and vice versa"),
     };
 
-    // Look up the user's own registered locations for this artifact so we
+    // Look up the user's own added locations for this artifact so we
     // can either pick from them (when URL is omitted) or verify the URL the
     // user supplied. Without this check `remove_location` silently no-ops
     // for unknown URLs / wrong-DID retractions (see lib.rs test
@@ -925,7 +925,7 @@ where
         Some(url) => {
             if !urls.contains(&url) {
                 return Err(error::RemoveLocation::Usage(format!(
-                    "you have not registered location {url} for artifact {cid}"
+                    "you have not added location {url} for artifact {cid}"
                 )));
             }
             url
@@ -1556,7 +1556,7 @@ mod prompt {
     /// Pick a previously-announced location URL from a list.
     ///
     /// Used by `location remove` to let the user choose which of their
-    /// own registered locations to retract. Errors if `no_input` is set,
+    /// own added locations to retract. Errors if `no_input` is set,
     /// stdin is not a TTY, or the list is empty.
     pub fn pick_location(no_input: bool, urls: Vec<Url>) -> Result<Url, String> {
         if no_input || !std::io::stdin().is_terminal() {
@@ -1566,7 +1566,7 @@ mod prompt {
             );
         }
         if urls.is_empty() {
-            return Err("no locations registered by you for this artifact".into());
+            return Err("no locations added by you for this artifact".into());
         }
         let labels: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
         let selection = inquire::Select::new("Select location to remove:", labels)
@@ -2074,7 +2074,7 @@ Examples:
         /// Output file path. Defaults to the artifact name in the current directory.
         #[clap(short, long)]
         pub output: Option<std::path::PathBuf>,
-        /// Fetch from this URL directly, skipping registered locations.
+        /// Fetch from this URL directly, skipping the artifact's locations.
         #[clap(long)]
         pub url: Option<url::Url>,
         /// After fetching, keep seeding the artifact and announce a
@@ -2234,10 +2234,10 @@ Examples:
   Interactive mode (pick from available releases):
     $ rad-artifact location add https://example.com/my-binary
 
-  Register an HTTPS download location:
+  Add an HTTPS download location:
     $ rad-artifact location add --revision v1.0 --cid baf...abc https://example.com/my-binary
 
-  Register an iroh-blobs endpoint:
+  Add an iroh-blobs endpoint:
     $ rad-artifact location add --revision v1.0 --cid baf...abc radiroh://<endpoint-id>
 
   Target a specific release by id:
@@ -2446,7 +2446,7 @@ Examples:
         group = clap::ArgGroup::new("target").args(["revision", "release"]),
         after_long_help = "\
 Examples:
-  Interactive mode (pick from your registered locations):
+  Interactive mode (pick from your added locations):
     $ rad-artifact location remove
 
   Remove a specific URL:

@@ -462,17 +462,17 @@ pub(crate) fn seed_to_release(
     // The node has already tagged the artifact. If announcing the COB
     // location now fails, leave the tag in place and tell the user how
     // to retry
-    if let Err(e) = register_location(releases, release_id, cid, &receipt, profile) {
-        eprintln!("⚠️  Seed tagged, but registering the artifact location failed: {e}");
+    if let Err(e) = add_location(releases, release_id, cid, &receipt, profile) {
+        eprintln!("⚠️  Seed tagged, but adding the artifact location failed: {e}");
         eprintln!("   Retry with: rad-artifact seed {}", path.display());
         return Err(e);
     }
-    eprintln!("📡 Registered a radiroh:// location in release {release_id}");
+    eprintln!("📡 Added a radiroh:// location in release {release_id}");
     Ok(())
 }
 
 /// Sign the seed's `radiroh://` location into the target release's COB.
-fn register_location(
+fn add_location(
     releases: &mut Releases<'_, Repository>,
     release_id: ReleaseId,
     cid: Cid,
