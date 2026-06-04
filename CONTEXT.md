@@ -1,16 +1,21 @@
 # rad-artifact
 
-Two distinct layers. **Registering** records signed Releases,
-content-addressed Artifacts, and download Locations in a Radicle
-collaborative object (COB) in the git storage, synced over the radicle protocol; discovery
+Two distinct layers. You **create** a Release tied to a tag/commit and
+**register** Artifacts and Locations against it, all in a Radicle collaborative
+object (COB) in the git storage, synced over the radicle protocol; discovery
 metadata, never bytes. **Seeding** is a node holding an Artifact's bytes
 and serving them to peers over iroh. The COB says where bytes can be
 fetched; a seeding node is what actually answers.
 
 ## Language
 
+**Create** (verb):
+Open a new signed Release in the COB, tied to a tag/commit. The Release is
+the container; its Artifacts are registered separately.
+_Avoid_: register (you register into a Release, not the Release itself).
+
 **Register** (verb):
-Record a signed Release, Artifact, or Location in the COB. Synced over
+Record an Artifact or Location against a Release in the COB. Synced over
 the radicle protocol; carries discovery metadata only — never the bytes.
 _Avoid_: add (the CLI command was renamed from `add` to `register`), publish.
 
