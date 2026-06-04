@@ -22,7 +22,7 @@ use radicle::{
 use radicle_artifact::client::{self, Client, ClientError};
 use radicle_artifact::node;
 use radicle_artifact::protocol::{
-    Command as NodeMsg, ImportMode, SeedReceipt, SeededEntry, Status, UnseedReceipt,
+    Command as NodeMsg, ImportMode, RelayStats, SeedReceipt, SeededEntry, Status, UnseedReceipt,
 };
 use radicle_artifact::share;
 use radicle_artifact::share::keys::{radicle_secret_to_iroh, EndpointId};
@@ -655,6 +655,37 @@ fn print_status_pretty(s: &Status) {
         "Traffic       {} out · {} in",
         human_bytes(tr.out_bytes),
         human_bytes(tr.in_bytes)
+    );
+    print_relay(&s.relay);
+}
+
+fn print_relay(r: &RelayStats) {
+    if r.relays.is_empty() {
+        println!("Relay         none assigned — node may be unreachable");
+        return;
+    }
+    for relay in &r.relays {
+        let state = if relay.connected {
+            "connected"
+        } else {
+            "DISCONNECTED"
+        };
+        let latency = match relay.latency_ms {
+            Some(ms) => format!(" · {ms}ms"),
+            None => String::new(),
+        };
+        // Show the last error only when it adds signal (disconnected).
+        let err = match (&relay.last_error, relay.connected) {
+            (Some(e), false) => format!(" · {e}"),
+            _ => String::new(),
+        };
+        println!("Relay         {state} · {}{latency}{err}", relay.url);
+    }
+    // UDP reachability decides whether peers can holepunch a direct path.
+    println!(
+        "Reachability  UDP {} · {}",
+        if r.udp_v4 { "v4" } else { "no-v4" },
+        if r.udp_v6 { "v6" } else { "no-v6" },
     );
 }
 

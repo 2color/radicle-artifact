@@ -24,7 +24,7 @@ Seeded bafkr4id5wrvsbpcw5hbdpcosgyzxt75hosqzj544v6mavnaxmjkypatgme (12.4 MiB, ne
 Added radiroh location to release abc1234
 ```
 
-The node starts once, detaches from your terminal, and keeps serving across shell exits and terminal closes. It reuses your radicle key for the iroh endpoint, so starting it may prompt for your passphrase if the key is encrypted. It holds a persistent iroh-blobs store on disk, so restarts don't re-import or re-hash anything you're already seeding. Check on it with `rad-artifact node status` (endpoint id, seeded count, disk, traffic), `rad-artifact node list`, and `rad-artifact node logs --follow`; stop it cleanly with `rad-artifact node stop`, which lets in-flight transfers drain before exiting.
+The node starts once, detaches from your terminal, and keeps serving across shell exits and terminal closes. It reuses your radicle key for the iroh endpoint, so starting it may prompt for your passphrase if the key is encrypted. It holds a persistent iroh-blobs store on disk, so restarts don't re-import or re-hash anything you're already seeding. Check on it with `rad-artifact node status` (endpoint id, seeded count, disk, traffic, and relay status), `rad-artifact node list`, and `rad-artifact node logs --follow`; stop it cleanly with `rad-artifact node stop`, which lets in-flight transfers drain before exiting.
 
 Together this means your published artifacts stay reachable peer-to-peer without you babysitting a foreground process.
 

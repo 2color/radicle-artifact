@@ -328,17 +328,12 @@ async fn dispatch(cmd: Command, ctx: &NodeCtx, shutdown_tx: &broadcast::Sender<(
     match cmd {
         // Cheap liveness probe: touch no state, just ack.
         Command::Alive => ok_json(()),
-        Command::Status => match build_status(
-            store,
-            ctx.endpoint.metrics(),
-            ctx.endpoint_id,
-            ctx.started_at_unix,
-        )
-        .await
-        {
-            Ok(status) => ok_json(status),
-            Err(e) => err_from_share::<Status>(e),
-        },
+        Command::Status => {
+            match build_status(store, &ctx.endpoint, ctx.endpoint_id, ctx.started_at_unix).await {
+                Ok(status) => ok_json(status),
+                Err(e) => err_from_share::<Status>(e),
+            }
+        }
         Command::Seed {
             rid,
             cid,
@@ -801,10 +796,11 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
 
 async fn build_status(
     store: &FsStore,
-    metrics: &iroh::metrics::EndpointMetrics,
+    endpoint: &iroh::Endpoint,
     endpoint_id: EndpointId,
     started_at_unix: i64,
 ) -> Result<Status, ShareError> {
+    let metrics = endpoint.metrics();
     let pairs = seeder::all_seeded(store).await?;
     let count = pairs.len();
     let mut bytes_logical = 0u64;
@@ -840,6 +836,10 @@ async fn build_status(
             .saturating_add(s.recv_data_relay.get())
             .saturating_add(s.recv_data_custom.get()),
     };
+    let relay = relay_stats(endpoint);
+    // A bound socket with no connected home relay is reachable only by peers
+    // that can holepunch a direct path; flag it as advice.
+    let relay_unreachable = !relay.relays.iter().any(|r| r.connected);
     Ok(Status {
         endpoint_id,
         started_at_unix,
@@ -853,9 +853,55 @@ async fn build_status(
         },
         connections,
         traffic,
-        // Reserved extension point; no warnings are emitted yet.
-        warnings: crate::protocol::Warnings::default(),
+        relay,
+        warnings: crate::protocol::Warnings { relay_unreachable },
     })
+}
+
+/// Snapshot home-relay connectivity and latency from the live endpoint.
+///
+/// `home_relay_status()` gives connection state per relay; `net_report()`
+/// (best-effort, may be empty before the first probe lands) supplies the
+/// preferred relay, UDP reachability, and per-relay round-trip latency.
+fn relay_stats(endpoint: &iroh::Endpoint) -> crate::protocol::RelayStats {
+    use iroh::Watcher;
+
+    let report = endpoint.net_report().get();
+    // Lowest measured latency per relay URL across probe types (v4/v6/https).
+    let mut latency_ms: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    if let Some(r) = &report {
+        for (_probe, url, dur) in r.relay_latency.iter() {
+            let ms = dur.as_millis() as u64;
+            latency_ms
+                .entry(url.to_string())
+                .and_modify(|m| *m = (*m).min(ms))
+                .or_insert(ms);
+        }
+    }
+
+    let relays = endpoint
+        .home_relay_status()
+        .get()
+        .into_iter()
+        .map(|s| {
+            let url = s.url().to_string();
+            crate::protocol::RelayHealth {
+                latency_ms: latency_ms.get(&url).copied(),
+                connected: s.is_connected(),
+                last_error: s.last_error().map(|e| e.to_string()),
+                url,
+            }
+        })
+        .collect();
+
+    crate::protocol::RelayStats {
+        relays,
+        preferred: report
+            .as_ref()
+            .and_then(|r| r.preferred_relay.as_ref().map(|u| u.to_string())),
+        udp_v4: report.as_ref().map(|r| r.udp_v4).unwrap_or(false),
+        udp_v6: report.as_ref().map(|r| r.udp_v6).unwrap_or(false),
+    }
 }
 
 fn ok_json<T: serde::Serialize>(v: T) -> String {
