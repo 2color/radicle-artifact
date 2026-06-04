@@ -56,6 +56,14 @@ The CLI command `add` is renamed to `register`, drawing a clear line between the
 
 For library consumers this is a **breaking API change**: `Release::add_artifact` is now `register_artifact`, and the COB action `Action::AddArtifact` is now `Action::RegisterArtifact`. The on-the-wire format is unchanged — the action still serializes as `AddArtifact` via `#[serde(rename)]`, so existing COBs deserialize as before and no migration is needed.
 
+#### Multiple iroh relay servers via `IROH_RELAY_URLS`
+
+The ability of nodes to successfully fetch artifacts in a peer-to-peer fashion depends on iroh's ability to establish either a direct connection or a relayed. This process is facilitated by a "dumb" third *relay* server that helps the node with [QUIC address discovery](https://www.iroh.computer/blog/qad) and relaying (the equivalent of STUN and TURN in WebRTC parlance).
+
+The **`IROH_RELAY_URLS`** environment variable (previously `IROH_RELAY_URL`). now accepts a comma-separated list of relay URLs, so deployments can point the node at more than one relay for redundancy. The default remains the [Radworks relay](https://radicle.network/nodes/daniel.radicle.garden/rad:zafWK8vuwJBJtynJUtgFjSFWZyGp).
+
+> *Note:* an endpoint may be connected to multiple relay servers, but it will advertise its home relay endpoint as the one best used to hole-punch or relay packets through. For more information, see the [iroh relay docs](https://github.com/n0-computer/iroh/blob/main/iroh/docs/relays.md).
+
 ## [0.14.0] - 2026-05-12
 
 ### ⭐️ Highlights
