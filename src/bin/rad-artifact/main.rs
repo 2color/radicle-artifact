@@ -1199,10 +1199,16 @@ fn run_fetch(
         if locations.len() == 1 { "" } else { "s" },
     );
 
-    let output_path = args.output.unwrap_or_else(|| {
+    let requested_path = args.output.unwrap_or_else(|| {
         let name = artifact.name();
         std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_")))
     });
+
+    // Resolve the fetch destination to an absolute path
+    //
+    // The node runs as a daemon with a different cwd, so a relative path would
+    // resolve to the wrong location once handed to it.
+    let output_path = std::path::absolute(&requested_path).unwrap_or(requested_path);
 
     // Route the fetch through the local node, which owns the store and all
     // blob I/O. A missing node surfaces as `node::Error::NotRunning`.
