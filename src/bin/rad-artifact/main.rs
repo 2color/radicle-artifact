@@ -1098,6 +1098,16 @@ fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
     Ok(())
 }
 
+/// Resolve the fetch destination to an absolute path against the CLI's cwd.
+///
+/// The node runs as a daemon with a different cwd, so a relative path would
+/// resolve to the wrong location once handed to it. `std::path::absolute` is
+/// purely lexical, so it works even though the destination doesn't exist yet.
+/// On the rare failure (e.g. an unreadable cwd) we keep the original path.
+fn resolve_output_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    std::path::absolute(&path).unwrap_or(path)
+}
+
 fn run_fetch(
     args: command::Fetch,
     no_input: bool,
@@ -1199,10 +1209,11 @@ fn run_fetch(
         if locations.len() == 1 { "" } else { "s" },
     );
 
-    let output_path = args.output.unwrap_or_else(|| {
+    let requested_path = args.output.unwrap_or_else(|| {
         let name = artifact.name();
         std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_")))
     });
+    let output_path = resolve_output_path(requested_path);
 
     // Route the fetch through the local node, which owns the store and all
     // blob I/O. A missing node surfaces as `node::Error::NotRunning`.
@@ -2856,5 +2867,27 @@ mod error {
         Protocol(radicle_artifact::share::Error),
         #[error("I/O error")]
         Io(#[source] std::io::Error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_output_path;
+
+    /// Regression: before this fix, `run_fetch` passed the raw dest path to
+    /// the node. The node is a daemon whose cwd differs from the CLI's, so a
+    /// relative path resolved to the wrong location and the export failed with
+    /// an opaque IO error.
+    #[test]
+    fn relative_output_path_is_made_absolute() {
+        let resolved = resolve_output_path(std::path::PathBuf::from("my-artifact"));
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with("my-artifact"));
+    }
+
+    #[test]
+    fn absolute_output_path_is_left_unchanged() {
+        let already = std::path::PathBuf::from("/tmp/my-artifact");
+        assert_eq!(resolve_output_path(already.clone()), already);
     }
 }
