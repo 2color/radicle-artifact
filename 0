@@ -1,1 +1,1 @@
-{"base":"f8e221167c53beabbe4395b8507398f87cd57bf3","description":"- reword seed/unseed/list/start/stop messages with a friendlier,\n  consistent voice and emoji cues\n\nWhy: the status output was getting a refresh; align the rest of the\nnode command surface so the CLI reads consistently.","oid":"0125c86ee611aaf79aafe859c8d683e2dc481565","type":"revision"}
+{"base":"f8e221167c53beabbe4395b8507398f87cd57bf3","description":"refine wording","oid":"8a545e7378e1eb87a638b66d045bc584219c510b","type":"revision"}
