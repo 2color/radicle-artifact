@@ -283,7 +283,14 @@ pub(crate) async fn export_blob_to(
 ) -> Result<u64, Error> {
     let tmp = partial_sibling(dest);
     let _tmp = ScopedPath(tmp.clone());
-    let bytes = export_streamed(store, hash, &tmp, None, &mut on_progress).await?;
+    let bytes = export_streamed(store, hash, &tmp, None, &mut on_progress)
+        .await
+        .map_err(|e| {
+            Error::Iroh(format!(
+                "failed to export from the iroh store to '{}': {e}",
+                dest.display()
+            ))
+        })?;
     std::fs::rename(&tmp, dest).map_err(Error::Io)?;
     Ok(bytes)
 }
@@ -313,7 +320,14 @@ pub(crate) async fn export_collection_to(
     let _staging = ScopedPath(staging.clone());
     std::fs::create_dir_all(&staging).map_err(Error::Io)?;
 
-    let total = export_members(store, &collection, &staging, on_progress).await?;
+    let total = export_members(store, &collection, &staging, on_progress)
+        .await
+        .map_err(|e| {
+            Error::Iroh(format!(
+                "failed to export from the iroh store to '{}': {e}",
+                dest_dir.display()
+            ))
+        })?;
     // Swap staging into place. staging is a sibling of dest_dir, so the
     // rename is a same-filesystem move; replace any existing destination
     // first (rename onto a non-empty dir fails).
