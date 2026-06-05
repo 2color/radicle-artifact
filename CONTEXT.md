@@ -35,7 +35,6 @@ Push a COB change to the radicle network so peers can discover it.
 Triggered automatically after writes; deferred with `--no-sync` and
 published later with `rad sync -a`.
 
-
 **Seeder**:
 A node that seeds an Artifact's bytes. Distinct from a Radicle seed node,
 which holds the repo's git/COB; one machine can be both, but "Seeder" here
