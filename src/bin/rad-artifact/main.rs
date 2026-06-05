@@ -2115,7 +2115,7 @@ Examples:
         /// Import by reference instead of copying bytes into the store.
         #[clap(long)]
         pub reference: bool,
-        /// Skip writing the radiroh:// location to the COB.
+        /// Skip adding the radiroh://<endpoint_id> location to the COB.
         #[clap(long)]
         pub no_announce: bool,
     }

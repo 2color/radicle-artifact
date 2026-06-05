@@ -19,9 +19,22 @@ _Avoid_: add (the CLI command was renamed from `add` to `register`), publish.
 
 **Seed** (verb):
 Hold an Artifact's bytes on a node and serve them to peers over iroh.
-Tracked locally by a Seeded Tag; advertised to peers by a `radiroh://`
-Location.
+Tracked locally by a Seeded Tag; paired with Announce to make your artifact node discoverable as a download location.
 _Avoid_: serve/serving, host, mirror (use "seed"/"seeding").
+
+**Announce** (verb):
+Add a Location to the COB under your DID, asserting that an artifact's
+bytes are retrievable at that URL. Applies to any URL scheme. For
+`radiroh://` Locations specifically, Announcing is the COB-side complement
+to Seeding: a node that announces without seeding creates an Orphaned
+Location; a node that seeds without announcing creates a Dangling Tag. Announcing typically includes both the local COB operation and syncing the changes to the network.
+_Avoid_: don't confuse with Sync (pushing the COB change to the network).
+
+**Sync** (verb):
+Push a COB change to the radicle network so peers can discover it.
+Triggered automatically after writes; deferred with `--no-sync` and
+published later with `rad sync -a`.
+
 
 **Seeder**:
 A node that seeds an Artifact's bytes. Distinct from a Radicle seed node,
@@ -40,7 +53,7 @@ A named, content-addressed file or collection of files within a Release, identif
 The BLAKE3 content identifier of an Artifact's bytes.
 
 **Location**:
-A URL under a contributor's DID asserting where an Artifact can be fetched; a URL like `radiroh://{endpoint}` iroh endpoint for peer-to-peer fetch. _Added_ and _removed_ (`location add`/`remove`, `add_location`/`remove_location`).
+A URL under a contributor's DID asserting where an Artifact can be fetched; a `radiroh://{endpoint}` URL is an iroh endpoint for peer-to-peer fetch. _Announced_ and _removed_ (`location add`/`remove`, `add_location`/`remove_location`).
 _Avoid_: source, mirror, provider; register (that's for Artifacts).
 
 **Seeded Tag**:
@@ -60,4 +73,4 @@ _Avoid_: stale location (a Stale Endpoint is the distinct case where the URL is 
 - A **Release** contains one or more **Artifacts**
 - An **Artifact** has zero or more **Locations**, grouped by contributor **DID**
 - A **Seeded Tag** should correspond to an **Artifact** in some **Release**; when it doesn't, it is a **Dangling Tag**
-- **Seeding** by a running a node and adding `radiroh://` **Location** to registered artifact CIDs; the two drift apart as **Dangling Tags** (seeded, no Location added) and **Orphaned Locations** (Location added, no longer seeded)
+- **Seeding** and **Announcing** are the two halves of making an artifact available over iroh: a node seeds the bytes and announces the `radiroh://` **Location** so peers can discover it; the two drift apart as **Dangling Tags** (seeded, not announced) and **Orphaned Locations** (announced, no longer seeded)
