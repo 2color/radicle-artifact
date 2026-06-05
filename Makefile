@@ -1,4 +1,4 @@
-.PHONY: changelog release release-macos release-linux upload register-artifacts check-bins clean clean-all help
+.PHONY: changelog release release-macos release-linux upload register-artifacts check-bins clean clean-all check help
 
 # Version and binary name from Cargo.toml using cargo metadata
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .version')
@@ -29,6 +29,7 @@ BASE_URL    := https://files.radicle.dev/releases/radicle-artifact
 
 help:
 	@echo "Available targets:"
+	@echo "  make check            - Build, fmt, and clippy"
 	@echo "  make changelog        - Prepend commit list since last tag to CHANGELOG.md under [Unreleased]"
 	@echo "  make release          - Build all architectures (macOS + Linux)"
 	@echo "  make release-macos    - Build native macOS architectures (run on macOS)"
@@ -37,6 +38,10 @@ help:
 	@echo "  make register-artifacts - Record binary CIDs + download URLs in the release COB"
 	@echo "  make clean            - Remove built release binaries"
 	@echo "  make clean-all        - Also run cargo clean"
+
+check:
+	cargo fmt --check
+	cargo clippy
 
 # Draft the changelog section for the upcoming release. Prepends a new
 # [Unreleased] block with the commit list since the last tag via git-cliff,
