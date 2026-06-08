@@ -102,7 +102,7 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
     std::fs::create_dir_all(&dir).map_err(Error::Io)?;
 
     // FsStore::load defaults to gc: None — blobs would linger on disk
-    // forever after unregister_seeded. Enable the periodic mark-and-sweep
+    // forever after untag_seeded. Enable the periodic mark-and-sweep
     // GC; our `seeded/{rid}/{cid}` tags are the live roots.
     let store_dir = dir.join(STORE_DIR);
     let db_path = store_dir.join("blobs.db");
@@ -214,7 +214,7 @@ fn add_opts(path: std::path::PathBuf, mode: ImportMode) -> AddPathOptions {
 /// Returns the blob `Hash` together with the [`TempTag`] that protects it.
 /// The caller must keep the temp tag alive until a persistent tag covers
 /// the blob, otherwise GC may sweep it. Prefer [`seed_artifact`], which
-/// holds the temp tag across [`register_seeded`].
+/// holds the temp tag across [`tag_seeded`].
 pub async fn import_blob(
     store: &Store,
     path: &Path,
@@ -296,12 +296,7 @@ pub async fn import_collection(
 /// Sets the `seeded/{rid}/{cid}` tag pointing at `hash` with the format
 /// matching the CID's kind. Idempotent — re-tagging with the same hash
 /// is a no-op at the iroh-blobs layer.
-pub async fn register_seeded(
-    store: &Store,
-    rid: &RepoId,
-    cid: &Cid,
-    hash: Hash,
-) -> Result<(), Error> {
+pub async fn tag_seeded(store: &Store, rid: &RepoId, cid: &Cid, hash: Hash) -> Result<(), Error> {
     let kind = cid_utils::artifact_kind(cid)?;
     let value = match kind {
         ArtifactKind::Blob => HashAndFormat::raw(hash),
@@ -317,7 +312,7 @@ pub async fn register_seeded(
 
 /// Import an artifact and register it as seeded in a single step.
 ///
-/// Holds the import temp tag alive across [`register_seeded`] so the
+/// Holds the import temp tag alive across [`tag_seeded`] so the
 /// freshly imported bytes are never momentarily unprotected — if GC's
 /// mark phase landed between the temp tag dropping and the persistent
 /// tag being set, the blob would be swept.
@@ -333,7 +328,7 @@ pub async fn seed_artifact(
         ArtifactKind::Blob => import_blob(store, path, cid, mode).await?,
         ArtifactKind::Collection => import_collection(store, path, cid, mode).await?,
     };
-    register_seeded(store, rid, cid, hash).await?;
+    tag_seeded(store, rid, cid, hash).await?;
     // _tt drops here, after the persistent seeded tag protects the bytes.
     Ok(hash)
 }
@@ -343,7 +338,7 @@ pub async fn seed_artifact(
 /// Idempotent: deleting a tag that doesn't exist returns `Ok(())`. The
 /// underlying blob bytes are not removed by this call — iroh-blobs' GC
 /// reclaims them on its next sweep once no tags reference them.
-pub async fn unregister_seeded(store: &Store, rid: &RepoId, cid: &Cid) -> Result<(), Error> {
+pub async fn untag_seeded(store: &Store, rid: &RepoId, cid: &Cid) -> Result<(), Error> {
     store
         .tags()
         .delete(seeded_tag(rid, cid))
@@ -461,7 +456,7 @@ mod tests {
 
     use super::*;
 
-    /// Build a fake raw-codec CID over `data`. The `register_seeded`
+    /// Build a fake raw-codec CID over `data`. The `tag_seeded`
     /// path requires a valid codec to pick `HashAndFormat::raw` vs
     /// `hash_seq`; the actual digest value doesn't have to match the
     /// blob hash for tag-layer tests.
@@ -497,8 +492,8 @@ mod tests {
             // the tag value when we set it.
             let hash = Hash::new(b"shared bytes");
 
-            register_seeded(&store, &rid_a, &cid, hash).await.unwrap();
-            register_seeded(&store, &rid_b, &cid, hash).await.unwrap();
+            tag_seeded(&store, &rid_a, &cid, hash).await.unwrap();
+            tag_seeded(&store, &rid_b, &cid, hash).await.unwrap();
 
             assert!(is_seeded(&store, &rid_a, &cid).await.unwrap());
             assert!(is_seeded(&store, &rid_b, &cid).await.unwrap());
@@ -510,7 +505,7 @@ mod tests {
             assert!(cids_a.contains(&cid));
             assert!(cids_b.contains(&cid));
 
-            unregister_seeded(&store, &rid_a, &cid).await.unwrap();
+            untag_seeded(&store, &rid_a, &cid).await.unwrap();
             assert!(!is_seeded(&store, &rid_a, &cid).await.unwrap());
             assert!(is_seeded(&store, &rid_b, &cid).await.unwrap());
 
@@ -522,7 +517,7 @@ mod tests {
         });
     }
 
-    /// `unregister_seeded` on an untagged pair is a no-op (idempotent).
+    /// `untag_seeded` on an untagged pair is a no-op (idempotent).
     #[test]
     fn unregister_unknown_is_noop() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -533,7 +528,7 @@ mod tests {
             let cid = blob_cid(b"never seeded");
 
             // No tag set; deleting it must still succeed.
-            unregister_seeded(&store, &rid_a, &cid).await.unwrap();
+            untag_seeded(&store, &rid_a, &cid).await.unwrap();
             assert!(!is_seeded(&store, &rid_a, &cid).await.unwrap());
         });
     }
@@ -560,7 +555,7 @@ mod tests {
                 (rid_b, cid_z),
             ];
             for (rid, cid) in &pairs {
-                register_seeded(&store, rid, cid, hash).await.unwrap();
+                tag_seeded(&store, rid, cid, hash).await.unwrap();
             }
 
             // The hash rides along from the tag listing, so callers can size
