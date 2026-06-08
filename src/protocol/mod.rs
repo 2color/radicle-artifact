@@ -3,8 +3,9 @@
 //! One request per Unix-socket connection, each command a single line of
 //! JSON terminated by `\n`. Most commands are one-shot: the client writes
 //! one [`Command`] and reads one [`CommandResult<T>`]. The streaming
-//! commands ([`Command::Fetch`], [`Command::Export`]) instead emit a
-//! sequence of [`StreamEvent`] frames — zero or more `progress`, then one
+//! commands ([`Command::Fetch`], [`Command::Download`], [`Command::Export`])
+//! instead emit a sequence of [`StreamEvent`] frames — zero or more
+//! `progress`, then one
 //! terminal `okay`/`error` whose tags match [`CommandResult`].
 //!
 //! [`Command`] and [`ErrorCode`] are `#[non_exhaustive]` so future
@@ -116,10 +117,26 @@ pub enum Command {
         /// Destination path (file for blobs, directory for collections).
         dest: PathBuf,
     },
-    /// Fetch an artifact: fast-path export if already local, else download
-    /// from `locations` into the store, export to `dest`, optionally tag
-    /// as seeded. Streaming — emits progress, then [`FetchReceipt`].
+    /// Fetch an artifact into the store: no-op if already complete locally,
+    /// else download from `locations`, optionally tag as seeded. Does not
+    /// write to disk — use [`Command::Download`] for that. Streaming —
+    /// emits progress, then [`FetchReceipt`].
     Fetch {
+        /// Repository the artifact belongs to (for the seeded tag).
+        rid: RepoId,
+        /// Expected content identifier; the blob kind is derived from it.
+        #[serde(with = "cid_string")]
+        cid: Cid,
+        /// Resolved providers/URLs to try. Iroh providers are batched into
+        /// one multi-provider download; URLs are tried in sequence.
+        locations: Vec<FetchLocation>,
+        /// Tag `seeded/{rid}/{cid}` after completion so the node serves it.
+        seed: bool,
+    },
+    /// Download an artifact to disk: [`Command::Fetch`] into the store, then
+    /// export to `dest`. Fast-path export if already local. Optionally tags
+    /// as seeded. Streaming — emits progress, then [`DownloadReceipt`].
+    Download {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
         /// Expected content identifier; the blob kind is derived from it.
@@ -165,7 +182,8 @@ pub enum CommandResult<T> {
     Error(CommandError),
 }
 
-/// Frame of a streaming response ([`Command::Fetch`], [`Command::Export`]).
+/// Frame of a streaming response ([`Command::Fetch`], [`Command::Download`],
+/// [`Command::Export`]).
 ///
 /// Externally tagged: `{"progress": …}` (repeatable, non-terminal) then
 /// exactly one terminal `{"okay": <T>}` / `{"error": <CommandError>}`. The
@@ -254,9 +272,10 @@ pub enum ErrorCode {
     /// `Export` (or a fetch fast path) needed local bytes that the store
     /// does not hold completely.
     NotLocal,
-    /// `Fetch` was given no usable locations to try.
+    /// A `Fetch`/`Download` was given no usable locations to try.
     NoLocations,
-    /// Every provider/URL a `Fetch` tried failed; `message` lists them.
+    /// Every provider/URL a `Fetch`/`Download` tried failed; `message`
+    /// lists them.
     AllFailed,
     /// Bug or unhandled state inside the node.
     Internal,
@@ -339,9 +358,7 @@ pub struct FetchReceipt {
     /// Echo of the fetched CID.
     #[serde(with = "cid_string")]
     pub cid: Cid,
-    /// Where the bytes were written.
-    pub dest: PathBuf,
-    /// Logical size fetched, in bytes.
+    /// Logical size now complete in the store, in bytes.
     pub bytes: u64,
     /// `true` if the bytes were already local; no network was used.
     pub from_cache: bool,
@@ -350,6 +367,29 @@ pub struct FetchReceipt {
     /// Endpoint id the node serves on, as a canonical `radiroh://<base32>`
     /// URL. Present so the caller can write the `add_location` COB after a
     /// `seed: true` fetch. Mirrors [`SeedReceipt::endpoint_id`].
+    pub endpoint_id: EndpointId,
+}
+
+/// Terminal result of [`Command::Download`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DownloadReceipt {
+    /// Echo of the requested repository.
+    pub rid: RepoId,
+    /// Echo of the downloaded CID.
+    #[serde(with = "cid_string")]
+    pub cid: Cid,
+    /// Where the bytes were written.
+    pub dest: PathBuf,
+    /// Logical size exported, in bytes.
+    pub bytes: u64,
+    /// `true` if the bytes were already local; no network was used.
+    pub from_cache: bool,
+    /// `true` if a `seeded/{rid}/{cid}` tag is now set.
+    pub seeded: bool,
+    /// Endpoint id the node serves on, as a canonical `radiroh://<base32>`
+    /// URL. Present so the caller can write the `add_location` COB after a
+    /// `seed: true` download. Mirrors [`SeedReceipt::endpoint_id`].
     pub endpoint_id: EndpointId,
 }
 
@@ -686,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_snapshot_command_has_export_fetch() {
+    fn wire_snapshot_command_has_export_fetch_download() {
         let cid = sample_cid();
         let endpoint_id = sample_endpoint_id();
 
@@ -705,6 +745,7 @@ mod tests {
             json!({"command": "export", "cid": cid.to_string(), "dest": "/tmp/out"})
         );
 
+        // Fetch is store-only: no `dest` field on the wire.
         let fetch = Command::Fetch {
             rid: sample_rid(),
             cid,
@@ -712,7 +753,6 @@ mod tests {
                 FetchLocation::Iroh(endpoint_id),
                 FetchLocation::Url(Url::parse("https://e.x/f").unwrap()),
             ],
-            dest: PathBuf::from("/tmp/out"),
             seed: true,
         };
         assert_eq!(
@@ -725,13 +765,34 @@ mod tests {
                     {"iroh": endpoint_id.to_string()},
                     {"url": "https://e.x/f"},
                 ],
-                "dest": "/tmp/out",
                 "seed": true,
             })
         );
-        // Round-trips back to the same typed value.
         let back: Command = serde_json::from_value(serde_json::to_value(&fetch).unwrap()).unwrap();
         assert_eq!(back, fetch);
+
+        // Download adds `dest`.
+        let download = Command::Download {
+            rid: sample_rid(),
+            cid,
+            locations: vec![FetchLocation::Iroh(endpoint_id)],
+            dest: PathBuf::from("/tmp/out"),
+            seed: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&download).unwrap(),
+            json!({
+                "command": "download",
+                "rid": SAMPLE_RID,
+                "cid": cid.to_string(),
+                "locations": [{"iroh": endpoint_id.to_string()}],
+                "dest": "/tmp/out",
+                "seed": false,
+            })
+        );
+        let back: Command =
+            serde_json::from_value(serde_json::to_value(&download).unwrap()).unwrap();
+        assert_eq!(back, download);
     }
 
     #[test]
@@ -818,10 +879,10 @@ mod tests {
             json!({"cid": cid.to_string(), "dest": "/tmp/out", "bytes": 2048})
         );
 
+        // Fetch receipt has no `dest`; `bytes` is the logical store size.
         let fetch = FetchReceipt {
             rid: sample_rid(),
             cid,
-            dest: PathBuf::from("/tmp/out"),
             bytes: 4096,
             from_cache: false,
             seeded: true,
@@ -832,7 +893,6 @@ mod tests {
             json!({
                 "rid": SAMPLE_RID,
                 "cid": cid.to_string(),
-                "dest": "/tmp/out",
                 "bytes": 4096,
                 "from_cache": false,
                 "seeded": true,
@@ -842,5 +902,31 @@ mod tests {
         let back: FetchReceipt =
             serde_json::from_value(serde_json::to_value(&fetch).unwrap()).unwrap();
         assert_eq!(back, fetch);
+
+        // Download receipt adds `dest`.
+        let download = DownloadReceipt {
+            rid: sample_rid(),
+            cid,
+            dest: PathBuf::from("/tmp/out"),
+            bytes: 4096,
+            from_cache: true,
+            seeded: false,
+            endpoint_id,
+        };
+        assert_eq!(
+            serde_json::to_value(&download).unwrap(),
+            json!({
+                "rid": SAMPLE_RID,
+                "cid": cid.to_string(),
+                "dest": "/tmp/out",
+                "bytes": 4096,
+                "from_cache": true,
+                "seeded": false,
+                "endpoint_id": endpoint_id.to_string(),
+            })
+        );
+        let back: DownloadReceipt =
+            serde_json::from_value(serde_json::to_value(&download).unwrap()).unwrap();
+        assert_eq!(back, download);
     }
 }
