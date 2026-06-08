@@ -35,6 +35,16 @@ Push a COB change to the radicle network so peers can discover it.
 Triggered automatically after writes; deferred with `--no-sync` and
 published later with `rad sync -a`.
 
+**Fetch** (verb):
+Pull an Artifact's bytes into the local node's store, resolving Locations
+(iroh or HTTP) and verifying against the CID. Does not write to disk.
+Pair with `--seed` to keep serving the bytes afterwards.
+_Avoid_: download (that writes a file too); export (that re-emits bytes
+already in the store).
+
+**Download** (verb):
+Fetch an Artifact into the store, then export the bytes to a file on disk.
+_Avoid_: fetch (that's store-only); save.
 
 **Seeder**:
 A node that seeds an Artifact's bytes. Distinct from a Radicle seed node,
