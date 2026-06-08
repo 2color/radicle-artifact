@@ -1114,7 +1114,7 @@ struct Retrieval {
 
 /// Resolve the `(revision, cid)` pair (interactively when both are absent),
 /// union locations across every release containing the CID, and warn on
-/// redactions. Shared prologue of [`run_fetch`] and [`run_download`].
+/// redactions. Shared by [`run_fetch`] and [`run_download`].
 fn resolve_retrieval(
     revision: Option<String>,
     cid_arg: Option<Cid>,
@@ -1237,6 +1237,17 @@ fn retrieval_progress_bar() -> indicatif::ProgressBar {
     pb
 }
 
+/// Render a progress frame onto the spinner, shared by `fetch`/`download`.
+/// The frame-to-update mapping lives in [`display::describe_progress`] so a
+/// new `FetchProgress` variant is a compile error there, not a silent drop.
+fn apply_progress(p: &FetchProgress, pb: &indicatif::ProgressBar) {
+    match display::describe_progress(p) {
+        Some(display::ProgressUpdate::Message(m)) => pb.set_message(m),
+        Some(display::ProgressUpdate::Position(offset)) => pb.set_position(offset),
+        None => {}
+    }
+}
+
 /// On `--seed`, the node now serves the bytes; announce a discoverable
 /// location with a signed COB write (the node writes no COBs itself).
 fn announce_seed_location(
@@ -1296,15 +1307,7 @@ fn run_fetch(
 
     let pb = retrieval_progress_bar();
     let receipt = client
-        .fetch_blocking(fetch_args, FETCH_IDLE_TIMEOUT, |p| match p {
-            FetchProgress::Connecting => pb.set_message("connecting"),
-            FetchProgress::TryingLocation { endpoint_id } => {
-                pb.set_message(format!("trying {endpoint_id}"))
-            }
-            FetchProgress::Downloading { offset, .. } => pb.set_position(*offset),
-            FetchProgress::Exporting { .. } => pb.set_message("exporting"),
-            _ => {}
-        })
+        .fetch_blocking(fetch_args, FETCH_IDLE_TIMEOUT, |p| apply_progress(p, &pb))
         .map_err(node::client_err)?;
     pb.finish_and_clear();
 
@@ -1361,14 +1364,8 @@ fn run_download(
 
     let pb = retrieval_progress_bar();
     let receipt = client
-        .download_blocking(download_args, FETCH_IDLE_TIMEOUT, |p| match p {
-            FetchProgress::Connecting => pb.set_message("connecting"),
-            FetchProgress::TryingLocation { endpoint_id } => {
-                pb.set_message(format!("trying {endpoint_id}"))
-            }
-            FetchProgress::Downloading { offset, .. } => pb.set_position(*offset),
-            FetchProgress::Exporting { .. } => pb.set_message("exporting"),
-            _ => {}
+        .download_blocking(download_args, FETCH_IDLE_TIMEOUT, |p| {
+            apply_progress(p, &pb)
         })
         .map_err(node::client_err)?;
     pb.finish_and_clear();
