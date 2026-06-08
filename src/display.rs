@@ -10,8 +10,39 @@ use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repositor
 use serde::Serialize;
 use url::Url;
 
+use crate::protocol::FetchProgress;
 use crate::share::keys::EndpointId;
 use crate::ReleaseId;
+
+/// A visible change to a progress display derived from a [`FetchProgress`]
+/// frame: terminal frontends apply it to a spinner, but the type carries no
+/// UI dependency of its own.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProgressUpdate {
+    /// Replace the status message.
+    Message(String),
+    /// Advance the byte position.
+    Position(u64),
+}
+
+/// Map a [`FetchProgress`] frame to a [`ProgressUpdate`], or `None` for frames
+/// with no visible effect (a Location failing mid-try just rolls on to the
+/// next).
+///
+/// Lives in the library so the match is exhaustive: a new `FetchProgress`
+/// variant is a compile error here, not a silently dropped frame at a
+/// frontend's `_ => {}`.
+pub fn describe_progress(p: &FetchProgress) -> Option<ProgressUpdate> {
+    match p {
+        FetchProgress::Connecting => Some(ProgressUpdate::Message("connecting".into())),
+        FetchProgress::TryingLocation { endpoint_id } => {
+            Some(ProgressUpdate::Message(format!("trying {endpoint_id}")))
+        }
+        FetchProgress::LocationFailed { .. } => None,
+        FetchProgress::Downloading { offset, .. } => Some(ProgressUpdate::Position(*offset)),
+        FetchProgress::Exporting { .. } => Some(ProgressUpdate::Message("exporting".into())),
+    }
+}
 
 /// Resolve a DID's alias via an [`AliasStore`], returning the string if found.
 pub fn resolve(did: &Did, aliases: &impl AliasStore) -> Option<String> {
@@ -831,4 +862,44 @@ struct Redaction {
     alias: Option<String>,
     did: Did,
     reason: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `describe_progress` maps every `FetchProgress` arm to its display
+    /// intent, and collapses the no-op Location-failure frame to `None`.
+    #[test]
+    fn describe_progress_maps_every_frame() {
+        let endpoint_id = EndpointId::from(iroh::SecretKey::from_bytes(&[1u8; 32]).public());
+
+        assert_eq!(
+            describe_progress(&FetchProgress::Connecting),
+            Some(ProgressUpdate::Message("connecting".into()))
+        );
+        assert_eq!(
+            describe_progress(&FetchProgress::TryingLocation { endpoint_id }),
+            Some(ProgressUpdate::Message(format!("trying {endpoint_id}")))
+        );
+        assert_eq!(
+            describe_progress(&FetchProgress::LocationFailed { endpoint_id }),
+            None
+        );
+        assert_eq!(
+            describe_progress(&FetchProgress::Downloading {
+                offset: 4096,
+                total: Some(8192),
+            }),
+            Some(ProgressUpdate::Position(4096))
+        );
+        assert_eq!(
+            describe_progress(&FetchProgress::Exporting {
+                offset: 1,
+                total: None,
+                entry: None,
+            }),
+            Some(ProgressUpdate::Message("exporting".into()))
+        );
+    }
 }
