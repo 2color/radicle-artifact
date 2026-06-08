@@ -552,204 +552,164 @@ async fn export_to_dest(
     .map_err(|e| (share_error_to_code(&e), e.to_string()))
 }
 
-/// Holds the [Temp Tag](iroh_blobs::api::TempTag) protecting an Artifact's
-/// in-flight bytes during a `Fetch`/`Download`, together with the
-/// `(rid, cid)` the bytes belong to so it can set the Seeded Tag in the
-/// correct order on [`commit`](Self::commit).
-///
-/// Protection is the inner temp tag's own (synchronous) `Drop`: if the guard
-/// is dropped without committing — an error, or the client disconnecting and
-/// [`run_stream`] dropping the op future — the bytes are released and GC
-/// reclaims any partial. Because `commit` consumes `self`, no work (e.g. an
-/// export) can run after the protection is released.
-struct TempTagGuard {
-    rid: RepoId,
-    cid: Cid,
+/// An Artifact fetched complete into the store: the bytes are present and
+/// held alive by a [Temp Tag](iroh_blobs::api::TempTag) until this value
+/// drops. The caller keeps it until any Seeded Tag is set, so there's no GC
+/// window between releasing the transient protection and the persistent tag
+/// landing; an error or client disconnect drops it and GC reclaims the bytes.
+struct Fetched {
+    /// Artifact kind derived from the CID (for export dispatch).
     kind: ArtifactKind,
+    /// BLAKE3 hash of the content.
     hash: iroh_blobs::Hash,
     /// `true` if the bytes were already complete locally (no network used).
     from_cache: bool,
-    /// Protection released on drop; never read directly.
+    /// Transient GC protection; released on drop, never read directly.
     _tt: iroh_blobs::api::TempTag,
 }
 
-impl TempTagGuard {
-    /// Ensure `cid`'s bytes are complete in the store, returning a guard that
-    /// protects them. Fast-paths when the content is already complete;
-    /// otherwise downloads from `locations` (iroh providers batched into one
-    /// multi-provider download, HTTP URLs tried in sequence as a blob-only
-    /// fallback) and re-checks completeness against the store. The artifact
-    /// kind and hash are derived from `cid`.
-    ///
-    /// On failure the temp tag is dropped here so GC reclaims any partial.
-    async fn ensure(
-        ctx: &NodeCtx,
-        rid: RepoId,
-        cid: Cid,
-        locations: &[FetchLocation],
-        on_progress: &mut impl FnMut(FetchProgress),
-    ) -> Result<TempTagGuard, (ErrorCode, String)> {
-        let kind = cid_utils::artifact_kind(&cid)
-            .map_err(|e| (ErrorCode::InvalidRequest, e.to_string()))?;
-        let haf = hash_and_format(&cid)?;
-        let hash = haf.hash;
-        let store = &ctx.store;
+/// Fetch `cid` into the store: a no-op if the bytes are already complete
+/// locally, otherwise download from `locations` (iroh providers batched into
+/// one multi-provider download, HTTP URLs tried in sequence as a blob-only
+/// fallback) and re-check completeness against the store. The kind and hash
+/// are derived from `cid`.
+///
+/// Returns the complete, protected bytes — hold the result until any Seeded
+/// Tag is set, then let it drop. On failure the temp tag is dropped here so
+/// GC reclaims any partial.
+async fn fetch_into_store(
+    ctx: &NodeCtx,
+    cid: &Cid,
+    locations: &[FetchLocation],
+    on_progress: &mut impl FnMut(FetchProgress),
+) -> Result<Fetched, (ErrorCode, String)> {
+    let kind =
+        cid_utils::artifact_kind(cid).map_err(|e| (ErrorCode::InvalidRequest, e.to_string()))?;
+    let haf = hash_and_format(cid)?;
+    let hash = haf.hash;
+    let store = &ctx.store;
 
-        // Protect the content BEFORE doing anything else. This covers both
-        // paths: cached bytes that exist only as an untagged GC cache (a prior
-        // non-seed fetch) can't be reclaimed between the completeness check and
-        // export/seed on the fast path, and in-flight bytes are protected on
-        // the download path. If the guard is dropped (disconnect) the temp tag
-        // drops with it.
-        //
-        // For a collection the tag covers `hash_seq(root)`; GC always protects
-        // the root hash itself, and marks the children by walking the root once
-        // it is complete (a partial child mid-download is then covered too).
-        // The only unprotected window is while the root hash-seq is itself
-        // still incomplete — but the downloader must fetch the root before it
-        // can know which children to fetch, so little to no child data exists
-        // yet in that window. A GC sweep there can force a re-download, but the
-        // lost progress is tiny, and it can never false-complete: the seeded
-        // tag is set only after completeness is verified.
-        //
-        // We could close the window with a GC pause (an `add_protected`
-        // callback that returns `Abort` while a fetch is in flight), but it's
-        // questionable whether that's worth it given how little is at stake.
-        let tt = store
-            .tags()
-            .temp_tag(haf)
-            .await
-            .map_err(|e| (ErrorCode::Iroh, format!("temp tag: {e}")))?;
+    // Protect the content BEFORE doing anything else. This covers both paths:
+    // cached bytes that exist only as an untagged GC cache (a prior non-seed
+    // fetch) can't be reclaimed between the completeness check and export/seed
+    // on the fast path, and in-flight bytes are protected on the download
+    // path. If the returned `Fetched` is dropped (disconnect) the temp tag
+    // drops with it.
+    //
+    // For a collection the tag covers `hash_seq(root)`; GC always protects the
+    // root hash itself, and marks the children by walking the root once it is
+    // complete (a partial child mid-download is then covered too). The only
+    // unprotected window is while the root hash-seq is itself still incomplete
+    // — but the downloader must fetch the root before it can know which
+    // children to fetch, so little to no child data exists yet in that window.
+    // A GC sweep there can force a re-download, but the lost progress is tiny,
+    // and it can never false-complete: the seeded tag is set only after
+    // completeness is verified.
+    //
+    // We could close the window with a GC pause (an `add_protected` callback
+    // that returns `Abort` while a fetch is in flight), but it's questionable
+    // whether that's worth it given how little is at stake.
+    let tt = store
+        .tags()
+        .temp_tag(haf)
+        .await
+        .map_err(|e| (ErrorCode::Iroh, format!("temp tag: {e}")))?;
 
-        // Fast path: bytes already complete locally.
-        let already = store
-            .blobs()
-            .has(hash)
-            .await
-            .map_err(|e| (ErrorCode::Iroh, format!("local lookup: {e}")))?;
-
-        if already {
-            return Ok(TempTagGuard {
-                rid,
-                cid,
-                kind,
-                hash,
-                from_cache: true,
-                _tt: tt,
-            });
-        }
-
-        on_progress(FetchProgress::Connecting);
-
-        let (iroh_ids, urls) = partition(locations);
-        let no_locations = iroh_ids.is_empty() && urls.is_empty();
-        let mut errors: Vec<String> = Vec::new();
-        let mut got = false;
-
-        if !iroh_ids.is_empty() {
-            match fetch::download_iroh_to_store(
-                &ctx.downloader,
-                store,
-                haf,
-                iroh_ids,
-                &mut *on_progress,
-            )
-            .await
-            {
-                Ok(()) => got = true,
-                Err(errs) => errors.extend(errs.into_iter().map(|e| e.to_string())),
-            }
-        }
-        if !got {
-            match kind {
-                // HTTP is a blob-only fallback; stop at the first success
-                // (completeness is re-checked against the store below).
-                ArtifactKind::Blob => {
-                    for url in &urls {
-                        match fetch::http_to_store(store, url, &cid, &mut *on_progress).await {
-                            Ok(_) => break,
-                            Err(e) => errors.push(e.to_string()),
-                        }
-                    }
-                }
-                ArtifactKind::Collection => {
-                    for url in &urls {
-                        errors.push(format!("HTTP fetch unsupported for collection: {url}"));
-                    }
-                }
-            }
-        }
-
-        // Trust the store: complete means we have it, whatever individual
-        // providers reported.
-        let complete = store
-            .remote()
-            .local(haf)
-            .await
-            .map(|i| i.is_complete())
-            .unwrap_or(false);
-        if !complete {
-            drop(tt); // release protection so GC reclaims the partial
-            let code = if no_locations {
-                ErrorCode::NoLocations
-            } else {
-                ErrorCode::AllFailed
-            };
-            let msg = if errors.is_empty() {
-                "no locations succeeded".to_string()
-            } else {
-                errors.join("; ")
-            };
-            return Err((code, msg));
-        }
-
-        Ok(TempTagGuard {
-            rid,
-            cid,
+    // Fast path: bytes already complete locally.
+    let already = store
+        .blobs()
+        .has(hash)
+        .await
+        .map_err(|e| (ErrorCode::Iroh, format!("local lookup: {e}")))?;
+    if already {
+        return Ok(Fetched {
             kind,
             hash,
-            from_cache: false,
+            from_cache: true,
             _tt: tt,
-        })
+        });
     }
 
-    /// `true` if the bytes were already complete locally; no network was used.
-    fn cached(&self) -> bool {
-        self.from_cache
-    }
+    on_progress(FetchProgress::Connecting);
 
-    /// Artifact kind derived from the CID (for export dispatch).
-    fn kind(&self) -> ArtifactKind {
-        self.kind
-    }
+    let (iroh_ids, urls) = partition(locations);
+    let no_locations = iroh_ids.is_empty() && urls.is_empty();
+    let mut errors: Vec<String> = Vec::new();
+    let mut got = false;
 
-    /// BLAKE3 hash of the protected content.
-    fn hash(&self) -> iroh_blobs::Hash {
-        self.hash
-    }
-
-    /// Set the Seeded Tag for `(rid, cid)` when `seed`, then release the
-    /// protection. Seed-before-release ordering is enforced here, and
-    /// consuming `self` makes any post-commit work a compile error.
-    async fn commit(self, store: &FsStore, seed: bool) -> Result<(), (ErrorCode, String)> {
-        if seed {
-            seeder::tag_seeded(store, &self.rid, &self.cid, self.hash)
-                .await
-                .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
+    if !iroh_ids.is_empty() {
+        match fetch::download_iroh_to_store(
+            &ctx.downloader,
+            store,
+            haf,
+            iroh_ids,
+            &mut *on_progress,
+        )
+        .await
+        {
+            Ok(()) => got = true,
+            Err(errs) => errors.extend(errs.into_iter().map(|e| e.to_string())),
         }
-        // `self` (and the inner temp tag) drops here, releasing protection.
-        // Without a seed, that leaves the bytes for GC to reclaim (cache).
-        Ok(())
     }
+    if !got {
+        match kind {
+            // HTTP is a blob-only fallback; stop at the first success
+            // (completeness is re-checked against the store below).
+            ArtifactKind::Blob => {
+                for url in &urls {
+                    match fetch::http_to_store(store, url, cid, &mut *on_progress).await {
+                        Ok(_) => break,
+                        Err(e) => errors.push(e.to_string()),
+                    }
+                }
+            }
+            ArtifactKind::Collection => {
+                for url in &urls {
+                    errors.push(format!("HTTP fetch unsupported for collection: {url}"));
+                }
+            }
+        }
+    }
+
+    // Trust the store: complete means we have it, whatever individual
+    // providers reported.
+    let complete = store
+        .remote()
+        .local(haf)
+        .await
+        .map(|i| i.is_complete())
+        .unwrap_or(false);
+    if !complete {
+        drop(tt); // release protection so GC reclaims the partial
+        let code = if no_locations {
+            ErrorCode::NoLocations
+        } else {
+            ErrorCode::AllFailed
+        };
+        let msg = if errors.is_empty() {
+            "no locations succeeded".to_string()
+        } else {
+            errors.join("; ")
+        };
+        return Err((code, msg));
+    }
+
+    Ok(Fetched {
+        kind,
+        hash,
+        from_cache: false,
+        _tt: tt,
+    })
 }
 
-/// `Fetch`: ensure the artifact is complete in the store (no-op if already
+/// `Fetch`: pull the artifact complete into the store (no-op if already
 /// local, else download from `locations`), tagging as seeded if requested.
 /// Writes nothing to disk — see [`stream_download`].
 ///
-/// Abort-safe via [`TempTagGuard`]: the temp tag protects the content until
-/// the guard commits or drops; a disconnect mid-stream drops this future via
-/// [`run_stream`], releasing the tag so GC reclaims any partial.
+/// Abort-safe: the [`Fetched`] temp tag protects the content until the Seeded
+/// Tag is set and the value drops at the end of the closure; a disconnect
+/// mid-stream drops this future via [`run_stream`], releasing the tag so GC
+/// reclaims any partial.
 async fn stream_fetch(
     ctx: &NodeCtx,
     read: &mut (impl AsyncReadExt + Unpin),
@@ -767,32 +727,35 @@ async fn stream_fetch(
         };
         let store = &ctx.store;
 
-        let guard = TempTagGuard::ensure(ctx, rid, cid, &locations, &mut on_progress).await?;
-        let from_cache = guard.cached();
-        let hash = guard.hash();
-        guard.commit(store, seed).await?;
+        let fetched = fetch_into_store(ctx, &cid, &locations, &mut on_progress).await?;
+        if seed {
+            seeder::tag_seeded(store, &rid, &cid, fetched.hash)
+                .await
+                .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
+        }
 
         // Logical size now complete in the store; no disk write.
-        let bytes = seeder::artifact_size_for(store, &cid, hash).await;
+        let bytes = seeder::artifact_size_for(store, &cid, fetched.hash).await;
         Ok(FetchReceipt {
             rid,
             cid,
             bytes,
-            from_cache,
+            from_cache: fetched.from_cache,
             seeded: seed,
             endpoint_id,
         })
+        // `fetched` (and its temp tag) drops here, after any Seeded Tag is set.
     })
     .await
 }
 
-/// `Download`: [`Fetch`](stream_fetch) into the store, then export to
-/// `dest`. Fast-path export if already local; tags as seeded if requested.
+/// `Download`: [`Fetch`](stream_fetch) into the store, then export to `dest`.
+/// Fast-path export if already local; tags as seeded if requested.
 ///
-/// Abort-safe identically to [`stream_fetch`]: the [`TempTagGuard`] protects
-/// the content across the download AND the export (the export runs before the
-/// guard commits), so the bytes can't be reclaimed mid-export; a disconnect
-/// drops this future and the guard.
+/// Abort-safe identically to [`stream_fetch`]: the [`Fetched`] temp tag
+/// protects the content across the download AND the export (the export runs
+/// before the Seeded Tag is set), so the bytes can't be reclaimed mid-export;
+/// a disconnect drops this future and the protection.
 #[allow(clippy::too_many_arguments)]
 async fn stream_download(
     ctx: &NodeCtx,
@@ -812,23 +775,27 @@ async fn stream_download(
         };
         let store = &ctx.store;
 
-        let guard = TempTagGuard::ensure(ctx, rid, cid, &locations, &mut on_progress).await?;
-        let from_cache = guard.cached();
+        let fetched = fetch_into_store(ctx, &cid, &locations, &mut on_progress).await?;
 
-        // Export inside the protected window, before committing the seed.
+        // Export inside the protected window, before the Seeded Tag is set.
         let bytes =
-            export_to_dest(store, guard.hash(), guard.kind(), &dest, &mut on_progress).await?;
-        guard.commit(store, seed).await?;
+            export_to_dest(store, fetched.hash, fetched.kind, &dest, &mut on_progress).await?;
+        if seed {
+            seeder::tag_seeded(store, &rid, &cid, fetched.hash)
+                .await
+                .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
+        }
 
         Ok(DownloadReceipt {
             rid,
             cid,
             dest,
             bytes,
-            from_cache,
+            from_cache: fetched.from_cache,
             seeded: seed,
             endpoint_id,
         })
+        // `fetched` (and its temp tag) drops here, after any Seeded Tag is set.
     })
     .await
 }
@@ -1582,65 +1549,6 @@ mod tests {
 
             client.shutdown().await.unwrap();
             node_handle.await.unwrap().unwrap();
-        });
-    }
-
-    /// `TempTagGuard::commit` sets the Seeded Tag only when asked, and a guard
-    /// dropped without committing leaves no tag. Exercised directly against a
-    /// bare store (no node, no network) — the commit/abort discipline the
-    /// guard centralizes is now its own test surface.
-    #[test]
-    fn temp_tag_guard_commit_then_release() {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            let tmp = tempfile::tempdir().unwrap();
-            let store = FsStore::load(tmp.path()).await.unwrap();
-            let rid = rid_a();
-
-            // Build a guard by hand: a real temp tag plus the (rid, cid) it
-            // would seed. The tag layer doesn't require the bytes to exist.
-            let make_guard = |cid: Cid, from_cache: bool| {
-                let store = &store;
-                async move {
-                    let haf = hash_and_format(&cid).unwrap();
-                    let tt = store.tags().temp_tag(haf).await.unwrap();
-                    TempTagGuard {
-                        rid,
-                        cid,
-                        kind: cid_utils::artifact_kind(&cid).unwrap(),
-                        hash: haf.hash,
-                        from_cache,
-                        _tt: tt,
-                    }
-                }
-            };
-
-            // commit(seed = true) sets the Seeded Tag.
-            let seeded_cid = fake_blob_cid(b"guard seeds this");
-            make_guard(seeded_cid, true)
-                .await
-                .commit(&store, true)
-                .await
-                .unwrap();
-            assert!(seeder::is_seeded(&store, &rid, &seeded_cid).await.unwrap());
-
-            // commit(seed = false) releases without tagging.
-            let cached_cid = fake_blob_cid(b"guard caches this");
-            make_guard(cached_cid, true)
-                .await
-                .commit(&store, false)
-                .await
-                .unwrap();
-            assert!(!seeder::is_seeded(&store, &rid, &cached_cid).await.unwrap());
-
-            // Dropping a guard without committing (the abort path) leaves no
-            // tag either.
-            let aborted_cid = fake_blob_cid(b"guard aborts this");
-            drop(make_guard(aborted_cid, false).await);
-            assert!(!seeder::is_seeded(&store, &rid, &aborted_cid).await.unwrap());
         });
     }
 
