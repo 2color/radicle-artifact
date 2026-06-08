@@ -32,6 +32,19 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Environment variable that overrides the control-socket path.
 pub const SOCKET_ENV: &str = "RAD_ARTIFACT_SOCKET";
 
+/// Drive `fut` to completion on a fresh single-threaded tokio runtime, for
+/// synchronous callers (the CLI). Builds the runtime once per call — cheap
+/// enough per CLI invocation, but don't call it in a hot loop.
+fn run_blocking<T>(
+    fut: impl std::future::Future<Output = Result<T, ClientError>>,
+) -> Result<T, ClientError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(ClientError::Io)?;
+    rt.block_on(fut)
+}
+
 /// Control-socket client.
 ///
 /// Cheap to clone — wraps only the socket path.
@@ -111,11 +124,7 @@ impl Client {
     where
         T: DeserializeOwned,
     {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(ClientError::Io)?;
-        rt.block_on(self.call(cmd, timeout))
+        run_blocking(self.call(cmd, timeout))
     }
 
     /// Probe whether a node is reachable on the configured socket.
@@ -281,11 +290,7 @@ impl Client {
         idle: Duration,
         on_progress: impl FnMut(&FetchProgress),
     ) -> Result<FetchReceipt, ClientError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(ClientError::Io)?;
-        rt.block_on(self.fetch(args, idle, on_progress))
+        run_blocking(self.fetch(args, idle, on_progress))
     }
 
     /// Blocking variant of [`Self::download`] for synchronous callers (CLI).
@@ -295,11 +300,7 @@ impl Client {
         idle: Duration,
         on_progress: impl FnMut(&FetchProgress),
     ) -> Result<DownloadReceipt, ClientError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(ClientError::Io)?;
-        rt.block_on(self.download(args, idle, on_progress))
+        run_blocking(self.download(args, idle, on_progress))
     }
 
     /// Blocking variant of [`Self::export`] for synchronous callers (CLI).
@@ -310,11 +311,7 @@ impl Client {
         idle: Duration,
         on_progress: impl FnMut(&FetchProgress),
     ) -> Result<ExportReceipt, ClientError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(ClientError::Io)?;
-        rt.block_on(self.export(cid, dest, idle, on_progress))
+        run_blocking(self.export(cid, dest, idle, on_progress))
     }
 }
 
