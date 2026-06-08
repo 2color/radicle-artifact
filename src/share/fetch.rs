@@ -178,8 +178,8 @@ pub(crate) async fn download_iroh_to_store(
     // if individual providers emitted `ProviderFailed` along the way. If
     // the completeness check itself errors, treat the attempt as failed
     // and surface the cause so it isn't silently swallowed.
-    let done = match store.remote().local(hash_and_format).await {
-        Ok(local) => local.is_complete(),
+    let done = match store.blobs().has(hash_and_format.hash).await {
+        Ok(complete) => complete,
         Err(e) => {
             errors.push(Error::Iroh(format!("store completeness check: {e}")));
             false

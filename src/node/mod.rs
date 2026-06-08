@@ -486,9 +486,9 @@ async fn stream_export(
     let hash = haf.hash;
 
     // Export needs the bytes already complete locally.
-    match ctx.store.remote().local(haf).await {
-        Ok(info) if info.is_complete() => {}
-        Ok(_) => {
+    match ctx.store.blobs().has(hash).await {
+        Ok(true) => {}
+        Ok(false) => {
             return stream_error::<ExportReceipt>(
                 write,
                 ErrorCode::NotLocal,
@@ -603,11 +603,10 @@ async fn fetch_into_store(
 
     // Fast path: bytes already complete locally.
     let already = store
-        .remote()
-        .local(haf)
+        .blobs()
+        .has(hash)
         .await
-        .map_err(|e| (ErrorCode::Iroh, format!("local lookup: {e}")))?
-        .is_complete();
+        .map_err(|e| (ErrorCode::Iroh, format!("local lookup: {e}")))?;
     if already {
         return Ok(Fetched {
             kind,
