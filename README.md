@@ -49,7 +49,7 @@ Everything else works without the radicle node running: computing CIDs, reading 
 2. **Build** — Build your release artifacts.
 3. **Register** — Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. This is signed discovery metadata in the COB, synced over the radicle protocol — not the bytes.
 4. **Seed** — Upload artifacts to an HTTP server and register the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
-5. **Fetch** — Fetch artifacts using the `rad-artifact fetch` command.
+5. **Download** — Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`.
 6. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
 7. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
 
@@ -154,7 +154,8 @@ rad-artifact metadata unset --revision <REVISION> --cid <CID> <KEY>             
 rad-artifact show <REVISION> [--pretty] [--all-authors]          # show release
 rad-artifact list [--pretty] [--all-authors]                     # list releases (default: delegate- or local-authored)
 rad-artifact cid <PATH>                                          # compute BLAKE3 CID
-rad-artifact fetch [<REVISION> --cid <CID>]                      # fetch artifact (interactive without args)
+rad-artifact fetch [<REVISION> --cid <CID>]                      # fetch artifact into the store (interactive without args)
+rad-artifact download [<REVISION> --cid <CID>] [-o <PATH>]       # download artifact to disk (interactive without args)
 ```
 
 ### Node control
