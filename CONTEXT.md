@@ -70,6 +70,10 @@ _Avoid_: source, mirror, provider; register (that's for Artifacts).
 A `seeded/{rid}/{cid}` marker in the node's blob store asserting the node is actively seeding that Artifact's bytes.
 _Avoid_: pin.
 
+**Temp Tag**:
+Transient GC protection of an Artifact's in-flight bytes during a Fetch or Download — the short-lived counterpart to a Seeded Tag. Held while bytes are downloaded (and, for a Download, exported), then either promoted to a Seeded Tag or released; on release the bytes become reclaimable cache. A Fetch interrupted before completion drops its Temp Tag, so GC reclaims the partial.
+_Avoid_: pin; lock.
+
 **Dangling Tag**:
 A Seeded Tag whose CID no Release references — so no Location can anchor to it.
 _Avoid_: orphan tag (the design doc overloads "orphan" for unrelated cases).
