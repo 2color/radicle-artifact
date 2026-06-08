@@ -733,7 +733,7 @@ impl TempTagGuard {
     /// consuming `self` makes any post-commit work a compile error.
     async fn commit(self, store: &FsStore, seed: bool) -> Result<(), (ErrorCode, String)> {
         if seed {
-            seeder::register_seeded(store, &self.rid, &self.cid, self.hash)
+            seeder::tag_seeded(store, &self.rid, &self.cid, self.hash)
                 .await
                 .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
         }
@@ -872,7 +872,7 @@ async fn unseed_response(store: &FsStore, rid: RepoId, cid: Cid) -> String {
         Ok(v) => v,
         Err(e) => return err_from_share::<UnseedReceipt>(e),
     };
-    if let Err(e) = seeder::unregister_seeded(store, &rid, &cid).await {
+    if let Err(e) = seeder::untag_seeded(store, &rid, &cid).await {
         return err_from_share::<UnseedReceipt>(e);
     }
     ok_json(UnseedReceipt {
@@ -1052,7 +1052,7 @@ mod tests {
     use crate::share::cid_utils::{self, ArtifactKind, HASH_CODE_BLAKE3, RAW_CODEC};
 
     /// Build a fake but well-formed blob CID over `data` so the
-    /// `register_seeded` path picks `HashAndFormat::raw`.
+    /// `tag_seeded` path picks `HashAndFormat::raw`.
     fn fake_blob_cid(data: &[u8]) -> Cid {
         let digest = blake3::hash(data);
         let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
