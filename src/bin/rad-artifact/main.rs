@@ -21,7 +21,7 @@ use radicle::{
     storage::git::Repository,
 };
 use radicle_artifact::client::{Client, DownloadArgs, FetchArgs};
-use radicle_artifact::protocol::{FetchLocation, FetchProgress};
+use radicle_artifact::protocol::{Command, FetchLocation, FetchProgress, HasResult};
 use radicle_artifact::share;
 use radicle_artifact::share::keys::EndpointId;
 use radicle_artifact::*;
@@ -1210,20 +1210,6 @@ fn resolve_retrieval(
     if locations.is_empty() {
         return Err(error::Share::NoLocationsForCid { cid }.into());
     }
-    // `FetchLocation::Url` covers any URL scheme (https, ipfs, …), so label
-    // the bucket "url" rather than implying they're all https.
-    let (url_count, iroh_count) =
-        locations
-            .iter()
-            .fold((0usize, 0usize), |(u, i), loc| match loc {
-                FetchLocation::Url(_) => (u + 1, i),
-                FetchLocation::Iroh(_) => (u, i + 1),
-            });
-    eprintln!(
-        "Trying {} location{} ({url_count} url, {iroh_count} iroh)...",
-        locations.len(),
-        if locations.len() == 1 { "" } else { "s" },
-    );
 
     Ok(Retrieval {
         cid,
@@ -1281,6 +1267,33 @@ fn announce_seed_location(
     Ok(())
 }
 
+/// Log whether the artifact is already cached or list the locations to try.
+/// Returns `true` if the bytes are already complete in the local store.
+fn log_retrieval_plan(client: &Client, cid: Cid, locations: &[FetchLocation]) -> bool {
+    let already_local = client
+        .call_blocking::<HasResult>(&Command::Has { cid }, TIMEOUT)
+        .map(|h| h.complete)
+        .unwrap_or(false);
+
+    if already_local {
+        eprintln!("Already in local store");
+    } else {
+        let (url_count, iroh_count) =
+            locations
+                .iter()
+                .fold((0usize, 0usize), |(u, i), loc| match loc {
+                    FetchLocation::Url(_) => (u + 1, i),
+                    FetchLocation::Iroh(_) => (u, i + 1),
+                });
+        eprintln!(
+            "Trying {} location{} ({url_count} url, {iroh_count} iroh)...",
+            locations.len(),
+            if locations.len() == 1 { "" } else { "s" },
+        );
+    }
+    already_local
+}
+
 /// `fetch`: pull an artifact into the local node's store without writing it
 /// to disk. Use `download` to also export the bytes to a file.
 fn run_fetch(
@@ -1307,6 +1320,14 @@ fn run_fetch(
     // Route through the local node, which owns the store and all blob I/O.
     // A missing node surfaces as `node::Error::NotRunning`.
     let client = Client::new(Client::default_socket(profile.home.path()));
+
+    let already_local = log_retrieval_plan(&client, cid, &locations);
+
+    // Bytes are already present and there's no seeded tag to set — nothing to do.
+    if already_local && !args.seed {
+        return Ok(());
+    }
+
     let fetch_args = FetchArgs {
         rid: repo.id,
         cid,
@@ -1324,7 +1345,11 @@ fn run_fetch(
         announce_seed_location(receipt.endpoint_id, cid, primary_id, repo, profile)?;
     }
 
-    eprintln!("Fetched {cid} into the store");
+    // The cache path already reported "Already in local store"; only the
+    // seeded tag was new, so don't claim a fetch happened.
+    if !receipt.from_cache {
+        eprintln!("Fetched {cid} into the store");
+    }
     Ok(())
 }
 
@@ -1363,6 +1388,9 @@ fn run_download(
     // Route through the local node, which owns the store and all blob I/O.
     // A missing node surfaces as `node::Error::NotRunning`.
     let client = Client::new(Client::default_socket(profile.home.path()));
+
+    log_retrieval_plan(&client, cid, &locations);
+
     let download_args = DownloadArgs {
         rid: repo.id,
         cid,
