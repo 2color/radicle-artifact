@@ -1120,6 +1120,7 @@ fn resolve_retrieval(
     cid_arg: Option<Cid>,
     url: Option<&Url>,
     no_input: bool,
+    require_locations: bool,
     releases: &Releases<Repository>,
     repo: &Repository,
 ) -> Result<Retrieval, RadArtifactError> {
@@ -1206,8 +1207,9 @@ fn resolve_retrieval(
         let artifacts = matching.iter().filter_map(|(_, r)| r.artifact(&cid));
         artifact_locations(artifacts)?
     };
-    // Short-circuit when no usable source exists
-    if locations.is_empty() {
+    // Short-circuit when no usable source exists. Skipped for offline export,
+    // where the bytes are read from the store and no location is needed.
+    if locations.is_empty() && require_locations {
         return Err(error::Share::NoLocationsForCid { cid }.into());
     }
 
@@ -1313,6 +1315,7 @@ fn run_fetch(
         args.cid,
         args.url.as_ref(),
         no_input,
+        true,
         releases,
         repo,
     )?;
@@ -1371,6 +1374,7 @@ fn run_download(
         args.cid,
         args.url.as_ref(),
         no_input,
+        !args.offline,
         releases,
         repo,
     )?;
@@ -1388,6 +1392,20 @@ fn run_download(
     // Route through the local node, which owns the store and all blob I/O.
     // A missing node surfaces as `node::Error::NotRunning`.
     let client = Client::new(Client::default_socket(profile.home.path()));
+
+    // `--offline`: export straight from the store, never touching the network.
+    // Errors with `NotLocal` if the bytes aren't already complete locally.
+    if args.offline {
+        let pb = retrieval_progress_bar();
+        client
+            .export_blocking(cid, output_path.clone(), FETCH_IDLE_TIMEOUT, |p| {
+                apply_progress(p, &pb)
+            })
+            .map_err(node::client_err)?;
+        pb.finish_and_clear();
+        eprintln!("Saved to {}", output_path.display());
+        return Ok(());
+    }
 
     log_retrieval_plan(&client, cid, &locations);
 
@@ -2266,7 +2284,10 @@ Examples:
     $ rad-artifact download v1.0 --cid baf...abc -o ./downloads/my-binary
 
   Download from a specific URL:
-    $ rad-artifact download v1.0 --cid baf...abc --url https://example.com/my-binary")]
+    $ rad-artifact download v1.0 --cid baf...abc --url https://example.com/my-binary
+
+  Export bytes already in the store, without touching the network:
+    $ rad-artifact download v1.0 --cid baf...abc --offline")]
     pub struct Download {
         /// Git revision (commit, tag, or abbreviated OID). Required with --cid.
         #[clap(requires = "cid")]
@@ -2284,6 +2305,10 @@ Examples:
         /// `radiroh://` location under your DID so others can fetch it.
         #[clap(long)]
         pub seed: bool,
+        /// Export from the local store only, never touching the network.
+        /// Fails if the bytes aren't already complete in the store.
+        #[clap(long, conflicts_with_all = ["url", "seed"])]
+        pub offline: bool,
     }
 
     /// Alias for `rad-artifact node seed`.

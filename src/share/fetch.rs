@@ -9,8 +9,8 @@
 //! the endpoint, store, or runtime — the caller supplies those.
 //!
 //! Progress is reported through a [`FetchProgress`] callback so the caller
-//! decides how to surface it (the CLI drives a progress bar; the node
-//! forwards frames over the control socket).
+//! decides how to surface it: the node forwards frames over the control
+//! socket, which the CLI then renders as a progress bar.
 //!
 //! Both transports bound how long an unreachable provider can tie up a
 //! fetch. HTTP sets connect and receive-response timeouts on the
@@ -92,12 +92,11 @@ pub(crate) fn pool_options() -> PoolOptions {
 /// Run a multi-provider iroh download into `store` using a caller-supplied
 /// [`Downloader`].
 ///
-/// The reusable core shared by the CLI's ephemeral path and the node's
-/// persistent-store handler — it owns neither the endpoint nor the store,
-/// so partial progress persists across providers and (for the node)
-/// across fetches. Progress is reported through `on_progress`; the CLI
-/// drives a progress bar, the node forwards [`FetchProgress`] frames over
-/// the control socket.
+/// The reusable core behind the node's persistent-store fetch handler — it
+/// owns neither the endpoint nor the store, so partial progress persists
+/// across providers and across fetches. Progress is reported through
+/// `on_progress`; the node forwards [`FetchProgress`] frames over the
+/// control socket.
 ///
 /// Returns per-provider errors on failure. `DownloadProgressItem::ProviderFailed`
 /// intentionally drops the underlying cause — the errors vector therefore

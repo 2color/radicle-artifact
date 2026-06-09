@@ -28,9 +28,22 @@ The node starts once, detaches from your terminal, and keeps serving across shel
 
 Together this means your published artifacts stay reachable peer-to-peer without you babysitting a foreground process.
 
+#### Seed without saving: `fetch` keeps bytes in the store, `download` writes to disk
+
+Previously the only way to get an artifact was to write it to disk. Now `fetch <CID>` pulls the bytes into the node's store and verifies the CID without touching the filesystem. Useful when you want to seed an artifact for others without cluttering your working directory. `download --cid <CID>` does the same and then saves the file, replacing the old `fetch` disk-export behavior.
+
+```sh
+$ rad-artifact fetch v1.0 --cid baf.. --seed
+$ rad-artifact download v1.0 --cid baf.. -o ./dist/app.tar.gz
+```
+
 #### 🌱 `seed` / `unseed`, with automatic cleanup
 
-`serve` is renamed to `seed`, with a matching `unseed`, available both under `rad-artifact node …` and as top-level `rad-artifact seed` / `unseed`. `seed <PATH>` computes the CID, hands the bytes to the node, and registers a `radiroh://` location on the release in one step; `unseed <CID>` stops seeding and retracts your `radiroh://` locations. Both announce the COB change to the network when they write one (like the other mutating commands) so peers discover. The node also runs periodic blob garbage collection, so space from unseeded artifacts is reclaimed automatically rather than growing without bound.
+`serve` has been renamed to `seed`, with a matching `unseed`:
+
+`rad artifact seed <PATH>` computes the CID for an artifact, hands the bytes to the node, and announces a `radiroh://` location on the release in one step.
+
+`unseed --cid <CID>` stops seeding and removes your node's `radiroh://` locations. Both announce the COB change to the network when they write one (like the other mutating commands) so peers discover. The node also runs periodic blob garbage collection, so space from unseeded artifacts is reclaimed automatically rather than growing without bound.
 
 #### 🌱 See which artifacts you've announced at a glance
 

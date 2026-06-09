@@ -44,7 +44,7 @@ already in the store).
 
 **Download** (verb):
 Fetch an Artifact into the store, then export the bytes to a file on disk.
-_Avoid_: fetch (that's store-only); save.
+_Avoid_: fetch (that's store-only).
 
 **Seeder**:
 A node that seeds an Artifact's bytes. Distinct from a Radicle seed node,
