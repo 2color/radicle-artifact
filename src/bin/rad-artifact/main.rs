@@ -440,7 +440,7 @@ where
         let out = serde_json::json!({
             "cid": cid.to_string(),
             "release_id": id.to_string(),
-            "revision": oid.to_string(),
+            "oid": oid.to_string(),
         });
         println!(
             "{}",
