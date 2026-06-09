@@ -100,6 +100,7 @@ pub struct Seed {
 #[derive(Parser)]
 pub struct Unseed {
     /// Content identifier of the artifact to stop seeding.
+    #[clap(long)]
     pub cid: Cid,
     /// Target release id; defaults to every matching release.
     #[clap(long)]
@@ -504,8 +505,8 @@ fn unseed(
     unseed_artifact(cmd.cid, cmd.release, no_sync, repo_override, profile)
 }
 
-/// Shared implementation for `rad-artifact unseed <CID>` and
-/// `rad-artifact node unseed <CID>`.
+/// Shared implementation for `rad-artifact unseed --cid <CID>` and
+/// `rad-artifact node unseed --cid <CID>`.
 ///
 /// Sends the unseed request to the running node and retracts every
 /// `radiroh://` location under our DID for the given CID. `release_override`

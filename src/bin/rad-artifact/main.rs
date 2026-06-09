@@ -1433,7 +1433,7 @@ fn run_seed(
     )
 }
 
-/// Top-level `rad-artifact unseed <CID>`.
+/// Top-level `rad-artifact unseed --cid <CID>`.
 fn run_unseed(
     cmd: command::Unseed,
     repo_override: Option<RepoId>,
@@ -2332,12 +2332,13 @@ Examples:
     #[clap(after_long_help = "\
 Examples:
   Stop seeding an artifact across every matching release:
-    $ rad-artifact unseed baf...abc
+    $ rad-artifact unseed --cid baf...abc
 
   Restrict the retraction to a specific release:
-    $ rad-artifact unseed baf...abc --release <release-id>")]
+    $ rad-artifact unseed --cid baf...abc --release <release-id>")]
     pub struct Unseed {
         /// Content identifier of the artifact to stop seeding.
+        #[clap(long)]
         pub cid: radicle_artifact::Cid,
         /// Target release id; defaults to every matching release.
         #[clap(long)]

@@ -166,7 +166,7 @@ rad-artifact node stop                                           # graceful shut
 rad-artifact node status [--json]                                # endpoint id, seeded count, disk, traffic
 rad-artifact node list [--json]                                  # list CIDs the node is seeding for this repo
 rad-artifact node seed <PATH> [--release <ID>] [--reference] [--no-announce]  # compute CID from PATH, seed, announce
-rad-artifact node unseed <CID> [--release <ID>]                  # stop seeding + retract our radiroh:// locations
+rad-artifact node unseed --cid <CID> [--release <ID>]            # stop seeding + retract our radiroh:// locations
 rad-artifact node logs [--follow] [-n <LINES>]                   # tail <home>/artifacts/node.log
 ```
 
@@ -197,7 +197,7 @@ Log verbosity is controlled via `RUST_LOG`, which covers both this crate and iro
 
 The node never writes COB ops — every signed location write (`add_location`, `remove_location`) happens client-side. The daemon's identity (the iroh endpoint id) currently derives from the same Ed25519 secret as your radicle DID, so `RAD_PASSPHRASE` is required on start when the keystore is encrypted (or the parent CLI will prompt).
 
-`rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `radiroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-removing — pass `--remove-orphaned <CID>` or `--remove-orphaned-self` explicitly when you want it gone. It also reports **dangling tags** — CIDs the node is seeding that no release references at all (so no location can anchor to them); reclaim them with `rad-artifact unseed <CID>`.
+`rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `radiroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-removing — pass `--remove-orphaned <CID>` or `--remove-orphaned-self` explicitly when you want it gone. It also reports **dangling tags** — CIDs the node is seeding that no release references at all (so no location can anchor to them); reclaim them with `rad-artifact unseed --cid <CID>`.
 
 ### `radiroh://` location format
 

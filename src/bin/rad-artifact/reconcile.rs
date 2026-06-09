@@ -358,7 +358,7 @@ fn reconcile_one(
         .map_err(|e| Error::Node(node::Error::Usage(format!("signer: {e}"))))?;
 
     // Dangling tags have no release to anchor a location to; report them
-    // so the user can reclaim the bytes with `rad-artifact unseed <cid>`.
+    // so the user can reclaim the bytes with `rad-artifact unseed --cid <cid>`.
     let mut report = RepoReport {
         dangling: dangling
             .into_iter()
@@ -478,7 +478,7 @@ fn print_summary(r: &RepoReport) {
     if !r.dangling.is_empty() {
         eprintln!();
         eprintln!(
-            "Reconcile: {} dangling tag(s) — seeded but no release references them; run `rad-artifact unseed <cid>` to reclaim:",
+            "Reconcile: {} dangling tag(s) — seeded but no release references them; run `rad-artifact unseed --cid <cid>` to reclaim:",
             r.dangling.len()
         );
         print_dangling_by_rid(&r.dangling);
