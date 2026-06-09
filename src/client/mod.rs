@@ -16,9 +16,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use crate::protocol::{
-    Command, CommandError, CommandResult, ExportReceipt, FetchLocation, FetchProgress,
-    FetchReceipt, HasResult, ImportMode, SeedReceipt, SeededEntry, Status, StreamEvent,
-    UnseedReceipt,
+    Command, CommandError, CommandResult, DownloadReceipt, ExportReceipt, FetchLocation,
+    FetchProgress, FetchReceipt, HasResult, ImportMode, SeedReceipt, SeededEntry, Status,
+    StreamEvent, UnseedReceipt,
 };
 use crate::share::cid_utils::ArtifactKind;
 
@@ -183,8 +183,9 @@ impl Client {
         self.call(&Command::Has { cid }, DEFAULT_TIMEOUT).await
     }
 
-    /// Fetch an artifact through the node, streaming progress to
-    /// `on_progress`. See `Self::call_streaming` for the timeout model.
+    /// Fetch an artifact into the node's store (no disk write), streaming
+    /// progress to `on_progress`. See `Self::call_streaming` for the timeout
+    /// model. Use [`Self::download`] to also export to disk.
     pub async fn fetch(
         &self,
         args: FetchArgs,
@@ -192,6 +193,24 @@ impl Client {
         on_progress: impl FnMut(&FetchProgress),
     ) -> Result<FetchReceipt, ClientError> {
         let cmd = Command::Fetch {
+            rid: args.rid,
+            cid: args.cid,
+            locations: args.locations,
+            seed: args.seed,
+        };
+        self.call_streaming(&cmd, idle, on_progress).await
+    }
+
+    /// Download an artifact through the node and export it to `args.dest`,
+    /// streaming progress to `on_progress`. See `Self::call_streaming` for
+    /// the timeout model.
+    pub async fn download(
+        &self,
+        args: DownloadArgs,
+        idle: Duration,
+        on_progress: impl FnMut(&FetchProgress),
+    ) -> Result<DownloadReceipt, ClientError> {
+        let cmd = Command::Download {
             rid: args.rid,
             cid: args.cid,
             locations: args.locations,
@@ -269,6 +288,20 @@ impl Client {
         rt.block_on(self.fetch(args, idle, on_progress))
     }
 
+    /// Blocking variant of [`Self::download`] for synchronous callers (CLI).
+    pub fn download_blocking(
+        &self,
+        args: DownloadArgs,
+        idle: Duration,
+        on_progress: impl FnMut(&FetchProgress),
+    ) -> Result<DownloadReceipt, ClientError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(ClientError::Io)?;
+        rt.block_on(self.download(args, idle, on_progress))
+    }
+
     /// Blocking variant of [`Self::export`] for synchronous callers (CLI).
     pub fn export_blocking(
         &self,
@@ -294,9 +327,22 @@ pub struct FetchArgs {
     pub cid: Cid,
     /// Resolved providers/URLs to try.
     pub locations: Vec<FetchLocation>,
-    /// Destination path.
-    pub dest: PathBuf,
     /// Whether to tag the artifact as seeded after fetching.
+    pub seed: bool,
+}
+
+/// Arguments for [`Client::download`]; mirrors [`Command::Download`].
+#[derive(Debug, Clone)]
+pub struct DownloadArgs {
+    /// Repository the artifact belongs to (for the seeded tag).
+    pub rid: RepoId,
+    /// Content identifier to download.
+    pub cid: Cid,
+    /// Resolved providers/URLs to try.
+    pub locations: Vec<FetchLocation>,
+    /// Destination path the bytes are exported to.
+    pub dest: PathBuf,
+    /// Whether to tag the artifact as seeded after downloading.
     pub seed: bool,
 }
 
@@ -328,8 +374,8 @@ mod tests {
     use crate::seeder::ARTIFACTS_DIR;
     use crate::share::cid_utils::{self, ArtifactKind};
 
-    /// Exercise the streaming client reader (`has`, `export`, `fetch`)
-    /// end-to-end against a real node.
+    /// Exercise the streaming client reader (`has`, `export`, `fetch`,
+    /// `download`) end-to-end against a real node.
     #[test]
     fn streaming_methods_round_trip() {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -381,14 +427,13 @@ mod tests {
             assert_eq!(std::fs::read(&dest).unwrap(), payload);
             assert!(progress >= 1, "expected at least one progress frame");
 
-            // fetch fast-path: already local, no locations.
+            // fetch fast-path: already local, no locations, no disk write.
             let fetched = client
                 .fetch(
                     FetchArgs {
                         rid,
                         cid,
                         locations: vec![],
-                        dest: home.path().join("fetched.bin"),
                         seed: false,
                     },
                     Duration::from_secs(30),
@@ -398,6 +443,26 @@ mod tests {
                 .unwrap();
             assert!(fetched.from_cache);
             assert_eq!(fetched.bytes, payload.len() as u64);
+
+            // download fast-path: already local, exported to disk.
+            let dl_dest = home.path().join("downloaded.bin");
+            let downloaded = client
+                .download(
+                    DownloadArgs {
+                        rid,
+                        cid,
+                        locations: vec![],
+                        dest: dl_dest.clone(),
+                        seed: false,
+                    },
+                    Duration::from_secs(30),
+                    |_| {},
+                )
+                .await
+                .unwrap();
+            assert!(downloaded.from_cache);
+            assert_eq!(downloaded.bytes, payload.len() as u64);
+            assert_eq!(std::fs::read(&dl_dest).unwrap(), payload);
 
             client.shutdown().await.unwrap();
             node.await.unwrap().unwrap();

@@ -20,7 +20,7 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
-use radicle_artifact::client::{Client, FetchArgs};
+use radicle_artifact::client::{Client, DownloadArgs, FetchArgs};
 use radicle_artifact::protocol::{FetchLocation, FetchProgress};
 use radicle_artifact::share;
 use radicle_artifact::share::keys::EndpointId;
@@ -305,6 +305,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             list_releases(cmd, &releases, &repo, &local, &profile)?;
         }
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
+        Command::Download(cmd) => run_download(cmd, args.no_input, &profile, &releases, &repo)?,
         Command::Seed(_) | Command::Unseed(_) | Command::Reconcile(_) => unreachable!(), // handled above
     }
 
@@ -1098,15 +1099,32 @@ fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
     Ok(())
 }
 
-fn run_fetch(
-    args: command::Fetch,
+/// What `fetch`/`download` need from the COB once the target is resolved:
+/// the CID, the union of locations to try, and the release to announce a
+/// `--seed` location into.
+struct Retrieval {
+    cid: Cid,
+    locations: Vec<FetchLocation>,
+    /// Release matching the requested revision (else any containing the
+    /// CID) — the one a `--seed` location is announced to.
+    primary_id: ReleaseId,
+    /// Artifact name, for the default download output path.
+    name: String,
+}
+
+/// Resolve the `(revision, cid)` pair (interactively when both are absent),
+/// union locations across every release containing the CID, and warn on
+/// redactions. Shared prologue of [`run_fetch`] and [`run_download`].
+fn resolve_retrieval(
+    revision: Option<String>,
+    cid_arg: Option<Cid>,
+    url: Option<&Url>,
     no_input: bool,
-    profile: &Profile,
     releases: &Releases<Repository>,
     repo: &Repository,
-) -> Result<(), RadArtifactError> {
+) -> Result<Retrieval, RadArtifactError> {
     // clap's `requires` ensures both or neither are provided.
-    let (oid, cid) = match (args.revision, args.cid) {
+    let (oid, cid) = match (revision, cid_arg) {
         (Some(revision), Some(cid)) => {
             let oid = resolve_ref(&revision, repo)?.commit;
             (oid, cid)
@@ -1170,11 +1188,10 @@ fn run_fetch(
 
     eprintln!("Artifact: {} (CID: {cid})", artifact.name());
 
-    // Release to announce a `--seed` location into (the one matching the
-    // requested revision, else any containing the CID).
     let primary_id = primary.0;
+    let name = artifact.name().to_owned();
 
-    let locations = if let Some(ref url) = args.url {
+    let locations = if let Some(url) = url {
         vec![FetchLocation::Url(url.clone())]
     } else {
         let artifacts = matching.iter().filter_map(|(_, r)| r.artifact(&cid));
@@ -1199,28 +1216,16 @@ fn run_fetch(
         if locations.len() == 1 { "" } else { "s" },
     );
 
-    let requested_path = args.output.unwrap_or_else(|| {
-        let name = artifact.name();
-        std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_")))
-    });
-
-    // Resolve the fetch destination to an absolute path
-    //
-    // The node runs as a daemon with a different cwd, so a relative path would
-    // resolve to the wrong location once handed to it.
-    let output_path = std::path::absolute(&requested_path).unwrap_or(requested_path);
-
-    // Route the fetch through the local node, which owns the store and all
-    // blob I/O. A missing node surfaces as `node::Error::NotRunning`.
-    let client = Client::new(Client::default_socket(profile.home.path()));
-    let fetch_args = FetchArgs {
-        rid: repo.id,
+    Ok(Retrieval {
         cid,
         locations,
-        dest: output_path.clone(),
-        seed: args.seed,
-    };
+        primary_id,
+        name,
+    })
+}
 
+/// Build the spinner shared by `fetch`/`download` progress reporting.
+fn retrieval_progress_bar() -> indicatif::ProgressBar {
     let pb = indicatif::ProgressBar::new_spinner();
     pb.enable_steady_tick(Duration::from_millis(250));
     pb.set_style(
@@ -1229,6 +1234,67 @@ fn run_fetch(
         )
         .unwrap(),
     );
+    pb
+}
+
+/// On `--seed`, the node now serves the bytes; announce a discoverable
+/// location with a signed COB write (the node writes no COBs itself).
+fn announce_seed_location(
+    endpoint_id: EndpointId,
+    cid: Cid,
+    primary_id: ReleaseId,
+    repo: &Repository,
+    profile: &Profile,
+) -> Result<(), RadArtifactError> {
+    let mut releases_mut = open_releases(repo)?;
+    let signer = profile
+        .signer()
+        .map_err(|e| error::Share::Usage(format!("signer: {e}")))?;
+    let url = endpoint_id.to_url();
+    let mut release_mut = releases_mut
+        .get_mut(&primary_id)
+        .map_err(|e| error::Share::Usage(format!("open release {primary_id}: {e}")))?;
+    release_mut
+        .add_location(cid, url, &signer)
+        .map_err(|e| error::Share::Usage(format!("announce location: {e}")))?;
+    eprintln!("Now seeding {cid}; announced location to release {primary_id}");
+    Ok(())
+}
+
+/// `fetch`: pull an artifact into the local node's store without writing it
+/// to disk. Use `download` to also export the bytes to a file.
+fn run_fetch(
+    args: command::Fetch,
+    no_input: bool,
+    profile: &Profile,
+    releases: &Releases<Repository>,
+    repo: &Repository,
+) -> Result<(), RadArtifactError> {
+    let Retrieval {
+        cid,
+        locations,
+        primary_id,
+        ..
+    } = resolve_retrieval(
+        args.revision,
+        args.cid,
+        args.url.as_ref(),
+        no_input,
+        releases,
+        repo,
+    )?;
+
+    // Route through the local node, which owns the store and all blob I/O.
+    // A missing node surfaces as `node::Error::NotRunning`.
+    let client = Client::new(Client::default_socket(profile.home.path()));
+    let fetch_args = FetchArgs {
+        rid: repo.id,
+        cid,
+        locations,
+        seed: args.seed,
+    };
+
+    let pb = retrieval_progress_bar();
     let receipt = client
         .fetch_blocking(fetch_args, FETCH_IDLE_TIMEOUT, |p| match p {
             FetchProgress::Connecting => pb.set_message("connecting"),
@@ -1242,21 +1308,73 @@ fn run_fetch(
         .map_err(node::client_err)?;
     pb.finish_and_clear();
 
-    // On --seed, the node now serves the bytes; announce a discoverable
-    // location with a signed COB write (the node writes no COBs itself).
     if args.seed && receipt.seeded {
-        let mut releases_mut = open_releases(repo)?;
-        let signer = profile
-            .signer()
-            .map_err(|e| error::Share::Usage(format!("signer: {e}")))?;
-        let url = receipt.endpoint_id.to_url();
-        let mut release_mut = releases_mut
-            .get_mut(&primary_id)
-            .map_err(|e| error::Share::Usage(format!("open release {primary_id}: {e}")))?;
-        release_mut
-            .add_location(cid, url, &signer)
-            .map_err(|e| error::Share::Usage(format!("announce location: {e}")))?;
-        eprintln!("Now seeding {cid}; announced location to release {primary_id}");
+        announce_seed_location(receipt.endpoint_id, cid, primary_id, repo, profile)?;
+    }
+
+    eprintln!("Fetched {cid} into the store");
+    Ok(())
+}
+
+/// `download`: fetch an artifact into the store and export it to disk.
+fn run_download(
+    args: command::Download,
+    no_input: bool,
+    profile: &Profile,
+    releases: &Releases<Repository>,
+    repo: &Repository,
+) -> Result<(), RadArtifactError> {
+    let Retrieval {
+        cid,
+        locations,
+        primary_id,
+        name,
+    } = resolve_retrieval(
+        args.revision,
+        args.cid,
+        args.url.as_ref(),
+        no_input,
+        releases,
+        repo,
+    )?;
+
+    let requested_path = args
+        .output
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_"))));
+
+    // Resolve the download destination to an absolute path.
+    //
+    // The node runs as a daemon with a different cwd, so a relative path would
+    // resolve to the wrong location once handed to it.
+    let output_path = std::path::absolute(&requested_path).unwrap_or(requested_path);
+
+    // Route through the local node, which owns the store and all blob I/O.
+    // A missing node surfaces as `node::Error::NotRunning`.
+    let client = Client::new(Client::default_socket(profile.home.path()));
+    let download_args = DownloadArgs {
+        rid: repo.id,
+        cid,
+        locations,
+        dest: output_path.clone(),
+        seed: args.seed,
+    };
+
+    let pb = retrieval_progress_bar();
+    let receipt = client
+        .download_blocking(download_args, FETCH_IDLE_TIMEOUT, |p| match p {
+            FetchProgress::Connecting => pb.set_message("connecting"),
+            FetchProgress::TryingLocation { endpoint_id } => {
+                pb.set_message(format!("trying {endpoint_id}"))
+            }
+            FetchProgress::Downloading { offset, .. } => pb.set_position(*offset),
+            FetchProgress::Exporting { .. } => pb.set_message("exporting"),
+            _ => {}
+        })
+        .map_err(node::client_err)?;
+    pb.finish_and_clear();
+
+    if args.seed && receipt.seeded {
+        announce_seed_location(receipt.endpoint_id, cid, primary_id, repo, profile)?;
     }
 
     eprintln!("Saved to {}", output_path.display());
@@ -1983,8 +2101,10 @@ mod command {
         /// Compute the BLAKE3 CID of a file or directory
         #[clap(name = "cid")]
         ComputeCid(ComputeCid),
-        /// Fetch an artifact from a release COB
+        /// Fetch an artifact from a release COB into the local store
         Fetch(Fetch),
+        /// Download an artifact from a release COB to disk
+        Download(Download),
         /// Alias for `rad-artifact node seed`.
         Seed(Seed),
         /// Alias for `rad-artifact node unseed`.
@@ -2052,21 +2172,23 @@ Examples:
         pub path: std::path::PathBuf,
     }
 
-    /// Fetch an artifact from a Radicle release COB.
+    /// Fetch an artifact from a Radicle release COB into the local store.
     ///
-    /// With positional arguments, fetches a specific artifact directly.
-    /// Without arguments, interactively lists releases and artifacts to pick from.
+    /// Pulls the bytes into the node's store without writing them to disk.
+    /// Use `download` to also export to a file. With positional arguments,
+    /// fetches a specific artifact directly; without arguments, interactively
+    /// lists releases and artifacts to pick from.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
   Interactive mode (pick from available releases):
     $ rad-artifact fetch
 
-  Fetch a specific artifact:
+  Fetch a specific artifact into the store:
     $ rad-artifact fetch v1.0 --cid baf...abc
 
-  Fetch to a custom path:
-    $ rad-artifact fetch v1.0 --cid baf...abc -o ./downloads/my-binary
+  Fetch and keep seeding it:
+    $ rad-artifact fetch v1.0 --cid baf...abc --seed
 
   Fetch from a specific URL:
     $ rad-artifact fetch v1.0 --cid baf...abc --url https://example.com/my-binary")]
@@ -2077,13 +2199,48 @@ Examples:
         /// Content identifier of the artifact to fetch. Required with `<REVISION>`.
         #[clap(long, requires = "revision")]
         pub cid: Option<radicle_artifact::Cid>,
-        /// Output file path. Defaults to the artifact name in the current directory.
-        #[clap(short, long)]
-        pub output: Option<std::path::PathBuf>,
         /// Fetch from this URL directly, skipping the artifact's locations.
         #[clap(long)]
         pub url: Option<url::Url>,
         /// After fetching, keep seeding the artifact and announce a
+        /// `radiroh://` location under your DID so others can fetch it.
+        #[clap(long)]
+        pub seed: bool,
+    }
+
+    /// Download an artifact from a Radicle release COB to disk.
+    ///
+    /// Fetches the bytes into the store, then exports them to a file. With
+    /// positional arguments, downloads a specific artifact directly; without
+    /// arguments, interactively lists releases and artifacts to pick from.
+    #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Interactive mode (pick from available releases):
+    $ rad-artifact download
+
+  Download a specific artifact:
+    $ rad-artifact download v1.0 --cid baf...abc
+
+  Download to a custom path:
+    $ rad-artifact download v1.0 --cid baf...abc -o ./downloads/my-binary
+
+  Download from a specific URL:
+    $ rad-artifact download v1.0 --cid baf...abc --url https://example.com/my-binary")]
+    pub struct Download {
+        /// Git revision (commit, tag, or abbreviated OID). Required with --cid.
+        #[clap(requires = "cid")]
+        pub revision: Option<String>,
+        /// Content identifier of the artifact to download. Required with `<REVISION>`.
+        #[clap(long, requires = "revision")]
+        pub cid: Option<radicle_artifact::Cid>,
+        /// Output file path. Defaults to the artifact name in the current directory.
+        #[clap(short, long)]
+        pub output: Option<std::path::PathBuf>,
+        /// Download from this URL directly, skipping the artifact's locations.
+        #[clap(long)]
+        pub url: Option<url::Url>,
+        /// After downloading, keep seeding the artifact and announce a
         /// `radiroh://` location under your DID so others can fetch it.
         #[clap(long)]
         pub seed: bool,
