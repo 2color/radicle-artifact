@@ -1123,16 +1123,18 @@ fn resolve_retrieval(
     releases: &Releases<Repository>,
     repo: &Repository,
 ) -> Result<Retrieval, RadArtifactError> {
-    // clap's `requires` ensures both or neither are provided.
-    let (oid, cid) = match (revision, cid_arg) {
+    let (oid_opt, cid) = match (revision, cid_arg) {
         (Some(revision), Some(cid)) => {
             let oid = resolve_ref(&revision, repo)?.commit;
-            (oid, cid)
+            (Some(oid), cid)
         }
+        (None, Some(cid)) => (None, cid),
         (None, None) => {
-            prompt::pick_interactive(no_input, releases, repo).map_err(error::Share::Usage)?
+            let (oid, cid) =
+                prompt::pick_interactive(no_input, releases, repo).map_err(error::Share::Usage)?;
+            (Some(oid), cid)
         }
-        _ => unreachable!("clap enforces both-or-neither"),
+        (Some(_), None) => unreachable!("revision requires cid"),
     };
 
     // Retrieval is CID-centric: the same artifact may appear in multiple
@@ -1145,22 +1147,29 @@ fn resolve_retrieval(
     if matching.is_empty() {
         return Err(error::Share::ArtifactNotFound(cid).into());
     }
-    // Sanity check: at least one release for the requested commit contains
-    // this CID. Catches callers who pair a valid CID with the wrong OID.
-    if !matching.iter().any(|(_, r)| r.oid() == &oid) {
-        return Err(error::Share::Usage(format!(
-            "artifact {cid} is not associated with commit {oid}"
-        ))
-        .into());
+    // Sanity check: when a revision was given, at least one of its releases
+    // must contain this CID. Catches callers who pair a valid CID with the
+    // wrong OID.
+    if let Some(oid) = oid_opt {
+        if !matching.iter().any(|(_, r)| r.oid() == &oid) {
+            return Err(error::Share::Usage(format!(
+                "artifact {cid} is not associated with commit {oid}"
+            ))
+            .into());
+        }
     }
 
-    // Prefer the name/redactions view from a release that matches the
-    // requested OID; fall back to any release containing the CID.
-    let primary = matching
-        .iter()
-        .find(|(_, r)| r.oid() == &oid)
-        .or_else(|| matching.first())
-        .expect("matching is non-empty");
+    // When an OID is known, prefer its release for name/redactions. For
+    // CID-only lookups, pick the most recently created release (mirrors the
+    // `seed` subcommand's policy when multiple releases share a CID).
+    let primary = match oid_opt {
+        Some(oid) => matching
+            .iter()
+            .find(|(_, r)| r.oid() == &oid)
+            .or_else(|| matching.first()),
+        None => matching.iter().max_by_key(|(_, r)| r.timestamp()),
+    }
+    .expect("matching is non-empty");
     let artifact = primary
         .1
         .artifact(&cid)
@@ -2181,6 +2190,9 @@ Examples:
   Interactive mode (pick from available releases):
     $ rad-artifact fetch
 
+  Fetch by CID only (release looked up automatically):
+    $ rad-artifact fetch --cid baf...abc
+
   Fetch a specific artifact into the store:
     $ rad-artifact fetch v1.0 --cid baf...abc
 
@@ -2193,8 +2205,8 @@ Examples:
         /// Git revision (commit, tag, or abbreviated OID). Required with --cid.
         #[clap(requires = "cid")]
         pub revision: Option<String>,
-        /// Content identifier of the artifact to fetch. Required with `<REVISION>`.
-        #[clap(long, requires = "revision")]
+        /// Content identifier of the artifact to fetch.
+        #[clap(long)]
         pub cid: Option<radicle_artifact::Cid>,
         /// Fetch from this URL directly, skipping the artifact's locations.
         #[clap(long)]
@@ -2216,6 +2228,9 @@ Examples:
   Interactive mode (pick from available releases):
     $ rad-artifact download
 
+  Download by CID only (release looked up automatically):
+    $ rad-artifact download --cid baf...abc
+
   Download a specific artifact:
     $ rad-artifact download v1.0 --cid baf...abc
 
@@ -2228,8 +2243,8 @@ Examples:
         /// Git revision (commit, tag, or abbreviated OID). Required with --cid.
         #[clap(requires = "cid")]
         pub revision: Option<String>,
-        /// Content identifier of the artifact to download. Required with `<REVISION>`.
-        #[clap(long, requires = "revision")]
+        /// Content identifier of the artifact to download.
+        #[clap(long)]
         pub cid: Option<radicle_artifact::Cid>,
         /// Output file path. Defaults to the artifact name in the current directory.
         #[clap(short, long)]
