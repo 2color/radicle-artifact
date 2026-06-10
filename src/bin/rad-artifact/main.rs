@@ -72,12 +72,11 @@ struct Args {
     #[clap(short, long)]
     repository: Option<RepoId>,
 
-    /// Do not sync with the network after modifications.
+    /// Do not broadcast COB changes to the network after modifications.
     ///
-    /// Note that if `--no-sync` was used, you can use `rad sync -a` to announce
-    /// at a later point.
+    /// Use `rad sync -a` to broadcast at a later point.
     #[clap(long)]
-    no_sync: bool,
+    no_broadcast: bool,
 
     /// Disable all interactive prompts.
     ///
@@ -169,14 +168,18 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         let Args {
             command,
             repository,
-            no_sync,
+            no_broadcast,
             ..
         } = args;
         return match command {
-            Command::Node(cmd) => node::run(cmd, repository, no_sync, &profile).map_err(Into::into),
-            Command::Seed(cmd) => run_seed(cmd, repository, no_sync, &profile).map_err(Into::into),
+            Command::Node(cmd) => {
+                node::run(cmd, repository, no_broadcast, &profile).map_err(Into::into)
+            }
+            Command::Seed(cmd) => {
+                run_seed(cmd, repository, no_broadcast, &profile).map_err(Into::into)
+            }
             Command::Unseed(cmd) => {
-                run_unseed(cmd, repository, no_sync, &profile).map_err(Into::into)
+                run_unseed(cmd, repository, no_broadcast, &profile).map_err(Into::into)
             }
             Command::Reconcile(cmd) => {
                 reconcile::run(cmd, repository, &profile).map_err(Into::into)
@@ -214,7 +217,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                     &profile,
                 )?;
             }
-            if !args.no_sync {
+            if !args.no_broadcast {
                 announce(&profile, repo.id)?;
             }
         }
@@ -228,21 +231,21 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                     location_remove(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
                 }
             }
-            if !args.no_sync {
+            if !args.no_broadcast {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Attest(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
             attest_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
-            if !args.no_sync {
+            if !args.no_broadcast {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Redact(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
             redact_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
-            if !args.no_sync {
+            if !args.no_broadcast {
                 announce(&profile, repo.id)?;
             }
         }
@@ -256,7 +259,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                     metadata_unset(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
                 }
             }
-            if !args.no_sync {
+            if !args.no_broadcast {
                 announce(&profile, repo.id)?;
             }
         }
@@ -1402,7 +1405,7 @@ fn run_download(
 fn run_seed(
     cmd: command::Seed,
     repo_override: Option<RepoId>,
-    no_sync: bool,
+    no_broadcast: bool,
     profile: &Profile,
 ) -> Result<(), node::Error> {
     node::seed_artifact(
@@ -1410,7 +1413,7 @@ fn run_seed(
         cmd.release,
         cmd.reference,
         cmd.no_announce,
-        no_sync,
+        no_broadcast,
         repo_override,
         profile,
     )
@@ -1420,10 +1423,10 @@ fn run_seed(
 fn run_unseed(
     cmd: command::Unseed,
     repo_override: Option<RepoId>,
-    no_sync: bool,
+    no_broadcast: bool,
     profile: &Profile,
 ) -> Result<(), node::Error> {
-    node::unseed_artifact(cmd.cid, cmd.release, no_sync, repo_override, profile)
+    node::unseed_artifact(cmd.cid, cmd.release, no_broadcast, repo_override, profile)
 }
 
 /// Convert locations from one or more artifacts into fetch locations.
