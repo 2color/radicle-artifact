@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 
 use cid::Cid;
+use radicle::git::Oid;
 use radicle::identity::RepoId;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -79,10 +80,13 @@ pub enum Command {
     /// Report node status.
     Status,
     /// Import bytes from `path`, verify against `cid`, register the
-    /// `seeded/{rid}/{cid}` tag.
+    /// `seeded/{rid}/{release}/{cid}` tag.
     Seed {
         /// Repository the artifact belongs to.
         rid: RepoId,
+        /// Release the seeded tag is scoped to. Lets a CID shared by several
+        /// releases be unseeded per release without dropping the others.
+        release: Oid,
         /// Expected content identifier.
         #[serde(with = "cid_string")]
         cid: Cid,
@@ -93,15 +97,20 @@ pub enum Command {
         /// Copy bytes into the store or reference them in place.
         mode: ImportMode,
     },
-    /// Remove the `seeded/{rid}/{cid}` tag. Idempotent.
+    /// Remove seeded tags for `cid`. Idempotent. `release: Some(id)` drops
+    /// just that release's tag; `None` stops seeding the CID across every
+    /// release of `rid`.
     Unseed {
         /// Repository the artifact belongs to.
         rid: RepoId,
+        /// Release to stop seeding, or `None` for all releases of `rid`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release: Option<Oid>,
         /// Content identifier to stop seeding.
         #[serde(with = "cid_string")]
         cid: Cid,
     },
-    /// Whether `(rid, cid)` is currently seeded.
+    /// Whether `(rid, cid)` is currently seeded under any release.
     IsSeeding {
         /// Repository the artifact belongs to.
         rid: RepoId,
@@ -139,13 +148,18 @@ pub enum Command {
     Fetch {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
+        /// Release the seeded tag is scoped to. Required when `seed` is set;
+        /// ignored otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release: Option<Oid>,
         /// Expected content identifier; the blob kind is derived from it.
         #[serde(with = "cid_string")]
         cid: Cid,
         /// Resolved providers/URLs to try. Iroh providers are batched into
         /// one multi-provider download; URLs are tried in sequence.
         locations: Vec<FetchLocation>,
-        /// Tag `seeded/{rid}/{cid}` after completion so the node serves it.
+        /// Tag `seeded/{rid}/{release}/{cid}` after completion so the node
+        /// serves it.
         seed: bool,
     },
     /// Download an artifact to disk: [`Command::Fetch`] into the store, then
@@ -154,6 +168,10 @@ pub enum Command {
     Download {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
+        /// Release the seeded tag is scoped to. Required when `seed` is set;
+        /// ignored otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release: Option<Oid>,
         /// Expected content identifier; the blob kind is derived from it.
         #[serde(with = "cid_string")]
         cid: Cid,
@@ -162,7 +180,8 @@ pub enum Command {
         locations: Vec<FetchLocation>,
         /// Destination path (file for blobs, directory for collections).
         dest: PathBuf,
-        /// Tag `seeded/{rid}/{cid}` after completion so the node serves it.
+        /// Tag `seeded/{rid}/{release}/{cid}` after completion so the node
+        /// serves it.
         seed: bool,
     },
     /// Ask the node to shut down gracefully.
@@ -515,6 +534,13 @@ mod tests {
         RepoId::from_str(SAMPLE_RID).unwrap()
     }
 
+    /// Release Oid (a COB ObjectId's git hash) used as a wire-snapshot fixture.
+    const SAMPLE_RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn sample_release() -> Oid {
+        Oid::from_str(SAMPLE_RELEASE).unwrap()
+    }
+
     /// Real Blake3/raw Cid for wire snapshots — built from a pinned
     /// preimage so the multibase string stays stable across runs.
     fn sample_cid() -> Cid {
@@ -551,6 +577,7 @@ mod tests {
         let cid = sample_cid();
         let cmd = Command::Seed {
             rid: sample_rid(),
+            release: sample_release(),
             cid,
             path: PathBuf::from("/tmp/a"),
             kind: ArtifactKind::Blob,
@@ -562,6 +589,7 @@ mod tests {
             json!({
                 "command": "seed",
                 "rid": SAMPLE_RID,
+                "release": SAMPLE_RELEASE,
                 "cid": cid.to_string(),
                 "path": "/tmp/a",
                 "kind": "blob",
@@ -573,13 +601,26 @@ mod tests {
     #[test]
     fn wire_snapshot_command_unseed_and_lookups() {
         let cid = sample_cid();
+        // `release: None` (stop seeding the CID everywhere) omits the field.
         let unseed = Command::Unseed {
             rid: sample_rid(),
+            release: None,
             cid,
         };
         assert_eq!(
             serde_json::to_value(&unseed).unwrap(),
             json!({"command":"unseed", "rid": SAMPLE_RID, "cid": cid.to_string()})
+        );
+
+        // `release: Some(..)` (one release) carries the id.
+        let unseed_one = Command::Unseed {
+            rid: sample_rid(),
+            release: Some(sample_release()),
+            cid,
+        };
+        assert_eq!(
+            serde_json::to_value(&unseed_one).unwrap(),
+            json!({"command":"unseed", "rid": SAMPLE_RID, "release": SAMPLE_RELEASE, "cid": cid.to_string()})
         );
 
         let is_seeding = Command::IsSeeding {
@@ -730,6 +771,7 @@ mod tests {
         // Fetch is store-only: no `dest` field on the wire.
         let fetch = Command::Fetch {
             rid: sample_rid(),
+            release: Some(sample_release()),
             cid,
             locations: vec![
                 FetchLocation::Iroh(endpoint_id),
@@ -742,6 +784,7 @@ mod tests {
             json!({
                 "command": "fetch",
                 "rid": SAMPLE_RID,
+                "release": SAMPLE_RELEASE,
                 "cid": cid.to_string(),
                 "locations": [
                     {"iroh": endpoint_id.to_string()},
@@ -753,9 +796,10 @@ mod tests {
         let back: Command = serde_json::from_value(serde_json::to_value(&fetch).unwrap()).unwrap();
         assert_eq!(back, fetch);
 
-        // Download adds `dest`.
+        // Download adds `dest`; `seed: false` omits the release.
         let download = Command::Download {
             rid: sample_rid(),
+            release: None,
             cid,
             locations: vec![FetchLocation::Iroh(endpoint_id)],
             dest: PathBuf::from("/tmp/out"),

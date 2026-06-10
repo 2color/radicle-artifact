@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cid::Cid;
+use radicle::git::Oid;
 use radicle::identity::RepoId;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -91,10 +92,11 @@ impl Client {
             .is_ok()
     }
 
-    /// Ask the node to seed `path` against `cid` in `rid`.
+    /// Ask the node to seed `path` against `cid` for `release` in `rid`.
     pub async fn seed(
         &self,
         rid: RepoId,
+        release: Oid,
         cid: Cid,
         path: &Path,
         kind: ArtifactKind,
@@ -102,6 +104,7 @@ impl Client {
     ) -> Result<SeedReceipt, ClientError> {
         let cmd = Command::Seed {
             rid,
+            release,
             cid,
             path: path.to_path_buf(),
             kind,
@@ -110,9 +113,15 @@ impl Client {
         self.call(&cmd, DEFAULT_TIMEOUT).await
     }
 
-    /// Ask the node to stop seeding `(rid, cid)`.
-    pub async fn unseed(&self, rid: RepoId, cid: Cid) -> Result<UnseedReceipt, ClientError> {
-        self.call(&Command::Unseed { rid, cid }, DEFAULT_TIMEOUT)
+    /// Ask the node to stop seeding `cid` in `rid`. `release: Some(id)` drops
+    /// one release's tag; `None` stops seeding the CID across all releases.
+    pub async fn unseed(
+        &self,
+        rid: RepoId,
+        release: Option<Oid>,
+        cid: Cid,
+    ) -> Result<UnseedReceipt, ClientError> {
+        self.call(&Command::Unseed { rid, release, cid }, DEFAULT_TIMEOUT)
             .await
     }
 
@@ -155,6 +164,7 @@ impl Client {
     ) -> Result<FetchReceipt, ClientError> {
         let cmd = Command::Fetch {
             rid: args.rid,
+            release: args.release,
             cid: args.cid,
             locations: args.locations,
             seed: args.seed,
@@ -173,6 +183,7 @@ impl Client {
     ) -> Result<DownloadReceipt, ClientError> {
         let cmd = Command::Download {
             rid: args.rid,
+            release: args.release,
             cid: args.cid,
             locations: args.locations,
             dest: args.dest,
