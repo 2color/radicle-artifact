@@ -37,9 +37,9 @@ radicle-artifact is a companion to radicle, not a replacement for it. It links t
 - **Identity** — your Ed25519 keystore. The same secret signs every COB op and derives the iroh seeder's endpoint id, so an encrypted keystore needs `RAD_PASSPHRASE` (or an interactive prompt). Your DID is your radicle NodeID.
 - **Storage** — your radicle profile home and git storage, where releases are read and written as COBs.
 
-A COB write (`register`, `attest`, `location add`, ...) is a local git operation. By default the CLI then **announces** the change to the network by calling the running radicle node over its control socket; this is the only step that needs the node up. Pass `--no-sync` to skip it and announce later with `rad sync -a`.
+A COB write (`register`, `attest`, `location add`, ...) is a local git operation. By default the CLI then **syncs** the change to the network by calling the running radicle node over its control socket; this is the only step that needs the node up. Pass `--no-sync` to skip it and sync later with `rad sync -a`.
 
-For other peers to actually discover an artifact, the radicle node must keep running after you register its location, announcing is a one-time broadcast, but other seeders nodes need to fetch the COB refs from your node.
+For other peers to actually discover an artifact, the radicle node must keep running after you announce its location: the sync is a one-time broadcast, but other seeder nodes need to fetch the COB refs from your node.
 
 Everything else works without the radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder (`rad-artifact node start`) is a **separate process** from the radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
 
@@ -48,7 +48,7 @@ Everything else works without the radicle node running: computing CIDs, reading 
 1. **Tag** — Create a release tag or commit — ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references).
 2. **Build** — Build your release artifacts.
 3. **Register** — Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. This is signed discovery metadata in the COB, synced over the radicle protocol — not the bytes.
-4. **Seed** — Upload artifacts to an HTTP server and register the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
+4. **Seed** — Upload artifacts to an HTTP server and announce the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
 5. **Download** — Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`.
 6. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
 7. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
@@ -60,7 +60,7 @@ Everything else works without the radicle node running: computing CIDs, reading 
 
 A **Release** is a radicle [COB] (Collaborative Object) identified by a Release ID associated with a Git commit and optionally an annotated tag.
 
-Releases contain one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help mirror artifacts by announcing location URLs for any artifact, enabling decentralized mirroring.
+Releases contain one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help seed artifacts by announcing location URLs for any artifact, enabling decentralized seeding.
 
 ![data-model-diagram](public/diagram.svg)
 

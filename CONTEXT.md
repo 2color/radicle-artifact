@@ -18,20 +18,28 @@ Record an Artifact against a Release in the COB.
 _Avoid_: add (the CLI command was renamed from `add` to `register`), publish.
 
 **Seed** (verb):
-Hold an Artifact's bytes on a node and serve them to peers over iroh.
-Tracked locally by a Seeded Tag; paired with Announce to make your artifact node discoverable as a download location.
-_Avoid_: serve/serving, host, mirror (use "seed"/"seeding").
+Hold an Artifact's bytes on a node and serve them to peers over iroh — the
+bytes role only, tracked locally by a Seeded Tag. Distinct from Announcing
+its Location: the `seed` command composes both, but the two acts stay
+separate, and their drift is a Dangling Tag or an
+Orphaned Location
+_Avoid_: serve/serving, host, mirror (use "seed"/"seeding"); don't widen
+"seed" to cover announcing the Location.
 
 **Announce** (verb):
 Add a Location to the COB under your DID, asserting that an artifact's
 bytes are retrievable at that URL. Applies to any URL scheme. For
 `radiroh://` Locations specifically, Announcing is the COB-side complement
 to Seeding: a node that announces without seeding creates an Orphaned
-Location; a node that seeds without announcing creates a Dangling Tag. Announcing typically includes both the local COB operation and syncing the changes to the network.
-_Avoid_: don't confuse with Sync (pushing the COB change to the network).
+Location; a node that seeds without announcing creates a Dangling Tag.
+Announce is a COB write like any other; the change reaches peers via Sync,
+not as part of Announcing itself.
+_Avoid_: don't conflate with Sync, every COB write is Synced, but only
+Locations are Announced.
 
 **Sync** (verb):
-Push a COB change to the radicle network so peers can discover it.
+Push a COB change to the radicle network so peers can discover it. Applies
+to every COB write (register, attest, announce, …).
 Triggered automatically after writes; deferred with `--no-sync` and
 published later with `rad sync -a`.
 
