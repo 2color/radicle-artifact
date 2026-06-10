@@ -21,6 +21,7 @@ use crate::protocol::{
     StreamEvent, UnseedReceipt,
 };
 use crate::share::cid_utils::ArtifactKind;
+use crate::ReleaseId;
 
 /// Default per-call timeout when callers don't pick their own.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -139,10 +140,11 @@ impl Client {
             .is_ok()
     }
 
-    /// Ask the node to seed `path` against `cid` in `rid`.
+    /// Ask the node to seed `path` against `cid` for `release` in `rid`.
     pub async fn seed(
         &self,
         rid: RepoId,
+        release: ReleaseId,
         cid: Cid,
         path: &Path,
         kind: ArtifactKind,
@@ -150,6 +152,7 @@ impl Client {
     ) -> Result<SeedReceipt, ClientError> {
         let cmd = Command::Seed {
             rid,
+            release,
             cid,
             path: path.to_path_buf(),
             kind,
@@ -158,13 +161,19 @@ impl Client {
         self.call(&cmd, DEFAULT_TIMEOUT).await
     }
 
-    /// Ask the node to stop seeding `(rid, cid)`.
-    pub async fn unseed(&self, rid: RepoId, cid: Cid) -> Result<UnseedReceipt, ClientError> {
-        let cmd = Command::Unseed { rid, cid };
+    /// Ask the node to stop seeding `cid` in `rid`. `release: Some(id)` drops
+    /// one release's tag; `None` stops seeding the CID across all releases.
+    pub async fn unseed(
+        &self,
+        rid: RepoId,
+        release: Option<ReleaseId>,
+        cid: Cid,
+    ) -> Result<UnseedReceipt, ClientError> {
+        let cmd = Command::Unseed { rid, release, cid };
         self.call(&cmd, DEFAULT_TIMEOUT).await
     }
 
-    /// Whether the node currently has `(rid, cid)` tagged.
+    /// Whether the node currently has `cid` tagged under any release.
     pub async fn is_seeding(&self, rid: RepoId, cid: Cid) -> Result<bool, ClientError> {
         let cmd = Command::IsSeeding { rid, cid };
         self.call(&cmd, DEFAULT_TIMEOUT).await
@@ -203,6 +212,7 @@ impl Client {
     ) -> Result<FetchReceipt, ClientError> {
         let cmd = Command::Fetch {
             rid: args.rid,
+            release: args.release,
             cid: args.cid,
             locations: args.locations,
             seed: args.seed,
@@ -221,6 +231,7 @@ impl Client {
     ) -> Result<DownloadReceipt, ClientError> {
         let cmd = Command::Download {
             rid: args.rid,
+            release: args.release,
             cid: args.cid,
             locations: args.locations,
             dest: args.dest,
@@ -320,6 +331,8 @@ impl Client {
 pub struct FetchArgs {
     /// Repository the artifact belongs to (for the seeded tag).
     pub rid: RepoId,
+    /// Release the seeded tag is scoped to; required when `seed` is set.
+    pub release: Option<ReleaseId>,
     /// Content identifier to fetch.
     pub cid: Cid,
     /// Resolved providers/URLs to try.
@@ -333,6 +346,8 @@ pub struct FetchArgs {
 pub struct DownloadArgs {
     /// Repository the artifact belongs to (for the seeded tag).
     pub rid: RepoId,
+    /// Release the seeded tag is scoped to; required when `seed` is set.
+    pub release: Option<ReleaseId>,
     /// Content identifier to download.
     pub cid: Cid,
     /// Resolved providers/URLs to try.
@@ -386,6 +401,7 @@ mod tests {
             std::fs::write(&blob_path, payload).unwrap();
             let cid = cid_utils::compute_blob_cid(&blob_path).unwrap();
             let rid = RepoId::from_str("rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip").unwrap();
+            let release = ReleaseId::from_str("0123456789abcdef0123456789abcdef01234567").unwrap();
 
             let secret = iroh::SecretKey::from_bytes(&[8u8; 32]);
             let home_path = home.path().to_path_buf();
@@ -402,7 +418,14 @@ mod tests {
 
             let client = Client::new(socket);
             client
-                .seed(rid, cid, &blob_path, ArtifactKind::Blob, ImportMode::Copy)
+                .seed(
+                    rid,
+                    release,
+                    cid,
+                    &blob_path,
+                    ArtifactKind::Blob,
+                    ImportMode::Copy,
+                )
                 .await
                 .unwrap();
 
@@ -429,6 +452,7 @@ mod tests {
                 .fetch(
                     FetchArgs {
                         rid,
+                        release: None,
                         cid,
                         locations: vec![],
                         seed: false,
@@ -447,6 +471,7 @@ mod tests {
                 .download(
                     DownloadArgs {
                         rid,
+                        release: None,
                         cid,
                         locations: vec![],
                         dest: dl_dest.clone(),

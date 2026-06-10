@@ -439,6 +439,7 @@ pub(crate) fn seed_to_release(
         .call_blocking::<SeedReceipt>(
             &NodeMsg::Seed {
                 rid,
+                release: release_id,
                 cid,
                 path: abs_path,
                 kind,
@@ -525,8 +526,22 @@ pub(crate) fn unseed_artifact(
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
 
+    // `--release` scopes both the tag removal and the COB retraction to one
+    // release; without it, every release containing the CID is swept.
+    let release_filter: Option<ReleaseId> = match release_override.as_deref() {
+        Some(s) => Some(parse_release_id(s, &repo).map_err(|e| Error::Usage(e.to_string()))?),
+        None => None,
+    };
+
     let receipt = client
-        .call_blocking::<UnseedReceipt>(&NodeMsg::Unseed { rid, cid }, client::DEFAULT_TIMEOUT)
+        .call_blocking::<UnseedReceipt>(
+            &NodeMsg::Unseed {
+                rid,
+                release: release_filter,
+                cid,
+            },
+            client::DEFAULT_TIMEOUT,
+        )
         .map_err(client_err)?;
 
     if receipt.was_removed {
@@ -540,8 +555,8 @@ pub(crate) fn unseed_artifact(
         .signer()
         .map_err(|e| Error::Usage(format!("signer: {e}")))?;
 
-    let target_ids: Vec<ReleaseId> = if let Some(s) = release_override.as_deref() {
-        vec![parse_release_id(s, &repo).map_err(|e| Error::Usage(e.to_string()))?]
+    let target_ids: Vec<ReleaseId> = if let Some(id) = release_filter {
+        vec![id]
     } else {
         releases
             .find_by_cid(&cid)
