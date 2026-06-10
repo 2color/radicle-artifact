@@ -172,7 +172,7 @@ pub enum Error {
 pub fn run(
     cli: Cli,
     repo_override: Option<RepoId>,
-    no_sync: bool,
+    no_broadcast: bool,
     profile: &Profile,
 ) -> Result<(), Error> {
     match cli.command {
@@ -180,8 +180,8 @@ pub fn run(
         Subcommand::Stop => stop(profile),
         Subcommand::Status(c) => status(c, profile),
         Subcommand::List(c) => list(c, repo_override, profile),
-        Subcommand::Seed(c) => seed(c, repo_override, no_sync, profile),
-        Subcommand::Unseed(c) => unseed(c, repo_override, no_sync, profile),
+        Subcommand::Seed(c) => seed(c, repo_override, no_broadcast, profile),
+        Subcommand::Unseed(c) => unseed(c, repo_override, no_broadcast, profile),
         Subcommand::Logs(c) => logs(c, profile),
     }
 }
@@ -328,7 +328,7 @@ fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Resu
 fn seed(
     cmd: Seed,
     repo_override: Option<RepoId>,
-    no_sync: bool,
+    no_broadcast: bool,
     profile: &Profile,
 ) -> Result<(), Error> {
     seed_artifact(
@@ -336,7 +336,7 @@ fn seed(
         cmd.release,
         cmd.reference,
         cmd.no_announce,
-        no_sync,
+        no_broadcast,
         repo_override,
         profile,
     )
@@ -353,7 +353,7 @@ pub(crate) fn seed_artifact(
     release_override: Option<String>,
     reference: bool,
     no_announce: bool,
-    no_sync: bool,
+    no_broadcast: bool,
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), Error> {
@@ -391,11 +391,11 @@ pub(crate) fn seed_artifact(
         profile,
     )?;
 
-    // Announce the new location so peers can discover it. Without this the
-    // COB write stays local until something else announces. `--no-sync`
-    // defers the announce; `rad sync -a` publishes it later. Skip when
-    // nothing was written to the COB (`--no-announce`).
-    if !no_announce && !no_sync {
+    // Broadcast the new location so peers can discover it. Without this the
+    // COB write stays local until something else broadcasts. `--no-broadcast`
+    // defers this; `rad sync -a` sends it later. Skip when nothing was
+    // written to the COB (`--no-announce`).
+    if !no_announce && !no_broadcast {
         crate::announce(profile, rid)?;
     }
     Ok(())
@@ -499,10 +499,10 @@ fn add_location(
 fn unseed(
     cmd: Unseed,
     repo_override: Option<RepoId>,
-    no_sync: bool,
+    no_broadcast: bool,
     profile: &Profile,
 ) -> Result<(), Error> {
-    unseed_artifact(cmd.cid, cmd.release, no_sync, repo_override, profile)
+    unseed_artifact(cmd.cid, cmd.release, no_broadcast, repo_override, profile)
 }
 
 /// Shared implementation for `rad-artifact unseed --cid <CID>` and
@@ -515,7 +515,7 @@ fn unseed(
 pub(crate) fn unseed_artifact(
     cid: Cid,
     release_override: Option<String>,
-    no_sync: bool,
+    no_broadcast: bool,
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), Error> {
@@ -581,9 +581,9 @@ pub(crate) fn unseed_artifact(
     }
     if removed > 0 {
         eprintln!("🧹 Swept {removed} iroh location(s) from the COB");
-        // Publish the retractions so peers stop advertising us as a source.
-        // `--no-sync` defers this to a later `rad sync -a`.
-        if !no_sync {
+        // Broadcast the retractions so peers stop advertising us as a source.
+        // `--no-broadcast` defers this to a later `rad sync -a`.
+        if !no_broadcast {
             crate::announce(profile, rid)?;
         }
     }

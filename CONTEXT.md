@@ -2,34 +2,26 @@
 
 Two distinct layers:
 
-- Radicle collaborative object (COB) in the git storage, synced over the radicle
+- Radicle collaborative object ([COB]) in the git storage, synced over the radicle
   protocol:
   - **create** a Release tied to a tag/commit
   - **register** Artifacts against it
   - **announce** download Locations (discovery metadata, never bytes)
 - rad-artifact seeding node:
-  - **Seeding** is a node holding an Artifact's bytes and serving them to peers over iroh.
+  - **Seeding** is a node holding an Artifact's bytes and serving them to peers over [iroh].
 
 The COB says where bytes can be fetched, a seeding node holds and seeds the bytes.
 
 ## Language
 
 **Create** (verb):
-Open a new signed Release in the COB associated with a commit OID and optionally a tag.
+Open a new signed Release in the COB associated with a commit OID and optionally a
+git tag. This git tag is unrelated to the blob-store Tags defined below
 _Avoid_: register (you register into a Release, not the Release itself).
 
 **Register** (verb):
 Record an Artifact against a Release in the COB.
 _Avoid_: add (the CLI command was renamed from `add` to `register`), publish.
-
-**Seed** (verb):
-Hold an Artifact's bytes on a node and serve them to peers over iroh — the
-bytes role only, tracked locally by a Seeded Tag. Distinct from Announcing
-its Location: the `seed` command composes both, but the two acts stay
-separate, and their drift is a Dangling Tag or an
-Orphaned Location
-_Avoid_: serve/serving, host, mirror (use "seed"/"seeding"); don't widen
-"seed" to cover announcing the Location.
 
 **Announce** (verb):
 Add a Location to the COB under your DID, asserting that an artifact's
@@ -37,16 +29,25 @@ bytes are retrievable at that URL. Applies to any URL scheme. For
 `radiroh://` Locations specifically, Announcing is the COB-side complement
 to Seeding: a node that announces without seeding creates an Orphaned
 Location; a node that seeds without announcing creates a Dangling Tag.
-Announce is a COB write like any other; the change reaches peers via Sync,
-not as part of Announcing itself.
-_Avoid_: don't conflate with Sync, every COB write is Synced, but only
-Locations are Announced.
+Announce is a COB write like any other; the change reaches peers via
+Broadcast, not as part of Announcing itself.
+Note: "announce" also appears in the radicle protocol as a reference
+announcement broadcast — what we call **Broadcast** here — to disambiguate
+the COB Location operation from the network push.
+_Avoid_: don't conflate with Broadcast; every COB write is Broadcast, but
+only Locations are Announced.
 
-**Sync** (verb):
-Push a COB change to the radicle network so peers can discover it. Applies
-to every COB write (register, attest, announce, …).
-Triggered automatically after writes; deferred with `--no-sync` and
-published later with `rad sync -a`.
+**Broadcast** (verb):
+Push the local COB state to the radicle network so peers can discover
+changes. Implemented as a reference announcement: the running node announces
+your updated sigrefs to its peers. Applies to every COB write (register,
+attest, announce, …). Triggered automatically after writes; deferred with
+`--no-broadcast` and sent later with `rad sync -a`.
+
+**Seed** (verb):
+Hold an Artifact's bytes on a node and serve them to peers over iroh, tracked locally by a Seeded Tag. Distinct from Announcing its Location: the `seed` command composes both, but the two acts stay separate, and their drift is a Dangling Tag or an Orphaned Location.
+_Avoid_: serve/serving, host, mirror (use "seed"/"seeding"); don't widen
+"seed" to cover announcing the Location.
 
 **Fetch** (verb):
 Pull an Artifact's bytes into the local node's store, resolving Locations
@@ -73,19 +74,23 @@ A COB entry, keyed by a commit, holding a set of Artifacts for a repository.
 A named, content-addressed file or collection of files within a Release, identified by its CID.
 
 **CID**:
-The BLAKE3 content identifier of an Artifact's bytes.
+The [BLAKE3] content identifier of an Artifact's bytes.
+
+**EndpointId**:
+The iroh network identity of a Seeder, derived from the radicle node's Ed25519 secret and encoded as lowercase base32 (the "endpoint id") in a `radiroh://{endpoint_id}`. See [docs/uri]
+Location points peers at it for peer-to-peer fetch.
+_Avoid_: address, host; "provider endpoint" is iroh-blobs' internal phrasing.
 
 **Location**:
-A URL under a contributor's DID asserting where an Artifact can be fetched; a `radiroh://{endpoint}` URL is an iroh endpoint for peer-to-peer fetch. _Announced_ and _removed_ (`location add`/`remove`, `add_location`/`remove_location`).
+A URL under a contributor's DID asserting where an Artifact can be fetched. A
+`radiroh://{endpoint}` URL names a Seeder's iroh Endpoint for peer-to-peer
+fetch; other schemes (e.g. `https://`) point at plain HTTP. _Announced_ and
+_removed_ (`location add`/`remove`, `add_location`/`remove_location`).
 _Avoid_: source, mirror, provider; register (that's for Artifacts).
 
-**Seeded Tag**:
-A `seeded/{rid}/{cid}` marker in the node's blob store asserting the node is actively seeding that Artifact's bytes.
+**Tag**:
+A tag is a `(tag_name, hash)` tuple can give to data in iroh-blobs filesystem store to prevent the data with the hash (which is in the CID) from being garbage collected. A *seeded tag* is for content you are seeding. The same CID can have more than one seeded tag, example if you are a seeder for the same artifact in two different repos or releases. During in-flight retrieval a *temporary tag* protects the data from GC until the retrieval is finished and it gets the seeded tag. Not to be confused with a Release's git tag, which lives in radicle git storage and never appears in the blob store.
 _Avoid_: pin.
-
-**Temp Tag**:
-Transient GC protection of an Artifact's in-flight bytes during a Fetch or Download — the short-lived counterpart to a Seeded Tag. Held while bytes are downloaded (and, for a Download, exported), then either promoted to a Seeded Tag or released; on release the bytes become reclaimable cache. A Fetch interrupted before completion drops its Temp Tag, so GC reclaims the partial.
-_Avoid_: pin; lock.
 
 **Dangling Tag**:
 A Seeded Tag whose CID no Release references — so no Location can anchor to it.
@@ -101,3 +106,9 @@ _Avoid_: stale location (a Stale Endpoint is the distinct case where the URL is 
 - An **Artifact** has zero or more **Locations**, grouped by contributor **DID**
 - A **Seeded Tag** should correspond to an **Artifact** in some **Release**; when it doesn't, it is a **Dangling Tag**
 - **Seeding** and **Announcing** are the two halves of making an artifact available over iroh: a node seeds the bytes and announces the `radiroh://` **Location** so peers can discover it; the two drift apart as **Dangling Tags** (seeded, not announced) and **Orphaned Locations** (announced, no longer seeded)
+
+[COB]: https://radicle.dev/guides/protocol#collaborative-objects
+[canonical reference]: https://radicle.dev/2025/08/12/canonical-references
+[iroh]: https://docs.iroh.computer/protocols/blobs
+[BLAKE3]: https://github.com/BLAKE3-team/BLAKE3
+[uri-scheme]: ./docs/uri-scheme.md
