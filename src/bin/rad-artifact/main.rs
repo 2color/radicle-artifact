@@ -13,7 +13,7 @@ use radicle::{
     identity::Did,
     node::{
         device::Device,
-        sync::{Announcer, AnnouncerConfig, ReplicationFactor},
+        sync::{Announcer, AnnouncerConfig, AnnouncerError, AnnouncerResult, ReplicationFactor},
         AliasStore, Handle, Node,
     },
     prelude::{Profile, ReadRepository, ReadStorage, RepoId, WriteRepository},
@@ -149,10 +149,15 @@ fn release_visible(
 
 pub(crate) fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
     let mut node = Node::new(profile.home.socket_from_env());
-
-    // Check seed sync status for the local node's namespace, matching the
-    // behavior of the deprecated `seeds()` method which passed `[self.nid()]`.
     let local_id = *profile.id();
+
+    let preferred: BTreeSet<_> = profile
+        .config
+        .preferred_seeds
+        .iter()
+        .map(|s| s.id)
+        .collect();
+
     let (synced, unsynced) = node
         .seeds_for(repo_id, [local_id])
         .map_err(error::Announce::Seeds)?
@@ -169,18 +174,31 @@ pub(crate) fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::
             },
         );
 
-    let announcer = Announcer::new(AnnouncerConfig::public(
-        *profile.id(),
-        ReplicationFactor::MustReach(1),
-        BTreeSet::new(),
+    let announcer = match Announcer::new(AnnouncerConfig::public(
+        local_id,
+        ReplicationFactor::default(),
+        preferred,
         synced,
         unsynced,
-    ))
-    .map_err(error::Announce::Announcer)?;
+    )) {
+        Ok(a) => a,
+        // Nothing left to confirm: already synced or no seeds known yet.
+        Err(AnnouncerError::AlreadySynced(_) | AnnouncerError::NoSeeds) => return Ok(()),
+        Err(e) => return Err(error::Announce::Announcer(e)),
+    };
 
-    // Announce refs for the local node's namespace only.
-    node.announce(repo_id, [local_id], TIMEOUT, announcer, |_, _| ())
-        .map_err(error::Announce::Announcement)?;
+    match node
+        .announce(repo_id, [local_id], TIMEOUT, announcer, |_, _| ())
+        .map_err(error::Announce::Announcement)?
+    {
+        AnnouncerResult::Success(_) => {}
+        AnnouncerResult::TimedOut(_) => {
+            eprintln!("Warning: sync timed out; changes may not have reached all seeds yet");
+        }
+        AnnouncerResult::NoNodes(_) => {
+            eprintln!("Warning: no seeds to sync with");
+        }
+    }
 
     Ok(())
 }
