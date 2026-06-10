@@ -637,11 +637,6 @@ fn print_status_pretty(s: &Status) {
         s.seeded.count,
         human_bytes(s.seeded.bytes_logical)
     );
-    println!(
-        "Disk          {} on disk · {} logical",
-        human_bytes(s.disk.store_bytes),
-        human_bytes(s.disk.seeded_bytes_logical)
-    );
     let conn = &s.connections;
     println!(
         "Connections   {} active · {} opened · {} closed · {} direct · {} holepunches",

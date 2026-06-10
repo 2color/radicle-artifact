@@ -405,8 +405,6 @@ pub struct Status {
     pub started_at_unix: i64,
     /// Aggregated tag-level stats.
     pub seeded: SeededStats,
-    /// On-disk store stats.
-    pub disk: DiskStats,
     /// Connection counters derived from iroh's metrics.
     pub connections: ConnectionStats,
     /// Bytes-on-the-wire counters from iroh's socket metrics.
@@ -425,17 +423,6 @@ pub struct SeededStats {
     pub count: usize,
     /// Sum of logical artifact sizes across all tags.
     pub bytes_logical: u64,
-}
-
-/// Disk usage for the store backing this node.
-#[non_exhaustive]
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DiskStats {
-    /// Total bytes on disk under `<home>/artifacts/store/`. Includes db
-    /// and scratch overhead alongside seeded content.
-    pub store_bytes: u64,
-    /// Logical bytes of seeded artifacts. Equal to [`SeededStats::bytes_logical`].
-    pub seeded_bytes_logical: u64,
 }
 
 /// QUIC connection counters from iroh's socket metrics.
@@ -691,7 +678,6 @@ mod tests {
             endpoint_id,
             started_at_unix: 0,
             seeded: SeededStats::default(),
-            disk: DiskStats::default(),
             connections: ConnectionStats::default(),
             traffic: TrafficStats::default(),
             relay: RelayStats::default(),
@@ -703,7 +689,6 @@ mod tests {
                 "endpoint_id": endpoint_id.to_string(),
                 "started_at_unix": 0,
                 "seeded": {"count": 0, "bytes_logical": 0},
-                "disk": {"store_bytes": 0, "seeded_bytes_logical": 0},
                 "connections": {
                     "active": 0,
                     "opened_total": 0,

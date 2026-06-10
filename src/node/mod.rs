@@ -908,10 +908,6 @@ async fn build_status(
             count,
             bytes_logical,
         },
-        disk: crate::protocol::DiskStats {
-            store_bytes: 0,
-            seeded_bytes_logical: bytes_logical,
-        },
         connections,
         traffic,
         relay,
