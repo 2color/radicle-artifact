@@ -94,7 +94,7 @@ pub struct Seed {
     pub reference: bool,
     /// Skip adding the radiroh://<endpoint_id> location to the COB.
     #[clap(long)]
-    pub no_announce: bool,
+    pub no_location: bool,
 }
 
 #[derive(Parser)]
@@ -172,7 +172,7 @@ pub enum Error {
 pub fn run(
     cli: Cli,
     repo_override: Option<RepoId>,
-    no_sync: bool,
+    no_announce: bool,
     profile: &Profile,
 ) -> Result<(), Error> {
     match cli.command {
@@ -180,8 +180,8 @@ pub fn run(
         Subcommand::Stop => stop(profile),
         Subcommand::Status(c) => status(c, profile),
         Subcommand::List(c) => list(c, repo_override, profile),
-        Subcommand::Seed(c) => seed(c, repo_override, no_sync, profile),
-        Subcommand::Unseed(c) => unseed(c, repo_override, no_sync, profile),
+        Subcommand::Seed(c) => seed(c, repo_override, no_announce, profile),
+        Subcommand::Unseed(c) => unseed(c, repo_override, no_announce, profile),
         Subcommand::Logs(c) => logs(c, profile),
     }
 }
@@ -328,15 +328,15 @@ fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Resu
 fn seed(
     cmd: Seed,
     repo_override: Option<RepoId>,
-    no_sync: bool,
+    no_announce: bool,
     profile: &Profile,
 ) -> Result<(), Error> {
     seed_artifact(
         cmd.path,
         cmd.release,
         cmd.reference,
-        cmd.no_announce,
-        no_sync,
+        cmd.no_location,
+        no_announce,
         repo_override,
         profile,
     )
@@ -346,14 +346,14 @@ fn seed(
 /// top-level alias `rad-artifact seed <PATH>`.
 ///
 /// Computes the CID from `<PATH>`, sends the seed request to the
-/// running node, and (unless `no_announce`) writes the
+/// running node, and (unless `no_location`) writes the
 /// `radiroh://{endpoint_id}` location to the target release.
 pub(crate) fn seed_artifact(
     path: std::path::PathBuf,
     release_override: Option<String>,
     reference: bool,
+    no_location: bool,
     no_announce: bool,
-    no_sync: bool,
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), Error> {
@@ -385,23 +385,23 @@ pub(crate) fn seed_artifact(
         cid,
         release_id,
         reference,
-        no_announce,
+        no_location,
         rid,
         &mut releases,
         profile,
     )?;
 
     // Announce the new location so peers can discover it. Without this the
-    // COB write stays local until something else announces. `--no-sync`
-    // defers the announce; `rad sync -a` publishes it later. Skip when
-    // nothing was written to the COB (`--no-announce`).
-    if !no_announce && !no_sync {
+    // COB write stays local until something else announces. `--no-announce`
+    // defers this; `rad sync -a` sends it later. Skip when nothing was
+    // written to the COB (`--no-location`).
+    if !no_location && !no_announce {
         crate::announce(profile, rid)?;
     }
     Ok(())
 }
 
-/// Hand an artifact's bytes to the running node and, unless `no_announce`,
+/// Hand an artifact's bytes to the running node and, unless `no_location`,
 /// sign its `radiroh://` location into `release_id`.
 ///
 /// `cid` must already be the CID of `path`'s contents: the caller computed
@@ -414,7 +414,7 @@ pub(crate) fn seed_to_release(
     cid: Cid,
     release_id: ReleaseId,
     reference: bool,
-    no_announce: bool,
+    no_location: bool,
     rid: RepoId,
     releases: &mut Releases<'_, Repository>,
     profile: &Profile,
@@ -455,12 +455,12 @@ pub(crate) fn seed_to_release(
         human_bytes(receipt.bytes)
     );
 
-    if no_announce {
-        eprintln!("🤫 Keeping it local — no COB location written (--no-announce)");
+    if no_location {
+        eprintln!("🤫 Keeping it local — no COB location written (--no-location)");
         return Ok(());
     }
 
-    // The node has already tagged the artifact. If announcing the COB
+    // The node has already tagged the artifact. If adding the COB
     // location now fails, leave the tag in place and tell the user how
     // to retry
     if let Err(e) = add_location(releases, release_id, cid, &receipt, profile) {
@@ -499,10 +499,10 @@ fn add_location(
 fn unseed(
     cmd: Unseed,
     repo_override: Option<RepoId>,
-    no_sync: bool,
+    no_announce: bool,
     profile: &Profile,
 ) -> Result<(), Error> {
-    unseed_artifact(cmd.cid, cmd.release, no_sync, repo_override, profile)
+    unseed_artifact(cmd.cid, cmd.release, no_announce, repo_override, profile)
 }
 
 /// Shared implementation for `rad-artifact unseed --cid <CID>` and
@@ -515,7 +515,7 @@ fn unseed(
 pub(crate) fn unseed_artifact(
     cid: Cid,
     release_override: Option<String>,
-    no_sync: bool,
+    no_announce: bool,
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), Error> {
@@ -581,9 +581,9 @@ pub(crate) fn unseed_artifact(
     }
     if removed > 0 {
         eprintln!("🧹 Swept {removed} iroh location(s) from the COB");
-        // Publish the retractions so peers stop advertising us as a source.
-        // `--no-sync` defers this to a later `rad sync -a`.
-        if !no_sync {
+        // Announce the retractions so peers stop advertising us as a source.
+        // `--no-announce` defers this to a later `rad sync -a`.
+        if !no_announce {
             crate::announce(profile, rid)?;
         }
     }
