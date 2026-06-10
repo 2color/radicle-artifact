@@ -1,11 +1,16 @@
 # rad-artifact
 
-Two distinct layers. You **create** a Release tied to a tag/commit,
-**register** Artifacts against it, and **add** download Locations, all in a
-Radicle collaborative object (COB) in the git storage, synced over the radicle
-protocol; discovery metadata, never bytes. **Seeding** is a node holding an Artifact's bytes
-and serving them to peers over iroh. The COB says where bytes can be
-fetched; a seeding node is what actually answers.
+Two distinct layers:
+
+- Radicle collaborative object (COB) in the git storage, synced over the radicle
+  protocol:
+  - **create** a Release tied to a tag/commit
+  - **register** Artifacts against it
+  - **announce** download Locations (discovery metadata, never bytes)
+- rad-artifact seeding node:
+  - **Seeding** is a node holding an Artifact's bytes and serving them to peers over iroh.
+
+The COB says where bytes can be fetched, a seeding node holds and seeds the bytes.
 
 ## Language
 
