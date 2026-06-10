@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cid::Cid;
+use radicle::git::Oid;
 use radicle::identity::RepoId;
 use radicle_artifact_core::protocol::{CommandError, FetchLocation};
 
@@ -50,6 +51,8 @@ pub fn default_socket(home: &Path) -> PathBuf {
 pub struct FetchArgs {
     /// Repository the artifact belongs to (for the seeded tag).
     pub rid: RepoId,
+    /// Release the seeded tag is scoped to; required when `seed` is set.
+    pub release: Option<Oid>,
     /// Content identifier to fetch.
     pub cid: Cid,
     /// Resolved providers/URLs to try.
@@ -63,6 +66,8 @@ pub struct FetchArgs {
 pub struct DownloadArgs {
     /// Repository the artifact belongs to (for the seeded tag).
     pub rid: RepoId,
+    /// Release the seeded tag is scoped to; required when `seed` is set.
+    pub release: Option<Oid>,
     /// Content identifier to download.
     pub cid: Cid,
     /// Resolved providers/URLs to try.

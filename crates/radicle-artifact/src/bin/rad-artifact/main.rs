@@ -1301,6 +1301,9 @@ fn run_fetch(
 
     let fetch_args = FetchArgs {
         rid: repo.id,
+        // The release a `--seed` tag is scoped to — the same one the
+        // location is announced to below.
+        release: args.seed.then_some(primary_id.oid()),
         cid,
         locations,
         seed: args.seed,
@@ -1379,6 +1382,9 @@ fn run_download(
 
     let download_args = DownloadArgs {
         rid: repo.id,
+        // The release a `--seed` tag is scoped to — the same one the
+        // location is announced to below.
+        release: args.seed.then_some(primary_id.oid()),
         cid,
         locations,
         dest: output_path.clone(),

@@ -4,6 +4,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
+use radicle::git::Oid;
 use radicle::identity::RepoId;
 use radicle_artifact_client::{tokio::Client, DownloadArgs, FetchArgs};
 use radicle_artifact_core::cid::{compute_blob_cid, ArtifactKind};
@@ -24,6 +25,7 @@ fn streaming_methods_round_trip() {
         std::fs::write(&blob_path, payload).unwrap();
         let cid = compute_blob_cid(&blob_path).unwrap();
         let rid = RepoId::from_str("rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip").unwrap();
+        let release = Oid::from_str("0123456789abcdef0123456789abcdef01234567").unwrap();
 
         let secret = iroh::SecretKey::from_bytes(&[8u8; 32]);
         let home_path = home.path().to_path_buf();
@@ -40,7 +42,14 @@ fn streaming_methods_round_trip() {
 
         let client = Client::new(socket.clone());
         client
-            .seed(rid, cid, &blob_path, ArtifactKind::Blob, ImportMode::Copy)
+            .seed(
+                rid,
+                release,
+                cid,
+                &blob_path,
+                ArtifactKind::Blob,
+                ImportMode::Copy,
+            )
             .await
             .unwrap();
 
@@ -67,6 +76,7 @@ fn streaming_methods_round_trip() {
             .fetch(
                 FetchArgs {
                     rid,
+                    release: None,
                     cid,
                     locations: vec![],
                     seed: false,
@@ -85,6 +95,7 @@ fn streaming_methods_round_trip() {
             .download(
                 DownloadArgs {
                     rid,
+                    release: None,
                     cid,
                     locations: vec![],
                     dest: dl_dest.clone(),
@@ -104,7 +115,7 @@ fn streaming_methods_round_trip() {
         let sync_client = radicle_artifact_client::sync::Client::new(socket);
         let (alive, unseeded) = tokio::task::spawn_blocking(move || {
             let alive = sync_client.is_running();
-            let receipt = sync_client.unseed(rid, cid).unwrap();
+            let receipt = sync_client.unseed(rid, None, cid).unwrap();
             (alive, receipt.was_removed)
         })
         .await

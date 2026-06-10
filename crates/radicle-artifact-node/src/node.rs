@@ -22,6 +22,7 @@ use cid::Cid;
 use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::HashAndFormat;
+use radicle::git::Oid;
 use radicle::identity::RepoId;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -256,12 +257,26 @@ async fn handle_connection(
         }
         Ok(Command::Fetch {
             rid,
+            release,
             cid,
             locations,
             seed,
-        }) => stream_fetch(ctx, &mut reader, &mut write, rid, cid, locations, seed).await,
+        }) => {
+            stream_fetch(
+                ctx,
+                &mut reader,
+                &mut write,
+                rid,
+                release,
+                cid,
+                locations,
+                seed,
+            )
+            .await
+        }
         Ok(Command::Download {
             rid,
+            release,
             cid,
             locations,
             dest,
@@ -272,6 +287,7 @@ async fn handle_connection(
                 &mut reader,
                 &mut write,
                 rid,
+                release,
                 cid,
                 locations,
                 dest,
@@ -341,12 +357,13 @@ async fn dispatch(cmd: Command, ctx: &NodeCtx, shutdown_tx: &broadcast::Sender<(
         }
         Command::Seed {
             rid,
+            release,
             cid,
             path,
             kind,
             mode,
-        } => seed_response(store, rid, cid, &path, kind, mode, ctx.endpoint_id).await,
-        Command::Unseed { rid, cid } => unseed_response(store, rid, cid).await,
+        } => seed_response(store, rid, release, cid, &path, kind, mode, ctx.endpoint_id).await,
+        Command::Unseed { rid, release, cid } => unseed_response(store, rid, release, cid).await,
         Command::IsSeeding { rid, cid } => is_seeding_response(store, &rid, &cid).await,
         Command::ListSeeded { rid } => list_seeded_response(store, rid).await,
         Command::Has { cid } => has_response(store, &cid).await,
@@ -695,11 +712,13 @@ async fn fetch_into_store(
 /// Tag is set and the value drops at the end of the closure; a disconnect
 /// mid-stream drops this future via [`run_stream`], releasing the tag so GC
 /// reclaims any partial.
+#[allow(clippy::too_many_arguments)]
 async fn stream_fetch(
     ctx: &NodeCtx,
     read: &mut (impl AsyncReadExt + Unpin),
     write: &mut (impl AsyncWriteExt + Unpin),
     rid: RepoId,
+    release: Option<Oid>,
     cid: Cid,
     locations: Vec<FetchLocation>,
     seed: bool,
@@ -713,11 +732,9 @@ async fn stream_fetch(
         let store = &ctx.store;
 
         let fetched = fetch_into_store(ctx, &cid, &locations, &mut on_progress).await?;
-        if seed {
-            seeder::tag_seeded(store, &rid, &cid, fetched.hash)
-                .await
-                .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
-        }
+        let seeded = tag_if_seeding(store, &rid, release.as_ref(), &cid, fetched.hash, seed)
+            .await
+            .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
 
         // Logical size now complete in the store; no disk write.
         let bytes = seeder::artifact_size_for(store, &cid, fetched.hash).await;
@@ -726,7 +743,7 @@ async fn stream_fetch(
             cid,
             bytes,
             from_cache: fetched.from_cache,
-            seeded: seed,
+            seeded,
             endpoint_id,
         })
         // `fetched` (and its temp tag) drops here, after any Seeded Tag is set.
@@ -747,6 +764,7 @@ async fn stream_download(
     read: &mut (impl AsyncReadExt + Unpin),
     write: &mut (impl AsyncWriteExt + Unpin),
     rid: RepoId,
+    release: Option<Oid>,
     cid: Cid,
     locations: Vec<FetchLocation>,
     dest: PathBuf,
@@ -765,11 +783,9 @@ async fn stream_download(
         // Export inside the protected window, before the Seeded Tag is set.
         let bytes =
             export_to_dest(store, fetched.hash, fetched.kind, &dest, &mut on_progress).await?;
-        if seed {
-            seeder::tag_seeded(store, &rid, &cid, fetched.hash)
-                .await
-                .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
-        }
+        let seeded = tag_if_seeding(store, &rid, release.as_ref(), &cid, fetched.hash, seed)
+            .await
+            .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
 
         Ok(DownloadReceipt {
             rid,
@@ -777,7 +793,7 @@ async fn stream_download(
             dest,
             bytes,
             from_cache: fetched.from_cache,
-            seeded: seed,
+            seeded,
             endpoint_id,
         })
         // `fetched` (and its temp tag) drops here, after any Seeded Tag is set.
@@ -785,9 +801,36 @@ async fn stream_download(
     .await
 }
 
+/// Tag `(rid, release, cid)` as seeded when a `seed: true` fetch/download
+/// asked for it, returning whether a tag was actually set.
+///
+/// `seed` without a `release` can't form a tag key; the CLI always supplies
+/// one when seeding, so this only fires on a malformed request — warn and
+/// skip rather than fail the transfer the bytes already completed.
+async fn tag_if_seeding(
+    store: &iroh_blobs::api::Store,
+    rid: &RepoId,
+    release: Option<&Oid>,
+    cid: &Cid,
+    hash: iroh_blobs::Hash,
+    seed: bool,
+) -> Result<bool, ShareError> {
+    if !seed {
+        return Ok(false);
+    }
+    let Some(release) = release else {
+        tracing::warn!("seed requested for {cid} without a release; not tagging");
+        return Ok(false);
+    };
+    seeder::tag_seeded(store, rid, release, cid, hash).await?;
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn seed_response(
     store: &FsStore,
     rid: RepoId,
+    release: Oid,
     cid: Cid,
     path: &Path,
     kind: ArtifactKind,
@@ -801,14 +844,15 @@ async fn seed_response(
         );
     }
 
-    let was_already = match seeder::is_seeded(store, &rid, &cid).await {
+    let was_already = match seeder::is_seeded(store, &rid, &release, &cid).await {
         Ok(v) => v,
         Err(e) => return err_from_share::<SeedReceipt>(e),
     };
-    if let Err(e) = seeder::seed_artifact(store, &rid, &cid, path, kind, mode).await {
-        return err_from_share::<SeedReceipt>(e);
-    }
-    let bytes = seeder::artifact_size(store, &rid, &cid).await;
+    let hash = match seeder::seed_artifact(store, &rid, &release, &cid, path, kind, mode).await {
+        Ok(hash) => hash,
+        Err(e) => return err_from_share::<SeedReceipt>(e),
+    };
+    let bytes = seeder::artifact_size_for(store, &cid, hash).await;
     let receipt = SeedReceipt {
         rid,
         cid,
@@ -819,23 +863,35 @@ async fn seed_response(
     ok_json(receipt)
 }
 
-async fn unseed_response(store: &FsStore, rid: RepoId, cid: Cid) -> String {
-    let was_seeded = match seeder::is_seeded(store, &rid, &cid).await {
-        Ok(v) => v,
-        Err(e) => return err_from_share::<UnseedReceipt>(e),
+/// `release: Some(id)` drops that one release's tag; `None` stops seeding the
+/// CID across every release of `rid`. `was_removed` reports whether anything
+/// was actually tagged before the removal.
+async fn unseed_response(store: &FsStore, rid: RepoId, release: Option<Oid>, cid: Cid) -> String {
+    let was_removed = match &release {
+        Some(release) => {
+            let was = match seeder::is_seeded(store, &rid, release, &cid).await {
+                Ok(v) => v,
+                Err(e) => return err_from_share::<UnseedReceipt>(e),
+            };
+            if let Err(e) = seeder::untag_seeded(store, &rid, release, &cid).await {
+                return err_from_share::<UnseedReceipt>(e);
+            }
+            was
+        }
+        None => match seeder::untag_all(store, &rid, &cid).await {
+            Ok(removed) => removed > 0,
+            Err(e) => return err_from_share::<UnseedReceipt>(e),
+        },
     };
-    if let Err(e) = seeder::untag_seeded(store, &rid, &cid).await {
-        return err_from_share::<UnseedReceipt>(e);
-    }
     ok_json(UnseedReceipt {
         rid,
         cid,
-        was_removed: was_seeded,
+        was_removed,
     })
 }
 
 async fn is_seeding_response(store: &FsStore, rid: &RepoId, cid: &Cid) -> String {
-    match seeder::is_seeded(store, rid, cid).await {
+    match seeder::is_seeded_any(store, rid, cid).await {
         Ok(v) => ok_json(v),
         Err(e) => err_from_share::<bool>(e),
     }
@@ -847,8 +903,8 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
         Err(e) => return err_from_share::<Vec<SeededEntry>>(e),
     };
     let mut out = Vec::with_capacity(cids.len());
-    for cid in cids {
-        let bytes = seeder::artifact_size(store, &rid, &cid).await;
+    for (cid, hash) in cids {
+        let bytes = seeder::artifact_size_for(store, &cid, hash).await;
         out.push(SeededEntry { cid, bytes });
     }
     ok_json(out)
@@ -861,10 +917,16 @@ async fn build_status(
     started_at_unix: i64,
 ) -> Result<Status, ShareError> {
     let metrics = endpoint.metrics();
-    let pairs = seeder::all_seeded(store).await?;
-    let count = pairs.len();
+    // A blob shared across releases carries one tag per release; collapse to
+    // distinct blobs so the count and byte total reflect what's on disk.
+    let distinct: std::collections::HashMap<iroh_blobs::Hash, Cid> = seeder::all_seeded(store)
+        .await?
+        .into_iter()
+        .map(|(_rid, _release, cid, hash)| (hash, cid))
+        .collect();
+    let count = distinct.len();
     let mut bytes_logical = 0u64;
-    for (_rid, cid, hash) in &pairs {
+    for (hash, cid) in &distinct {
         bytes_logical =
             bytes_logical.saturating_add(seeder::artifact_size_for(store, cid, *hash).await);
     }
@@ -1013,6 +1075,10 @@ mod tests {
         RepoId::from_str("rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip").unwrap()
     }
 
+    fn release_a() -> Oid {
+        Oid::from_str("0123456789abcdef0123456789abcdef01234567").unwrap()
+    }
+
     /// Spawn a node under `home`, wait for its control socket to appear, and
     /// return the socket path plus the join handle for asserting clean exit.
     async fn start_node(
@@ -1086,6 +1152,7 @@ mod tests {
             let receipt = client
                 .seed(
                     rid,
+                    release_a(),
                     real_cid,
                     &blob_path,
                     ArtifactKind::Blob,
@@ -1101,6 +1168,7 @@ mod tests {
             let receipt2 = client
                 .seed(
                     rid,
+                    release_a(),
                     real_cid,
                     &blob_path,
                     ArtifactKind::Blob,
@@ -1117,6 +1185,7 @@ mod tests {
             let err = client
                 .seed(
                     rid,
+                    release_a(),
                     bad_cid,
                     &bad_path,
                     ArtifactKind::Blob,
@@ -1146,9 +1215,15 @@ mod tests {
             assert_eq!(status.seeded.bytes_logical, payload.len() as u64);
 
             // Unseed once removes the tag; second call is idempotent.
-            let r1 = client.unseed(rid, real_cid).await.unwrap();
+            let r1 = client
+                .unseed(rid, Some(release_a()), real_cid)
+                .await
+                .unwrap();
             assert!(r1.was_removed);
-            let r2 = client.unseed(rid, real_cid).await.unwrap();
+            let r2 = client
+                .unseed(rid, Some(release_a()), real_cid)
+                .await
+                .unwrap();
             assert!(!r2.was_removed);
             assert!(!client.is_seeding(rid, real_cid).await.unwrap());
 
@@ -1344,7 +1419,14 @@ mod tests {
             // Seed the blob so its bytes live in the store.
             let client = Client::new(socket.clone());
             client
-                .seed(rid, cid, &blob_path, ArtifactKind::Blob, ImportMode::Copy)
+                .seed(
+                    rid,
+                    release_a(),
+                    cid,
+                    &blob_path,
+                    ArtifactKind::Blob,
+                    ImportMode::Copy,
+                )
                 .await
                 .unwrap();
 
@@ -1442,7 +1524,14 @@ mod tests {
             // Seed so the bytes live in the store.
             let client = Client::new(socket.clone());
             client
-                .seed(rid, cid, &blob_path, ArtifactKind::Blob, ImportMode::Copy)
+                .seed(
+                    rid,
+                    release_a(),
+                    cid,
+                    &blob_path,
+                    ArtifactKind::Blob,
+                    ImportMode::Copy,
+                )
                 .await
                 .unwrap();
 
@@ -1452,6 +1541,7 @@ mod tests {
                 &socket,
                 &Command::Fetch {
                     rid,
+                    release: None,
                     cid,
                     locations: vec![],
                     seed: false,
@@ -1473,6 +1563,7 @@ mod tests {
                 &socket,
                 &Command::Download {
                     rid,
+                    release: None,
                     cid,
                     locations: vec![],
                     dest: dest.clone(),
@@ -1492,12 +1583,13 @@ mod tests {
             assert_eq!(fs::read(&dest).unwrap(), payload);
 
             // Fetch with seed under a second repo: the bytes are shared by
-            // hash, so a (rid2, cid) tag is set without re-downloading.
+            // hash, so a (rid2, release, cid) tag is set without re-downloading.
             let rid2 = RepoId::from_str("rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5").unwrap();
             let (_p, term) = streaming::<FetchReceipt>(
                 &socket,
                 &Command::Fetch {
                     rid: rid2,
+                    release: Some(release_a()),
                     cid,
                     locations: vec![],
                     seed: true,
@@ -1519,6 +1611,7 @@ mod tests {
                 &socket,
                 &Command::Fetch {
                     rid,
+                    release: None,
                     cid: unknown,
                     locations: vec![],
                     seed: false,
@@ -1656,6 +1749,7 @@ mod tests {
             let err = client
                 .seed(
                     rid_a(),
+                    release_a(),
                     fake_blob_cid(b"whatever"),
                     &missing,
                     ArtifactKind::Blob,

@@ -107,6 +107,20 @@ impl ReleaseId {
     fn as_object_id(&self) -> &ObjectId {
         &self.0
     }
+
+    /// The underlying Git object id (the Release COB's head).
+    ///
+    /// Lets callers outside this crate — notably the seeder's tag layer —
+    /// fold a release into a binary key without depending on `ObjectId`.
+    pub fn oid(&self) -> Oid {
+        *self.0
+    }
+}
+
+impl From<Oid> for ReleaseId {
+    fn from(oid: Oid) -> Self {
+        Self(ObjectId::from(oid))
+    }
 }
 
 impl fmt::Display for ReleaseId {
