@@ -6,7 +6,7 @@ Git was never built to distribute large files and binaries. Existing solutions l
 
 `radicle-artifact` makes artifact distribution:
 
-- **Verifiable and signed** — every artifact is content-addressed via a [CID] (a [BLAKE3] hash) and bound to the exact commit it was built from. Every [action](#actions) (`AddArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
+- **Verifiable and signed** — every artifact is content-addressed via a [CID] (a [BLAKE3] hash) and bound to the exact commit it was built from. Every [action](#actions) (`RegisterArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
 - **Decentralized** — anyone can help seed artifacts, or independently rebuild and verify, increasing resilience, and making seeding participatory.
 - **Transport-agnostic** — artifacts can have multiple _locations_ and be shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer seeding and fetching of artifacts with incremental verification.
 
@@ -30,41 +30,25 @@ cargo install radicle-artifact
 
 > **Note:** radicle-artifact requires radicle installed.
 
-## Relationship to the radicle node
-
-radicle-artifact is a companion to radicle, not a replacement for it. It links the [`radicle`](https://crates.io/crates/radicle) crate as a library (it never shells out to the `rad` CLI) and borrows two things from your local radicle installation:
-
-- **Identity** — your Ed25519 keystore. The same secret signs every COB op and derives the iroh seeder's endpoint id, so an encrypted keystore needs `RAD_PASSPHRASE` (or an interactive prompt). Your DID is your radicle NodeID.
-- **Storage** — your radicle profile home and git storage, where releases are read and written as COBs.
-
-A COB write (`register`, `attest`, `location add`, ...) is a local git operation. By default the CLI then **syncs** the change to the network by calling the running radicle node over its control socket; this is the only step that needs the node up. Pass `--no-sync` to skip it and sync later with `rad sync -a`.
-
-For other peers to actually discover an artifact, the radicle node must keep running after you announce its location: the sync is a one-time broadcast, but other seeder nodes need to fetch the COB refs from your node.
-
-Everything else works without the radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder (`rad-artifact node start`) is a **separate process** from the radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
-
 ## Workflow
 
-1. **Tag** — Create a release tag or commit — ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references).
-2. **Build** — Build your release artifacts.
-3. **Register** — Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. This is signed discovery metadata in the COB, synced over the radicle protocol — not the bytes.
-4. **Seed** — Upload artifacts to an HTTP server and announce the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
-5. **Download** — Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`.
-6. **Attest** — Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
-7. **Redact** — If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
+1. **Tag:** Create a release tag or commit, ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references).
+2. **Build:** Build your release artifacts.
+3. **Register:** Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. This is signed discovery metadata in the COB, synced over the radicle protoc:ol not the bytes.
+4. **Seed:** Upload artifacts to an HTTP server and announce the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
+5. **Download:** Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`.
+6. **Attest:** Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
+7. **Redact:** If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
 
+See [CONTEXT.md](./CONTEXT.md) for a glossary of the project's terminology: Register, Seed, Announce, Sync, and the drift states they produce.
 
 ## How it works
 
-> **Note:** this COB is still in early development and the API is subject to change. Feedback and contributions are very welcome!
-
-A **Release** is a radicle [COB] (Collaborative Object) identified by a Release ID associated with a Git commit and optionally an annotated tag.
+A **Release** is a radicle [COB] (Collaborative Object) identified by a Release ID linked to a Git commit and optionally an annotated tag.
 
 Releases contain one or more **Artifacts**, each identified by a content identifier (CID) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help seed artifacts by announcing location URLs for any artifact, enabling decentralized seeding.
 
-![data-model-diagram](public/diagram.svg)
-
-Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
+Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. Users can also **redact** an artifact with a reason, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
 The artifact author and repository delegates can attach free-form **metadata** entries to an artifact, e.g. a build-environment note or an SBOM URL. Keys are strings; values are arbitrary JSON. The keyspace is shared (last-writer-wins). Per-entry attribution is not stored on the entry itself, but every write is a signed COB op, so the writer's DID is recoverable from the log.
 
@@ -73,6 +57,8 @@ Each user is identified by a DID that is currently mapped 1:1 to the Radicle Nod
 This COB is **build-system agnostic**. It works with any toolchain or build process that produces addressable artifacts. Ideally your builds are deterministic (reproducible), which lets other delegates independently verify artifacts and record attestations. However, deterministic builds are not a requirement; you can use radicle-artifact purely for publishing and discovering release artifacts without attestation.
 
 ## Data model
+
+![data-model-diagram](public/diagram.svg)
 
 ```
 Release
@@ -93,6 +79,19 @@ Release
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.)
 - **Locations** — plain URLs (`https://`, [`radiroh://`](./docs/uri-scheme.md), `ipfs://`, `magnet://`, and [`rasl://`](https://dasl.ing/rasl.html) with the first two supported natively).
 - Each user can contribute multiple URLs per artifact; duplicate URLs are deduplicated automatically
+
+## Relationship to the radicle node
+
+radicle-artifact is a companion to radicle, not a replacement for it. It links the [`radicle`](https://crates.io/crates/radicle) crate as a library (it never shells out to the `rad` CLI) and borrows two things from your local radicle installation:
+
+- **Identity** — your Ed25519 keystore. The same secret signs every COB op and derives the iroh seeder's endpoint id, so an encrypted keystore needs `RAD_PASSPHRASE` (or an interactive prompt). Your DID is your radicle NodeID.
+- **Storage** — your radicle profile home and git storage, where releases are read and written as COBs.
+
+A COB write (`register`, `attest`, `location add`, ...) is a local git operation. By default the CLI then **syncs** the change to the network by calling the running radicle node over its control socket; this is the only step that needs the node up. Pass `--no-sync` to skip it and sync later with `rad sync -a`.
+
+For other peers to actually discover an artifact, the radicle node must keep running after you announce its location: the sync is a one-time broadcast, but other seeder nodes need to fetch the COB refs from your node.
+
+Everything else works without the radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder (`rad-artifact node start`) is a **separate process** from the radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
 
 ## Collaboration and trust model
 
@@ -115,16 +114,16 @@ Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as lo
 
 ## Actions
 
-| Action           | Description                                                                  |
-| ---------------- | ---------------------------------------------------------------------------- |
-| `Create`         | Initialize a release for a git OID (internal, auto-created by `AddArtifact`) |
-| `AddArtifact`    | Add an artifact (CID + name), or update name if author re-sends              |
-| `AddLocation`    | Announce a discovery URL for an artifact                                     |
-| `RemoveLocation` | Retract a previously announced URL                                           |
-| `Attest`         | Record independent verification of a CID                                     |
-| `Redact`         | Flag an artifact as compromised/withdrawn                                    |
-| `SetMetadata`    | Attach a free-form key/value entry (author/delegate only)                    |
-| `RemoveMetadata` | Remove a metadata entry (author/delegate only)                               |
+| Action             | Description                                                                       |
+| ------------------ | --------------------------------------------------------------------------------- |
+| `Create`           | Initialize a release for a git OID (internal, auto-created by `RegisterArtifact`) |
+| `RegisterArtifact` | Add an artifact (CID + name), or update name if author re-sends                   |
+| `AddLocation`      | Announce a discovery URL for an artifact                                          |
+| `RemoveLocation`   | Retract a previously announced URL                                                |
+| `Attest`           | Record independent verification of a CID                                          |
+| `Redact`           | Flag an artifact as compromised/withdrawn                                         |
+| `SetMetadata`      | Attach a free-form key/value entry (author/delegate only)                         |
+| `RemoveMetadata`   | Remove a metadata entry (author/delegate only)                                    |
 
 ## COB type
 
@@ -204,6 +203,8 @@ The node never writes COB ops — every signed location write (`add_location`, `
 Seeded artifacts are announced as `radiroh://<endpoint-id>` URLs, where `<endpoint-id>` is the iroh endpoint id encoded as lowercase base32. See [docs/uri-scheme.md](docs/uri-scheme.md) for the full grammar.
 
 ## How the COB is implemented
+
+> **Note:** this COB is still in early development and the API is subject to change. Feedback and contributions are very welcome!
 
 The COB is implemented using the [`radicle`](https://crates.io/crates/radicle) crate's COB framework.
 
