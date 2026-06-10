@@ -1,1 +1,1 @@
-{"base":"36be9bac8b4269f18466631810d1f3b4e0d98a73","description":"Rewrite history","oid":"040bfd5fe9be54964f7159c685fc9d7a30fc8281","type":"revision"}
+{"target":"delegates","title":"Fix ref announcement and rename --no-sync to --no-broadcast","type":"edit"}
