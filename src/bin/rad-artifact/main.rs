@@ -11,11 +11,7 @@ use radicle::{
     crypto::signature::Signer,
     git::Oid,
     identity::Did,
-    node::{
-        device::Device,
-        sync::{Announcer, AnnouncerConfig, ReplicationFactor},
-        AliasStore, Handle, Node,
-    },
+    node::{device::Device, AliasStore, Handle, Node},
     prelude::{Profile, ReadRepository, ReadStorage, RepoId, WriteRepository},
     profile,
     storage::git::Repository,
@@ -149,39 +145,8 @@ fn release_visible(
 
 pub(crate) fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
     let mut node = Node::new(profile.home.socket_from_env());
-
-    // Check seed sync status for the local node's namespace, matching the
-    // behavior of the deprecated `seeds()` method which passed `[self.nid()]`.
-    let local_id = *profile.id();
-    let (synced, unsynced) = node
-        .seeds_for(repo_id, [local_id])
-        .map_err(error::Announce::Seeds)?
-        .iter()
-        .fold(
-            (BTreeSet::new(), BTreeSet::new()),
-            |(mut synced, mut unsynced), seed| {
-                if seed.is_synced() {
-                    synced.insert(seed.nid);
-                } else {
-                    unsynced.insert(seed.nid);
-                }
-                (synced, unsynced)
-            },
-        );
-
-    let announcer = Announcer::new(AnnouncerConfig::public(
-        *profile.id(),
-        ReplicationFactor::MustReach(1),
-        BTreeSet::new(),
-        synced,
-        unsynced,
-    ))
-    .map_err(error::Announce::Announcer)?;
-
-    // Announce refs for the local node's namespace only.
-    node.announce(repo_id, [local_id], TIMEOUT, announcer, |_, _| ())
-        .map_err(error::Announce::Announcement)?;
-
+    node.announce_refs_for(repo_id, [*profile.id()])
+        .map_err(error::Announce)?;
     Ok(())
 }
 
@@ -2802,11 +2767,7 @@ Examples:
 }
 
 mod error {
-    use radicle::{
-        node::{self, sync::AnnouncerError},
-        rad::CwdError,
-        storage::RepositoryError,
-    };
+    use radicle::{node, rad::CwdError, storage::RepositoryError};
     use thiserror::Error;
 
     use super::*;
@@ -3053,14 +3014,8 @@ mod error {
     pub struct Signer(#[source] pub profile::SignerError);
 
     #[derive(Debug, Error)]
-    pub enum Announce {
-        #[error("failed to get seeds for announcing changes")]
-        Seeds(#[source] node::Error),
-        #[error("failed to announce changes")]
-        Announcer(AnnouncerError),
-        #[error("failed to announce changes")]
-        Announcement(#[source] node::Error),
-    }
+    #[error("failed to announce changes")]
+    pub struct Announce(#[source] pub node::Error);
 
     #[derive(Debug, Error)]
     #[error("failed to open release store for {rid}")]
