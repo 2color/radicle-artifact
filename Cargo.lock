@@ -3860,6 +3860,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "radicle-artifact-client"
+version = "0.14.0"
+dependencies = [
+ "cid",
+ "radicle",
+ "radicle-artifact-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "radicle-artifact-core"
 version = "0.14.0"
 dependencies = [

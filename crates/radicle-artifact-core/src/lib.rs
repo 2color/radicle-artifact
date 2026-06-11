@@ -12,6 +12,11 @@ pub mod cid;
 pub mod keys;
 pub mod protocol;
 
+/// Directory name (under the radicle home) that holds artifact state —
+/// the node's store and the control socket both live here, so the client
+/// and the node must agree on it.
+pub const ARTIFACTS_DIR: &str = "artifacts";
+
 /// Errors from CID computation and endpoint identity handling.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
