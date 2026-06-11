@@ -457,8 +457,8 @@ pub(crate) async fn http_to_store(
         .await
         .map_err(|e| Error::Iroh(format!("import http blob: {e}")))?;
     let hash = tt.hash();
-    if hash != expected_hash {
-        let actual = cid_utils::blake3_hash_to_cid(hash, ArtifactKind::Blob);
+    if blake3::Hash::from(hash) != expected_hash {
+        let actual = cid_utils::blake3_hash_to_cid(hash.into(), ArtifactKind::Blob);
         return Err(Error::CidMismatch {
             expected: expected.to_string(),
             actual: actual.to_string(),
@@ -513,7 +513,7 @@ mod tests {
             let store = FsStore::load(tmp.path()).await.unwrap();
 
             let body = b"hello over http".to_vec();
-            let expected = cid_utils::blake3_hash_to_cid(Hash::new(&body), ArtifactKind::Blob);
+            let expected = cid_utils::blake3_hash_to_cid(blake3::hash(&body), ArtifactKind::Blob);
             let (url, server) = serve_once(body.clone());
 
             let hash = http_to_store(&store, &url, &expected, |_| {})
@@ -535,7 +535,7 @@ mod tests {
 
             // Expect one thing, serve another.
             let expected =
-                cid_utils::blake3_hash_to_cid(Hash::new(b"expected"), ArtifactKind::Blob);
+                cid_utils::blake3_hash_to_cid(blake3::hash(b"expected"), ArtifactKind::Blob);
             let (url, server) = serve_once(b"something else entirely".to_vec());
 
             let err = http_to_store(&store, &url, &expected, |_| {})

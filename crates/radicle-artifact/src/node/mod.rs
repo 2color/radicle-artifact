@@ -370,8 +370,8 @@ fn hash_and_format(cid: &Cid) -> Result<HashAndFormat, (ErrorCode, String)> {
     let hash = cid_utils::cid_to_blake3_hash(cid)
         .map_err(|e| (ErrorCode::InvalidRequest, e.to_string()))?;
     match cid_utils::artifact_kind(cid) {
-        Ok(ArtifactKind::Blob) => Ok(HashAndFormat::raw(hash)),
-        Ok(ArtifactKind::Collection) => Ok(HashAndFormat::hash_seq(hash)),
+        Ok(ArtifactKind::Blob) => Ok(HashAndFormat::raw(hash.into())),
+        Ok(ArtifactKind::Collection) => Ok(HashAndFormat::hash_seq(hash.into())),
         Err(e) => Err((ErrorCode::InvalidRequest, e.to_string())),
     }
 }

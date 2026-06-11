@@ -442,7 +442,7 @@ fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::Register>
     if path.is_dir() {
         share::compute_content_id(path).map_err(error::Register::Io)
     } else {
-        share::compute_blob_cid(path).map_err(error::Register::Protocol)
+        share::compute_blob_cid(path).map_err(|e| error::Register::Protocol(e.into()))
     }
 }
 
@@ -1060,7 +1060,7 @@ fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
         println!("{cid}");
     } else {
         let data = std::fs::read(path).map_err(error::Share::Io)?;
-        let hash = iroh_blobs::Hash::new(&data);
+        let hash = blake3::hash(&data);
         let cid = share::blake3_hash_to_cid(hash, share::ArtifactKind::Blob);
         println!("{cid}");
     }
@@ -1450,7 +1450,8 @@ fn artifact_locations<'a>(
                 if EndpointId::is_endpoint_url(url) {
                     let endpoint_id = match EndpointId::from_url(url) {
                         Ok(Some(id)) => id,
-                        Ok(None) => EndpointId::try_from(did).map_err(error::Share::Protocol)?,
+                        Ok(None) => EndpointId::try_from(did)
+                            .map_err(|e| error::Share::Protocol(e.into()))?,
                         Err(e) => {
                             eprintln!("Warning: skipping location {url}: {e}");
                             continue;

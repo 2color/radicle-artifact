@@ -56,3 +56,15 @@ pub enum Error {
     #[error("CID error: {0}")]
     Cid(String),
 }
+
+impl From<radicle_artifact_core::Error> for Error {
+    fn from(e: radicle_artifact_core::Error) -> Self {
+        use radicle_artifact_core::Error as Core;
+        match e {
+            Core::Io(e) => Error::Io(e),
+            Core::Cid(s) => Error::Cid(s),
+            Core::CidMismatch { expected, actual } => Error::CidMismatch { expected, actual },
+            Core::Key(s) => Error::Iroh(s),
+        }
+    }
+}

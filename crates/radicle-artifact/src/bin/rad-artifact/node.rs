@@ -265,7 +265,8 @@ fn start_foreground(profile: &Profile) -> Result<(), Error> {
         .try_init();
 
     let passphrase = node::lifecycle::resolve_passphrase(&profile.keystore)?;
-    let secret = radicle_secret_to_iroh(&profile.keystore, passphrase).map_err(Error::Protocol)?;
+    let secret = radicle_secret_to_iroh(&profile.keystore, passphrase)
+        .map_err(|e| Error::Protocol(e.into()))?;
     let home = profile.home.path().to_path_buf();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -362,7 +363,7 @@ pub(crate) fn seed_artifact(
     let cid = if path.is_dir() {
         share::compute_content_id(&path).map_err(Error::Io)?
     } else {
-        share::compute_blob_cid(&path).map_err(Error::Protocol)?
+        share::compute_blob_cid(&path).map_err(|e| Error::Protocol(e.into()))?
     };
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
@@ -421,7 +422,7 @@ pub(crate) fn seed_to_release(
 ) -> Result<(), Error> {
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
-    let kind = share::artifact_kind(&cid).map_err(Error::Protocol)?;
+    let kind = share::artifact_kind(&cid).map_err(|e| Error::Protocol(e.into()))?;
     let mode = if reference {
         ImportMode::Reference
     } else {

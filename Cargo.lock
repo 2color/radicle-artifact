@@ -3846,6 +3846,7 @@ dependencies = [
  "multihash",
  "n0-future",
  "radicle",
+ "radicle-artifact-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -3854,6 +3855,26 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "url",
+ "walkdir",
+]
+
+[[package]]
+name = "radicle-artifact-core"
+version = "0.14.0"
+dependencies = [
+ "blake3",
+ "cid",
+ "dunce",
+ "iroh-base",
+ "multibase",
+ "multihash",
+ "postcard",
+ "radicle",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
  "url",
  "walkdir",
 ]

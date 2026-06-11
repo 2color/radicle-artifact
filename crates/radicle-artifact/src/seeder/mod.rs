@@ -13,6 +13,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::share::cid_utils::{self, ArtifactKind};
+use crate::share::iroh::EndpointConfig;
+use crate::share::Error;
 use cid::Cid;
 use iroh::protocol::Router;
 use iroh_blobs::api::blobs::{AddPathOptions, ImportMode as IrohImportMode};
@@ -24,37 +27,15 @@ use iroh_blobs::{BlobFormat, BlobsProtocol, Hash, HashAndFormat};
 use n0_future::StreamExt;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
-use serde::{Deserialize, Serialize};
 
-use crate::share::cid_utils::{self, ArtifactKind};
-use crate::share::iroh::EndpointConfig;
-use crate::share::Error;
+pub use crate::protocol::ImportMode;
 
-/// How imported bytes are placed in the store.
-///
-/// Wraps [`iroh_blobs::api::blobs::ImportMode`] with a serde-friendly,
-/// project-stable representation suitable for the wire protocol.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ImportMode {
-    /// Copy bytes into the store. The source file can be moved or
-    /// deleted afterwards without breaking seeding. Default for the
-    /// node.
-    Copy,
-    /// Reference the source file in place. No bytes are copied. The
-    /// caller is responsible for keeping the source path stable for as
-    /// long as they want to seed the artifact; if the file is moved or
-    /// deleted, fetches will fail.
-    Reference,
-}
-
-impl From<ImportMode> for IrohImportMode {
-    fn from(m: ImportMode) -> Self {
-        match m {
-            ImportMode::Copy => IrohImportMode::Copy,
-            ImportMode::Reference => IrohImportMode::TryReference,
-        }
+/// Map the wire-protocol import mode onto the iroh-blobs one. A free
+/// function because both types are foreign here (orphan rule).
+fn to_iroh_import_mode(m: ImportMode) -> IrohImportMode {
+    match m {
+        ImportMode::Copy => IrohImportMode::Copy,
+        ImportMode::Reference => IrohImportMode::TryReference,
     }
 }
 
@@ -203,7 +184,7 @@ fn add_opts(path: std::path::PathBuf, mode: ImportMode) -> AddPathOptions {
     AddPathOptions {
         path,
         format: BlobFormat::Raw,
-        mode: mode.into(),
+        mode: to_iroh_import_mode(mode),
     }
 }
 
@@ -230,7 +211,7 @@ pub async fn import_blob(
         .map_err(|e| Error::Iroh(format!("import blob: {e}")))?;
     let hash = tt.hash();
 
-    let actual = cid_utils::blake3_hash_to_cid(hash, ArtifactKind::Blob);
+    let actual = cid_utils::blake3_hash_to_cid(hash.into(), ArtifactKind::Blob);
     if actual != *expected {
         return Err(Error::CidMismatch {
             expected: expected.to_string(),
@@ -281,7 +262,7 @@ pub async fn import_collection(
     drop(file_tags);
 
     let hash = root_tag.hash();
-    let actual = cid_utils::blake3_hash_to_cid(hash, ArtifactKind::Collection);
+    let actual = cid_utils::blake3_hash_to_cid(hash.into(), ArtifactKind::Collection);
     if actual != *expected {
         return Err(Error::CidMismatch {
             expected: expected.to_string(),

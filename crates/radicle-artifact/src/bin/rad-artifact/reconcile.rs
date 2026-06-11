@@ -536,7 +536,7 @@ mod tests {
     /// Production-faithful CID: BLAKE3 multihash, raw codec, derived
     /// from a single distinguishing byte.
     fn test_cid(n: u8) -> Cid {
-        blake3_hash_to_cid(iroh_blobs::Hash::new([n]), ArtifactKind::Blob)
+        blake3_hash_to_cid(blake3::hash(&[n]), ArtifactKind::Blob)
     }
 
     /// 40-char hex Oid keyed by `n`.
