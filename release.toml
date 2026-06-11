@@ -10,14 +10,15 @@ publish = true
 verify = true
 push = true
 push-options = []
-consolidate-commits = false
-pre-release-commit-message = "chore(release): {{crate_name}} {{version}}"
-pre-release-replacements = [
-    { file = "CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [{{version}}] - {{date}}", exactly = 1 },
-]
-tag-message = "Release {{crate_name}} version {{version}}"
+# All crates version in lockstep via [workspace.package]; one release
+# commit covers the whole workspace.
+consolidate-commits = true
+pre-release-commit-message = "chore(release): {{version}}"
+tag-message = "Release version {{version}}"
 tag-name = "releases/{{version}}"
-tag = true
+# Tag once per release, from the lean crate only (see its release.toml);
+# identical tags from four crates would collide.
+tag = false
 enable-features = []
 enable-all-features = false
 dependent-version = "upgrade"

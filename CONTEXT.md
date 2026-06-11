@@ -11,6 +11,8 @@ Two distinct layers:
 
 The COB says where bytes can be fetched, a seeding node holds and seeds the bytes.
 
+The two layers ship as separate crates and binaries: `radicle-artifact` is the COB library plus the `rad-artifact` CLI (no iroh/tokio in its tree), and `radicle-artifact-node` is the seeding daemon (`rad-artifact-node`, spawned by `rad-artifact node start`). They share `radicle-artifact-core` (wire protocol, CID helpers, endpoint identity) and talk over the control socket via `radicle-artifact-client` (sync transport for the CLI; async behind its `tokio` feature for embedders). COB-only consumers depend on the lean crates and are never exposed to the iroh dependency tree.
+
 ## Language
 
 **Create** (verb):

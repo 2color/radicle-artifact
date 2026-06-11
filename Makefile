@@ -1,8 +1,9 @@
 .PHONY: changelog release release-macos release-linux upload register-artifacts check-bins clean clean-all check help
 
-# Version and binary name from Cargo.toml using cargo metadata
+# Version from the workspace (all crates version in lockstep)
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .version')
-BINARY_NAME := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .targets[] | select(.kind[] == "bin") | .name')
+# Both shipped binaries: the CLI and the seeding daemon it spawns.
+BINARIES := rad-artifact rad-artifact-node
 TARGET_DIR := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
 RELEASE_DIR := $(TARGET_DIR)/release
 
@@ -20,7 +21,7 @@ BUILD_CMD_aarch64-unknown-linux-musl := AR_aarch64_unknown_linux_musl=/usr/bin/a
 BUILD_CMD_x86_64-unknown-linux-musl  := AR_x86_64_unknown_linux_musl=/usr/bin/ar cargo zigbuild
 
 # Final artifact paths derived once and reused by upload / register-artifacts.
-RELEASE_BINS := $(foreach t,$(ALL_TARGETS),$(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_$(t))
+RELEASE_BINS := $(foreach t,$(ALL_TARGETS),$(foreach b,$(BINARIES),$(RELEASE_DIR)/$(b)_$(VERSION)_$(t)))
 
 # Upload destination (scp to the Radicle seed server)
 UPLOAD_HOST := files.radicle.dev
@@ -63,10 +64,11 @@ release: release-macos release-linux
 build-%:
 	@mkdir -p $(RELEASE_DIR)
 	@echo "Building for $*..."
-	$(BUILD_CMD_$*) --release --package radicle-artifact --target $*
-	@cp $(TARGET_DIR)/$*/release/$(BINARY_NAME) \
-	     $(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_$*
-	@echo "✓ Created: $(RELEASE_DIR)/$(BINARY_NAME)_$(VERSION)_$*"
+	$(BUILD_CMD_$*) --release --package radicle-artifact --package radicle-artifact-node --target $*
+	@for b in $(BINARIES); do \
+	    cp $(TARGET_DIR)/$*/release/$$b $(RELEASE_DIR)/$${b}_$(VERSION)_$*; \
+	    echo "✓ Created: $(RELEASE_DIR)/$${b}_$(VERSION)_$*"; \
+	done
 
 release-macos: $(addprefix build-,$(MACOS_TARGETS))
 
@@ -122,9 +124,10 @@ upload: check-bins
 # Runs AFTER `make upload` so the announced URL is live before it's published.
 # Uses `cargo run` so we don't depend on a pre-installed `rad-artifact` on PATH.
 register-artifacts: check-bins
-	@RAD_ARTIFACT="cargo run --release --quiet --bin $(BINARY_NAME) --"; \
+	@RAD_ARTIFACT="cargo run --release --quiet --package radicle-artifact --bin rad-artifact --"; \
 	for target in $(ALL_TARGETS); do \
-	    name="$(BINARY_NAME)_$(VERSION)_$$target"; \
+	  for b in $(BINARIES); do \
+	    name="$${b}_$(VERSION)_$$target"; \
 	    bin="$(RELEASE_DIR)/$$name"; \
 	    url="$(BASE_URL)/$(VERSION)/$$name"; \
 	    echo "→ $$name"; \
@@ -132,14 +135,15 @@ register-artifacts: check-bins
 	    echo "   cid: $$cid"; \
 	    $$RAD_ARTIFACT --no-input add --cid "$$cid" --revision "releases/$(VERSION)" --name "$$name" || exit 1; \
 	    $$RAD_ARTIFACT --no-input location add --cid "$$cid" --revision "releases/$(VERSION)" "$$url" || exit 1; \
+	  done; \
 	done
 	@echo
-	@echo "✓ Registered $(words $(ALL_TARGETS)) artifacts under releases/$(VERSION)"
+	@echo "✓ Registered $(words $(RELEASE_BINS)) artifacts under releases/$(VERSION)"
 	@echo "  Inspect with: rad-artifact show releases/$(VERSION) --pretty"
 
 # Clean up built binaries (keep target/ directory structure)
 clean:
-	@rm -f $(RELEASE_DIR)/$(BINARY_NAME)_*_*-*
+	@for b in $(BINARIES); do rm -f $(RELEASE_DIR)/$${b}_*_*-*; done
 	@echo "✓ Cleaned release binaries"
 
 # Clean everything including build artifacts

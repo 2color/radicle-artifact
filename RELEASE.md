@@ -2,10 +2,15 @@
 
 A release has two halves:
 
-1. **The crate** — `cargo release` bumps the version in `Cargo.toml`, tags
-   `releases/X.Y.Z`, pushes to the `rad` remote, and publishes to crates.io.
-2. **The binaries** — the `Makefile` builds cross-platform binaries and
-   `scp`s them to `files.radicle.dev` alongside the one-line install script.
+1. **The crates** — `cargo release` bumps the shared workspace version,
+   tags `releases/X.Y.Z` (once, from the `radicle-artifact` crate), pushes
+   to the `rad` remote, and publishes all four crates to crates.io in
+   dependency order (`radicle-artifact-core` → `radicle-artifact-client` →
+   `radicle-artifact`, `radicle-artifact-node`). All crates version in
+   lockstep via `[workspace.package]`.
+2. **The binaries** — the `Makefile` builds cross-platform binaries
+   (`rad-artifact` and `rad-artifact-node`) and `scp`s them to
+   `files.radicle.dev` alongside the one-line install script.
 
 ## Prerequisites
 
@@ -99,12 +104,13 @@ make release-linux        # Linux musl (aarch64 + x86_64)
 built on a macOS host — on Linux or CI, run `make release-linux` and do macOS
 builds separately on a Mac.
 
-The version comes from `Cargo.toml` via `cargo metadata`, so `cargo release`
-in step 2 is the only place it needs to be set. Binaries are written to
-`target/release/` as:
+The version comes from the workspace `Cargo.toml` via `cargo metadata`, so
+`cargo release` in step 2 is the only place it needs to be set. Both
+binaries are written to `target/release/` as:
 
 ```
 rad-artifact_<version>_<target-triple>
+rad-artifact-node_<version>_<target-triple>
 ```
 
 ## Upload
@@ -113,7 +119,7 @@ rad-artifact_<version>_<target-triple>
 make upload
 ```
 
-This `scp`s the four built binaries, `install.sh`, and a one-line `latest`
+This `scp`s the built binaries (two per target triple), `install.sh`, and a one-line `latest`
 pointer to `files.radicle.dev`, producing this layout on the server:
 
 ```
@@ -121,10 +127,8 @@ pointer to `files.radicle.dev`, producing this layout on the server:
 ├── install                         # stable URL for `curl | sh`
 ├── latest                          # one-line text file: newest published version
 └── <version>/
-    ├── rad-artifact_<version>_aarch64-apple-darwin
-    ├── rad-artifact_<version>_x86_64-apple-darwin
-    ├── rad-artifact_<version>_aarch64-unknown-linux-musl
-    └── rad-artifact_<version>_x86_64-unknown-linux-musl
+    ├── rad-artifact_<version>_<target-triple>          # one per triple
+    └── rad-artifact-node_<version>_<target-triple>     # one per triple
 ```
 
 Public URLs:
@@ -148,7 +152,7 @@ but leaves other versions untouched.
 make register-artifacts
 ```
 
-This dogfoods `rad-artifact` on its own release. For each of the four binaries,
+This dogfoods `rad-artifact` on its own release. For each built binary,
 it computes the BLAKE3 CID, adds the artifact to the release COB tagged
 `releases/X.Y.Z`, and announces the `files.radicle.dev` URL as a discovery
 location:
