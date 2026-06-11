@@ -1,0 +1,7 @@
+# The workspace tags and rewrites the changelog once per release; this
+# crate carries both (the rest inherit tag = false and no replacements
+# from the root release.toml). File paths are relative to this crate.
+tag = true
+pre-release-replacements = [
+    { file = "../../CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [{{version}}] - {{date}}", exactly = 1 },
+]

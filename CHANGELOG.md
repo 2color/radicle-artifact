@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ⭐️ Highlights
 
+#### Workspace split: lean COB crate, separate seeding daemon
+
+The single crate is now a four-crate workspace, so COB-only consumers are
+never exposed to the iroh dependency tree:
+
+- `radicle-artifact` — COB types/operations + the `rad-artifact` CLI; no
+  iroh, no tokio. The `share` cargo feature is gone.
+- `radicle-artifact-node` — the new `rad-artifact-node` daemon binary
+  (iroh-blobs store + blob serving). `rad-artifact node start` spawns it
+  from next to the CLI binary or `$PATH`; install both binaries.
+- `radicle-artifact-core` — shared wire protocol, CID helpers, and
+  endpoint identity (over `iroh-base` only).
+- `radicle-artifact-client` — control-socket client; sync by default,
+  async via its `tokio` feature for embedders.
+
 #### A long-running node for reliable seeding
 
 Peer-to-peer seeding used to mean keeping a one-shot `serve` command running in a terminal, but this was mired with many limitation: you couldn't seed more than one artifact at a time. Moreover, seeding worked only as long as the process.

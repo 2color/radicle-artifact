@@ -25,10 +25,22 @@ curl -sSf https://files.radicle.dev/releases/radicle-artifact/install | sh
 Or build from source via crates.io:
 
 ```
-cargo install radicle-artifact
+cargo install radicle-artifact        # the rad-artifact CLI (COB operations)
+cargo install radicle-artifact-node   # the seeding daemon (optional, for iroh seeding)
 ```
 
 > **Note:** radicle-artifact requires radicle installed.
+
+The project is split into focused crates so you only pull what you use:
+
+| Crate                     | What it is                                                                                    |
+| ------------------------- | --------------------------------------------------------------------------------------------- |
+| `radicle-artifact`        | COB types/operations + the `rad-artifact` CLI. No iroh, no tokio.                             |
+| `radicle-artifact-node`   | The `rad-artifact-node` seeding daemon: iroh-blobs store + blob serving.                      |
+| `radicle-artifact-core`   | Shared substrate: wire protocol, CID helpers, endpoint identity. For library consumers.       |
+| `radicle-artifact-client` | Control-socket client. Sync by default; a `tokio` feature adds an async client for embedders. |
+
+Working with the COB only (registering, attesting, adding locations of any URL scheme) never touches the iroh stack; the node crate is needed only to seed or fetch over iroh.
 
 ## Workflow
 
@@ -91,7 +103,7 @@ A COB write (`register`, `attest`, `location add`, ...) is a local git operation
 
 For other peers to actually discover an artifact, the radicle node must keep running after you add its location: the announcement is a one-time push, but other seeder nodes need to fetch the COB refs from your node.
 
-Everything else works without the radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder (`rad-artifact node start`) is a **separate process** from the radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
+Everything else works without the radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder is a **separate process** (the `rad-artifact-node` binary, spawned by `rad-artifact node start`) from the radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
 
 ## Collaboration and trust model
 

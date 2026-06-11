@@ -138,23 +138,28 @@ if [ "$NEED_INSTALL" = true ]; then
       *) fail "Unsupported platform: $(uname)/$(uname -m)" ;;
     esac
 
-    URL="${RAD_ARTIFACT_BASE}/${VERSION}/rad-artifact_${VERSION}_${TARGET}"
     mkdir -p "$INSTALL_DIR"
 
-    info "Downloading rad-artifact ${VERSION} for ${TARGET}..."
-    tmp=$(mktemp -t rad-artifact.XXXXXX)
-    trap 'rm -f "$tmp"' EXIT
-    curl -fSL --retry 3 --retry-delay 2 --progress-bar -o "$tmp" "$URL"
-    chmod +x "$tmp"
+    # Both binaries ship together: the CLI and the seeding daemon it
+    # spawns for `rad-artifact node start`.
+    for BIN in rad-artifact rad-artifact-node; do
+      URL="${RAD_ARTIFACT_BASE}/${VERSION}/${BIN}_${VERSION}_${TARGET}"
 
-    # Verify the binary actually runs before placing it on PATH —
-    # catches wrong-arch downloads and missing shared libs early.
-    if ! "$tmp" --help >/dev/null 2>&1; then
-      fail "rad-artifact downloaded but doesn't run (wrong arch or missing shared libs?)"
-    fi
+      info "Downloading ${BIN} ${VERSION} for ${TARGET}..."
+      tmp=$(mktemp -t "${BIN}.XXXXXX")
+      trap 'rm -f "$tmp"' EXIT
+      curl -fSL --retry 3 --retry-delay 2 --progress-bar -o "$tmp" "$URL"
+      chmod +x "$tmp"
 
-    mv "$tmp" "$INSTALL_DIR/rad-artifact"
-    trap - EXIT
+      # Verify the binary actually runs before placing it on PATH —
+      # catches wrong-arch downloads and missing shared libs early.
+      if ! "$tmp" --help >/dev/null 2>&1; then
+        fail "$BIN downloaded but doesn't run (wrong arch or missing shared libs?)"
+      fi
+
+      mv "$tmp" "$INSTALL_DIR/$BIN"
+      trap - EXIT
+    done
 
     # Verify the shell will actually resolve to the binary we just installed.
     # `hash -r` clears any cached path for rad-artifact from this shell.

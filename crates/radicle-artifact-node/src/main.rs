@@ -14,6 +14,26 @@ use radicle_artifact_core::keys::radicle_secret_to_iroh;
 use radicle_artifact_node::node;
 
 fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            println!("rad-artifact-node {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("--help" | "-h") => {
+            println!(
+                "rad-artifact-node {}\n\nRuns the artifact seeding daemon in the foreground.\n\
+                 Drive it with the rad-artifact CLI (`rad-artifact node ...`).\n\n\
+                 Set RAD_PASSPHRASE for encrypted keystores; RUST_LOG controls logging.",
+                env!("CARGO_PKG_VERSION")
+            );
+            return;
+        }
+        Some(other) => {
+            eprintln!("rad-artifact-node: unexpected argument '{other}' (takes none)");
+            std::process::exit(2);
+        }
+        None => {}
+    }
     if let Err(e) = run() {
         eprintln!("rad-artifact-node: {e}");
         std::process::exit(1);
