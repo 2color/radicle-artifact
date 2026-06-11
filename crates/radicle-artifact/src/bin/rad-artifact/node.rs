@@ -1,6 +1,6 @@
 //! `rad-artifact node` subcommand: control the local seeder daemon.
 //!
-//! Talks to the long-running [`radicle_artifact::node`] over the Unix
+//! Talks to the long-running `rad-artifact-node` daemon over the Unix
 //! control socket. Subcommands that need a repository (list, seed,
 //! unseed) honor the top-level `--repository <RID>` override or fall
 //! back to the cwd's radicle repo. Subcommands that don't (start, stop,
@@ -19,14 +19,14 @@ use radicle::{
     prelude::Profile,
     storage::git::Repository,
 };
-use radicle_artifact::client::{self, Client, ClientError};
-use radicle_artifact::node;
-use radicle_artifact::protocol::{
+use radicle_artifact::lifecycle;
+use radicle_artifact::{Cid, ReleaseId, Releases};
+use radicle_artifact_client::{self as client, sync::Client, ClientError};
+use radicle_artifact_core::cid as share;
+use radicle_artifact_core::keys::EndpointId;
+use radicle_artifact_core::protocol::{
     Command as NodeMsg, ImportMode, RelayStats, SeedReceipt, SeededEntry, Status, UnseedReceipt,
 };
-use radicle_artifact::share;
-use radicle_artifact::share::keys::{radicle_secret_to_iroh, EndpointId};
-use radicle_artifact::{Cid, ReleaseId, Releases};
 use thiserror::Error;
 use url::Url;
 
@@ -132,19 +132,16 @@ pub enum Error {
     StartupTimeout(std::time::Duration, std::path::PathBuf),
     /// Parent-side lifecycle failure (passphrase, log rotation, spawn).
     #[error(transparent)]
-    Lifecycle(#[from] radicle_artifact::node::lifecycle::LifecycleError),
-    /// Foreground node returned an error from its accept loop.
-    #[error(transparent)]
-    Run(#[from] radicle_artifact::node::NodeError),
+    Lifecycle(#[from] radicle_artifact::lifecycle::LifecycleError),
     /// Generic client failure not classified as NotRunning.
     #[error("node call failed: {0}")]
-    Client(#[from] radicle_artifact::client::ClientError),
+    Client(#[from] radicle_artifact_client::ClientError),
     /// Local I/O error.
     #[error("I/O error")]
     Io(#[source] std::io::Error),
     /// Iroh / share / cid error from the seeder layer.
     #[error(transparent)]
-    Protocol(radicle_artifact::share::Error),
+    Protocol(radicle_artifact_core::Error),
     /// CID is not present in any visible release.
     #[error("artifact with CID {0} not found in any release")]
     ArtifactNotFound(Cid),
@@ -208,15 +205,11 @@ fn start(cmd: Start, profile: &Profile) -> Result<(), Error> {
 
     let home = profile.home.path();
     let socket = Client::default_socket(home);
-    let log = node::lifecycle::log_path(home);
+    let log = lifecycle::log_path(home);
 
     // Cheap probe before any spawn work.
     let probe = Client::new(socket.clone());
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(Error::Io)?;
-    if rt.block_on(probe.is_running()) {
+    if probe.is_running() {
         println!("Node is already running");
         return Ok(());
     }
@@ -230,16 +223,16 @@ fn start(cmd: Start, profile: &Profile) -> Result<(), Error> {
         std::fs::remove_file(&socket).map_err(Error::Io)?;
     }
 
-    let passphrase = node::lifecycle::resolve_passphrase(&profile.keystore)?;
-    node::lifecycle::rotate_log(home)?;
-    let mut child = node::lifecycle::spawn_detached(home, passphrase.as_ref(), cmd.force)?;
+    let passphrase = lifecycle::resolve_passphrase(&profile.keystore)?;
+    lifecycle::rotate_log(home)?;
+    let mut child = lifecycle::spawn_detached(home, passphrase.as_ref())?;
 
-    if !node::lifecycle::wait_until_running(&socket, node::lifecycle::STARTUP_TIMEOUT) {
+    if !lifecycle::wait_until_running(&socket, lifecycle::STARTUP_TIMEOUT) {
         // The child never answered: it may be wedged mid-bind. Kill and
         // reap it so we don't leave an orphan holding the socket/keys.
         let _ = child.kill();
         let _ = child.wait();
-        return Err(Error::StartupTimeout(node::lifecycle::STARTUP_TIMEOUT, log));
+        return Err(Error::StartupTimeout(lifecycle::STARTUP_TIMEOUT, log));
     }
 
     eprintln!(
@@ -250,30 +243,25 @@ fn start(cmd: Start, profile: &Profile) -> Result<(), Error> {
     Ok(())
 }
 
+/// Run the daemon attached to this terminal: spawn `rad-artifact-node`
+/// with inherited stdio and wait for it to exit. The daemon logic lives
+/// in that binary; this is just a convenience wrapper so the familiar
+/// `node start --foreground` keeps working.
 fn start_foreground(profile: &Profile) -> Result<(), Error> {
-    // JSON-format tracing to stderr, which the detached parent
-    // redirects into node.log. Iroh uses tracing too, so this
-    // subscriber catches both our events and iroh's, gated by
-    // RUST_LOG. Default keeps iroh quiet and our own crate at info.
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new("warn,iroh=warn,iroh_blobs=warn,radicle_artifact=info")
-    });
-    let _ = tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
+    let exe = lifecycle::find_node_bin()?;
+    let passphrase = lifecycle::resolve_passphrase(&profile.keystore)?;
 
-    let passphrase = node::lifecycle::resolve_passphrase(&profile.keystore)?;
-    let secret = radicle_secret_to_iroh(&profile.keystore, passphrase)
-        .map_err(|e| Error::Protocol(e.into()))?;
-    let home = profile.home.path().to_path_buf();
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(Error::Io)?;
-    rt.block_on(node::run(&home, secret))?;
+    let mut cmd = std::process::Command::new(exe);
+    if let Some(p) = passphrase.as_ref() {
+        cmd.env(lifecycle::PASSPHRASE_ENV, p.as_str());
+    }
+    let status = cmd.status().map_err(Error::Io)?;
+    if !status.success() {
+        return Err(Error::Usage(format!(
+            "{} exited: {status}",
+            lifecycle::NODE_BIN
+        )));
+    }
     Ok(())
 }
 
@@ -281,7 +269,7 @@ fn stop(profile: &Profile) -> Result<(), Error> {
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
     client
-        .call_blocking::<()>(&NodeMsg::Shutdown, client::DEFAULT_TIMEOUT)
+        .call::<()>(&NodeMsg::Shutdown, client::DEFAULT_TIMEOUT)
         .map_err(client_err)?;
     eprintln!("💤 Node stopped — the seeds rest");
     Ok(())
@@ -291,7 +279,7 @@ fn status(cmd: StatusArgs, profile: &Profile) -> Result<(), Error> {
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
     let status = client
-        .call_blocking::<Status>(&NodeMsg::Status, client::DEFAULT_TIMEOUT)
+        .call::<Status>(&NodeMsg::Status, client::DEFAULT_TIMEOUT)
         .map_err(client_err)?;
     if cmd.json {
         let s = serde_json::to_string_pretty(&status).map_err(Error::Json)?;
@@ -308,7 +296,7 @@ fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Resu
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
     let entries = client
-        .call_blocking::<Vec<SeededEntry>>(&NodeMsg::ListSeeded { rid }, client::DEFAULT_TIMEOUT)
+        .call::<Vec<SeededEntry>>(&NodeMsg::ListSeeded { rid }, client::DEFAULT_TIMEOUT)
         .map_err(client_err)?;
     if cmd.json {
         let s = serde_json::to_string_pretty(&entries).map_err(Error::Json)?;
@@ -363,7 +351,7 @@ pub(crate) fn seed_artifact(
     let cid = if path.is_dir() {
         share::compute_content_id(&path).map_err(Error::Io)?
     } else {
-        share::compute_blob_cid(&path).map_err(|e| Error::Protocol(e.into()))?
+        share::compute_blob_cid(&path).map_err(Error::Protocol)?
     };
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
@@ -422,7 +410,7 @@ pub(crate) fn seed_to_release(
 ) -> Result<(), Error> {
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
-    let kind = share::artifact_kind(&cid).map_err(|e| Error::Protocol(e.into()))?;
+    let kind = share::artifact_kind(&cid).map_err(Error::Protocol)?;
     let mode = if reference {
         ImportMode::Reference
     } else {
@@ -437,7 +425,7 @@ pub(crate) fn seed_to_release(
 
     // Generous timeout: collection imports can take a while.
     let receipt = client
-        .call_blocking::<SeedReceipt>(
+        .call::<SeedReceipt>(
             &NodeMsg::Seed {
                 rid,
                 cid,
@@ -527,7 +515,7 @@ pub(crate) fn unseed_artifact(
     let client = Client::new(socket);
 
     let receipt = client
-        .call_blocking::<UnseedReceipt>(&NodeMsg::Unseed { rid, cid }, client::DEFAULT_TIMEOUT)
+        .call::<UnseedReceipt>(&NodeMsg::Unseed { rid, cid }, client::DEFAULT_TIMEOUT)
         .map_err(client_err)?;
 
     if receipt.was_removed {
@@ -594,7 +582,7 @@ pub(crate) fn unseed_artifact(
 fn logs(cmd: Logs, profile: &Profile) -> Result<(), Error> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
-    let path = node::lifecycle::log_path(profile.home.path());
+    let path = lifecycle::log_path(profile.home.path());
     if !path.exists() {
         eprintln!("No log file at {}", path.display());
         return Ok(());

@@ -49,20 +49,7 @@
 
 #![deny(missing_docs)]
 
-#[cfg(feature = "share")]
-pub mod client;
-
-#[cfg(feature = "share")]
-pub mod node;
-
-#[cfg(feature = "share")]
-pub mod protocol;
-
-#[cfg(feature = "share")]
-pub mod seeder;
-
-#[cfg(feature = "share")]
-pub mod share;
+pub mod lifecycle;
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -2565,7 +2552,7 @@ mod test {
         use std::collections::HashMap;
 
         use crate::display;
-        use crate::share::keys::EndpointId;
+        use radicle_artifact_core::keys::EndpointId;
 
         let test::setup::NodeWithRepo {
             node: alice, repo, ..

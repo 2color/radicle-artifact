@@ -10,9 +10,9 @@ use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repositor
 use serde::Serialize;
 use url::Url;
 
-use crate::protocol::FetchProgress;
-use crate::share::keys::EndpointId;
 use crate::ReleaseId;
+use radicle_artifact_core::keys::EndpointId;
+use radicle_artifact_core::protocol::FetchProgress;
 
 /// A visible change to a progress display derived from a [`FetchProgress`]
 /// frame: terminal frontends apply it to a spinner, but the type carries no
@@ -873,7 +873,7 @@ mod tests {
     /// intent, and collapses the no-op Location-failure frame to `None`.
     #[test]
     fn describe_progress_maps_every_frame() {
-        let endpoint_id = EndpointId::from(iroh::SecretKey::from_bytes(&[1u8; 32]).public());
+        let endpoint_id = EndpointId::from(iroh_base::SecretKey::from_bytes(&[1u8; 32]).public());
 
         assert_eq!(
             describe_progress(&FetchProgress::Connecting),

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/radicle-artifact-core",
     "crates/radicle-artifact-client",
+    "crates/radicle-artifact-node",
     "crates/radicle-artifact",
 ]
 

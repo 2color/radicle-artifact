@@ -3833,30 +3833,20 @@ name = "radicle-artifact"
 version = "0.14.0"
 dependencies = [
  "blake3",
- "bytes",
  "cid",
  "clap",
- "dunce",
  "indexmap",
  "indicatif",
  "inquire",
- "iroh",
- "iroh-blobs",
- "multibase",
- "multihash",
- "n0-future",
+ "iroh-base",
  "radicle",
+ "radicle-artifact-client",
  "radicle-artifact-core",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "ureq",
  "url",
- "walkdir",
 ]
 
 [[package]]
@@ -3891,6 +3881,32 @@ dependencies = [
  "thiserror 2.0.18",
  "url",
  "walkdir",
+]
+
+[[package]]
+name = "radicle-artifact-node"
+version = "0.14.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "cid",
+ "dunce",
+ "iroh",
+ "iroh-blobs",
+ "n0-future",
+ "postcard",
+ "radicle",
+ "radicle-artifact-client",
+ "radicle-artifact-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+ "url",
 ]
 
 [[package]]

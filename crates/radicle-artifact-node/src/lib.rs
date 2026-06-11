@@ -1,34 +1,22 @@
-//! Share artifacts from Radicle Artifact COBs.
+//! Seeding node for radicle artifacts.
 //!
-//! Provides utilities for fetching and content-addressing artifacts
-//! using iroh-blobs and BLAKE3 hashing. Long-running seeding is owned
-//! by [`crate::node`] over the control socket; this module only covers
-//! the read side (`fetch`) and the CID helpers used by both sides.
-//!
-//! This module is available when the `share` feature is enabled (default).
-//!
-//! Blob I/O is owned by the node: fetching, exporting, and HTTP downloads
-//! all run against its persistent store and shared endpoint. The async
-//! building blocks live in [`fetch`] (`download_iroh_to_store`,
-//! `http_to_store`, the export helpers); the node's handlers and the CLI
-//! (via the control socket) are the only callers.
+//! Owns all blob I/O: the persistent iroh-blobs store, serving blobs to
+//! peers, and fetching/exporting/HTTP downloads against that store. The
+//! long-running daemon ([`node::run`]) listens on a Unix control socket;
+//! the `rad-artifact` CLI (and other `radicle-artifact-client` users)
+//! drive it over that socket. Long-running seeding is owned by [`node`];
+//! the async fetch building blocks live in [`fetch`].
 
 use std::io;
 
-pub mod cid_utils;
 pub mod fetch;
 pub mod iroh;
-pub mod keys;
+pub mod node;
+pub mod seeder;
 
-// Re-export key types for convenience.
-pub use cid_utils::{
-    artifact_kind, blake3_hash_to_cid, canonical_walk, cid_to_blake3_hash, compute_blob_cid,
-    compute_content_id, verify_cid_file, ArtifactKind, BLAKE3_HASHSEQ_CODEC, HASH_CODE_BLAKE3,
-    RAW_CODEC,
-};
 pub use iroh::EndpointConfig;
 
-/// Errors from sharing operations.
+/// Errors from seeding and fetching operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// HTTP fetch failed.

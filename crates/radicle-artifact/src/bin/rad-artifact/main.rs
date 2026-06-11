@@ -16,11 +16,11 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
-use radicle_artifact::client::{Client, DownloadArgs, FetchArgs};
-use radicle_artifact::protocol::{Command, FetchLocation, FetchProgress, HasResult};
-use radicle_artifact::share;
-use radicle_artifact::share::keys::EndpointId;
 use radicle_artifact::*;
+use radicle_artifact_client::{sync::Client, DownloadArgs, FetchArgs};
+use radicle_artifact_core::cid as share;
+use radicle_artifact_core::keys::EndpointId;
+use radicle_artifact_core::protocol::{Command, FetchLocation, FetchProgress, HasResult};
 use url::Url;
 
 mod node;
@@ -442,7 +442,7 @@ fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::Register>
     if path.is_dir() {
         share::compute_content_id(path).map_err(error::Register::Io)
     } else {
-        share::compute_blob_cid(path).map_err(|e| error::Register::Protocol(e.into()))
+        share::compute_blob_cid(path).map_err(error::Register::Protocol)
     }
 }
 
@@ -1241,7 +1241,7 @@ fn add_seed_location(
 /// Returns `true` if the bytes are already complete in the local store.
 fn log_retrieval_plan(client: &Client, cid: Cid, locations: &[FetchLocation]) -> bool {
     let already_local = client
-        .call_blocking::<HasResult>(&Command::Has { cid }, TIMEOUT)
+        .call::<HasResult>(&Command::Has { cid }, TIMEOUT)
         .map(|h| h.complete)
         .unwrap_or(false);
 
@@ -1308,7 +1308,7 @@ fn run_fetch(
 
     let pb = retrieval_progress_bar();
     let receipt = client
-        .fetch_blocking(fetch_args, FETCH_IDLE_TIMEOUT, |p| apply_progress(p, &pb))
+        .fetch(fetch_args, FETCH_IDLE_TIMEOUT, |p| apply_progress(p, &pb))
         .map_err(node::client_err)?;
     pb.finish_and_clear();
 
@@ -1366,7 +1366,7 @@ fn run_download(
     if args.offline {
         let pb = retrieval_progress_bar();
         client
-            .export_blocking(cid, output_path.clone(), FETCH_IDLE_TIMEOUT, |p| {
+            .export(cid, output_path.clone(), FETCH_IDLE_TIMEOUT, |p| {
                 apply_progress(p, &pb)
             })
             .map_err(node::client_err)?;
@@ -1387,7 +1387,7 @@ fn run_download(
 
     let pb = retrieval_progress_bar();
     let receipt = client
-        .download_blocking(download_args, FETCH_IDLE_TIMEOUT, |p| {
+        .download(download_args, FETCH_IDLE_TIMEOUT, |p| {
             apply_progress(p, &pb)
         })
         .map_err(node::client_err)?;
@@ -1450,8 +1450,7 @@ fn artifact_locations<'a>(
                 if EndpointId::is_endpoint_url(url) {
                     let endpoint_id = match EndpointId::from_url(url) {
                         Ok(Some(id)) => id,
-                        Ok(None) => EndpointId::try_from(did)
-                            .map_err(|e| error::Share::Protocol(e.into()))?,
+                        Ok(None) => EndpointId::try_from(did).map_err(error::Share::Protocol)?,
                         Err(e) => {
                             eprintln!("Warning: skipping location {url}: {e}");
                             continue;
@@ -2826,7 +2825,7 @@ mod error {
         #[error("failed to compute CID from path")]
         Io(#[source] std::io::Error),
         #[error(transparent)]
-        Protocol(radicle_artifact::share::Error),
+        Protocol(radicle_artifact_core::Error),
         #[error("failed to serialize register output to JSON")]
         Json(#[source] serde_json::Error),
     }
@@ -3041,7 +3040,7 @@ mod error {
         #[error("no download locations known for artifact {cid}\n  hint: pass --url <URL> to fetch directly, or ask a seeder to run `rad-artifact seed`")]
         NoLocationsForCid { cid: radicle_artifact::Cid },
         #[error(transparent)]
-        Protocol(radicle_artifact::share::Error),
+        Protocol(radicle_artifact_core::Error),
         #[error("I/O error")]
         Io(#[source] std::io::Error),
     }

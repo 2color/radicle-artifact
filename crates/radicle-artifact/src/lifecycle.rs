@@ -1,12 +1,12 @@
 //! Parent-CLI helpers for `rad-artifact node start`.
 //!
-//! In foreground mode the CLI calls [`crate::node::run`] directly. In
-//! detached mode the parent CLI:
+//! The daemon itself lives in the separate `rad-artifact-node` binary
+//! (from the `radicle-artifact-node` crate). The parent CLI:
 //! 1. resolves the keystore passphrase from `RAD_PASSPHRASE` or prompts
 //! 2. rotates `<home>/artifacts/node.log`
-//! 3. spawns its own binary with `node start --foreground`, redirecting
-//!    stdout/stderr to the log file and exporting `RAD_PASSPHRASE` to
-//!    the child
+//! 3. spawns `rad-artifact-node` (sibling of the current executable, or
+//!    from `$PATH`), redirecting stdout/stderr to the log file and
+//!    exporting `RAD_PASSPHRASE` to the child
 //! 4. polls [`Client::is_running`] for ~6 s to confirm a healthy start
 //!
 //! No PID file. The socket alone is the lifecycle marker; the parent
@@ -19,9 +19,11 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use radicle::crypto::ssh::keystore::{Keystore, Passphrase};
+use radicle_artifact_client::sync::Client;
+use radicle_artifact_core::ARTIFACTS_DIR;
 
-use crate::client::Client;
-use crate::seeder::ARTIFACTS_DIR;
+/// Name of the daemon binary this CLI spawns.
+pub const NODE_BIN: &str = "rad-artifact-node";
 
 /// Environment variable carrying the keystore passphrase from the
 /// parent CLI to the spawned foreground node.
@@ -53,6 +55,30 @@ pub enum LifecycleError {
     /// Child exited or never bound the socket within [`STARTUP_TIMEOUT`].
     #[error("node did not come online within {0:?}; see `{1}` or run `rad-artifact node start --foreground` to diagnose")]
     StartupTimeout(Duration, PathBuf),
+    /// The daemon binary could not be located.
+    #[error("{NODE_BIN} not found next to the CLI or on PATH\n  hint: install it with `cargo install radicle-artifact-node`")]
+    NodeBinNotFound,
+}
+
+/// Locate the daemon binary: prefer a sibling of the current executable
+/// (the common case for packaged installs), then fall back to `$PATH`.
+pub fn find_node_bin() -> Result<PathBuf, LifecycleError> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join(NODE_BIN);
+            if sibling.is_file() {
+                return Ok(sibling);
+            }
+        }
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(NODE_BIN);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(LifecycleError::NodeBinNotFound)
 }
 
 /// Path to the node's log file: `<home>/artifacts/node.log`.
@@ -100,7 +126,7 @@ fn open_log_file(home: &Path) -> Result<fs::File, LifecycleError> {
 /// Resolve the keystore passphrase for starting the daemon.
 ///
 /// Returns `Ok(None)` for non-encrypted keystores (the caller passes
-/// `None` to [`crate::share::keys::radicle_secret_to_iroh`]). For
+/// `None` to [`radicle_artifact_core::keys::radicle_secret_to_iroh`]). For
 /// encrypted keystores: prefer `RAD_PASSPHRASE`, fall back to an
 /// interactive prompt — fails when stderr is not a terminal.
 pub fn resolve_passphrase(keystore: &Keystore) -> Result<Option<Passphrase>, LifecycleError> {
@@ -124,8 +150,8 @@ pub fn resolve_passphrase(keystore: &Keystore) -> Result<Option<Passphrase>, Lif
     Ok(Some(Passphrase::from(entered)))
 }
 
-/// Spawn `rad-artifact node start --foreground` detached from the
-/// current process.
+/// Spawn the `rad-artifact-node` daemon detached from the current
+/// process.
 ///
 /// The child inherits no stdin, gets stdout/stderr redirected to
 /// `<home>/artifacts/node.log`, and receives `RAD_PASSPHRASE` when
@@ -138,19 +164,14 @@ pub fn resolve_passphrase(keystore: &Keystore) -> Result<Option<Passphrase>, Lif
 pub fn spawn_detached(
     home: &Path,
     passphrase: Option<&Passphrase>,
-    force: bool,
 ) -> Result<std::process::Child, LifecycleError> {
-    let exe = std::env::current_exe()?;
+    let exe = find_node_bin()?;
     let log = open_log_file(home)?;
     // The Command takes ownership of the writer; clone the fd so both
     // stdout and stderr land in the same file.
     let stderr_dup = log.try_clone()?;
 
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("node").arg("start").arg("--foreground");
-    if force {
-        cmd.arg("--force");
-    }
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::from(log));
     cmd.stderr(Stdio::from(stderr_dup));
@@ -162,27 +183,16 @@ pub fn spawn_detached(
 
 /// Poll the control socket until the node answers a [`Client::is_running`]
 /// probe, or `deadline` elapses.
-///
-/// Builds a single-threaded tokio runtime; safe to call from a
-/// synchronous parent CLI command.
 pub fn wait_until_running(socket: &Path, deadline: Duration) -> bool {
     let client = Client::new(socket.to_path_buf());
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
-        return false;
-    };
-    rt.block_on(async {
-        let start = Instant::now();
-        while start.elapsed() < deadline {
-            if client.is_running().await {
-                return true;
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        if client.is_running() {
+            return true;
         }
-        false
-    })
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    false
 }
 
 #[cfg(test)]

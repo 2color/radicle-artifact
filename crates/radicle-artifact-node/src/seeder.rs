@@ -13,9 +13,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::share::cid_utils::{self, ArtifactKind};
-use crate::share::iroh::EndpointConfig;
-use crate::share::Error;
+use crate::iroh::EndpointConfig;
+use crate::Error;
 use cid::Cid;
 use iroh::protocol::Router;
 use iroh_blobs::api::blobs::{AddPathOptions, ImportMode as IrohImportMode};
@@ -27,8 +26,9 @@ use iroh_blobs::{BlobFormat, BlobsProtocol, Hash, HashAndFormat};
 use n0_future::StreamExt;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
+use radicle_artifact_core::cid::{self as cid_utils, ArtifactKind};
 
-pub use crate::protocol::ImportMode;
+pub use radicle_artifact_core::protocol::ImportMode;
 
 /// Map the wire-protocol import mode onto the iroh-blobs one. A free
 /// function because both types are foreign here (orphan rule).
@@ -76,7 +76,7 @@ pub struct Seeder {
 /// reachable the moment this returns.
 ///
 /// The caller supplies the iroh `SecretKey` — typically derived from the
-/// user's radicle keystore via [`crate::share::keys::radicle_secret_to_iroh`]. This
+/// user's radicle keystore via [`radicle_artifact_core::keys::radicle_secret_to_iroh`]. This
 /// module never reads the keystore directly.
 pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, Error> {
     let dir = home.join(ARTIFACTS_DIR);

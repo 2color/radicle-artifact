@@ -27,10 +27,10 @@ use radicle::{
     prelude::{Profile, ReadStorage},
     storage::git::Repository,
 };
-use radicle_artifact::client::{self, Client};
-use radicle_artifact::protocol::{Command as NodeMsg, SeededEntry, Status};
-use radicle_artifact::share::keys::EndpointId;
 use radicle_artifact::Cid;
+use radicle_artifact_client::{self as client, sync::Client};
+use radicle_artifact_core::keys::EndpointId;
+use radicle_artifact_core::protocol::{Command as NodeMsg, SeededEntry, Status};
 use thiserror::Error;
 use url::Url;
 
@@ -222,7 +222,7 @@ pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);
     let status = client
-        .call_blocking::<Status>(&NodeMsg::Status, client::DEFAULT_TIMEOUT)
+        .call::<Status>(&NodeMsg::Status, client::DEFAULT_TIMEOUT)
         .map_err(|e| Error::Node(node::client_err(e)))?;
 
     let endpoint_id = status.endpoint_id;
@@ -303,7 +303,7 @@ fn reconcile_one(
     // Ask the node what's tagged for this rid.
     let entries: Vec<SeededEntry> = ctx
         .client
-        .call_blocking(&NodeMsg::ListSeeded { rid }, Duration::from_secs(30))
+        .call(&NodeMsg::ListSeeded { rid }, Duration::from_secs(30))
         .map_err(|e| Error::Node(node::client_err(e)))?;
     let seeded: HashSet<Cid> = entries.into_iter().map(|e| e.cid).collect();
 
@@ -524,9 +524,9 @@ mod tests {
     use std::collections::HashSet;
     use std::str::FromStr;
 
-    use radicle_artifact::share::keys::EndpointId;
-    use radicle_artifact::share::{blake3_hash_to_cid, ArtifactKind};
     use radicle_artifact::{Cid, ReleaseId};
+    use radicle_artifact_core::cid::{blake3_hash_to_cid, ArtifactKind};
+    use radicle_artifact_core::keys::EndpointId;
     use url::Url;
 
     use super::{classify_locations, find_missing, OurLocation, ReleaseArtifact};
@@ -546,7 +546,9 @@ mod tests {
 
     /// Endpoint id derived from a fixed-byte secret.
     fn test_endpoint(byte: u8) -> EndpointId {
-        iroh::SecretKey::from_bytes(&[byte; 32]).public().into()
+        iroh_base::SecretKey::from_bytes(&[byte; 32])
+            .public()
+            .into()
     }
 
     fn bare_iroh_url() -> Url {

@@ -10,8 +10,6 @@
 //! - tags survive shutdown — restart resumes seeding what was previously
 //!   tagged
 
-pub mod lifecycle;
-
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -31,16 +29,17 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{broadcast, mpsc};
 use url::Url;
 
-use crate::client::Client;
-use crate::protocol::{
+use crate::seeder;
+use crate::{fetch, Error as ShareError};
+use radicle_artifact_client::tokio::Client;
+use radicle_artifact_core::cid::{self as cid_utils, ArtifactKind};
+use radicle_artifact_core::keys::EndpointId;
+use radicle_artifact_core::protocol::{
     Command, CommandError, CommandResult, DownloadReceipt, ErrorCode, ExportReceipt, FetchLocation,
     FetchProgress, FetchReceipt, HasResult, ImportMode, SeedReceipt, SeededEntry, Status,
     StreamEvent, UnseedReceipt,
 };
-use crate::seeder::{self, ARTIFACTS_DIR};
-use crate::share::cid_utils::{self, ArtifactKind};
-use crate::share::keys::EndpointId;
-use crate::share::{fetch, Error as ShareError};
+use radicle_artifact_core::ARTIFACTS_DIR;
 
 /// How long shutdown waits for in-flight handlers before forcing the
 /// router down anyway. Sized to outlast a large collection import so a
@@ -875,7 +874,7 @@ async fn build_status(
     let s = &metrics.socket;
     let opened_total = s.num_conns_opened.get();
     let closed_total = s.num_conns_closed.get();
-    let connections = crate::protocol::ConnectionStats {
+    let connections = radicle_artifact_core::protocol::ConnectionStats {
         active: opened_total.saturating_sub(closed_total) as u32,
         opened_total,
         closed_total,
@@ -884,7 +883,7 @@ async fn build_status(
         paths_direct: s.paths_direct.get(),
         paths_relayed: s.paths_relay.get(),
     };
-    let traffic = crate::protocol::TrafficStats {
+    let traffic = radicle_artifact_core::protocol::TrafficStats {
         out_bytes: s
             .send_ipv4
             .get()
@@ -904,14 +903,14 @@ async fn build_status(
     Ok(Status {
         endpoint_id,
         started_at_unix,
-        seeded: crate::protocol::SeededStats {
+        seeded: radicle_artifact_core::protocol::SeededStats {
             count,
             bytes_logical,
         },
         connections,
         traffic,
         relay,
-        warnings: crate::protocol::Warnings { relay_unreachable },
+        warnings: radicle_artifact_core::protocol::Warnings { relay_unreachable },
     })
 }
 
@@ -920,7 +919,7 @@ async fn build_status(
 /// `home_relay_status()` gives connection state per relay; `net_report()`
 /// (best-effort, may be empty before the first probe lands) supplies the
 /// preferred relay, UDP reachability, and per-relay round-trip latency.
-fn relay_stats(endpoint: &iroh::Endpoint) -> crate::protocol::RelayStats {
+fn relay_stats(endpoint: &iroh::Endpoint) -> radicle_artifact_core::protocol::RelayStats {
     use iroh::Watcher;
 
     let report = endpoint.net_report().get();
@@ -942,7 +941,7 @@ fn relay_stats(endpoint: &iroh::Endpoint) -> crate::protocol::RelayStats {
         .into_iter()
         .map(|s| {
             let url = s.url().to_string();
-            crate::protocol::RelayHealth {
+            radicle_artifact_core::protocol::RelayHealth {
                 latency_ms: latency_ms.get(&url).copied(),
                 connected: s.is_connected(),
                 last_error: s.last_error().map(|e| e.to_string()),
@@ -951,7 +950,7 @@ fn relay_stats(endpoint: &iroh::Endpoint) -> crate::protocol::RelayStats {
         })
         .collect();
 
-    crate::protocol::RelayStats {
+    radicle_artifact_core::protocol::RelayStats {
         relays,
         preferred: report
             .as_ref()
@@ -998,7 +997,9 @@ mod tests {
     use cid::multihash::Multihash;
 
     use super::*;
-    use crate::share::cid_utils::{self, ArtifactKind, HASH_CODE_BLAKE3, RAW_CODEC};
+    use radicle_artifact_core::cid::{
+        self as cid_utils, ArtifactKind, HASH_CODE_BLAKE3, RAW_CODEC,
+    };
 
     /// Build a fake but well-formed blob CID over `data` so the
     /// `tag_seeded` path picks `HashAndFormat::raw`.
@@ -1124,7 +1125,7 @@ mod tests {
                 .await
                 .expect_err("CID mismatch must error");
             match err {
-                crate::client::ClientError::Remote(CommandError { code, .. }) => {
+                radicle_artifact_client::ClientError::Remote(CommandError { code, .. }) => {
                     assert_eq!(code, ErrorCode::CidMismatch);
                 }
                 other => panic!("expected CidMismatch error, got {other:?}"),
@@ -1663,7 +1664,7 @@ mod tests {
                 .await
                 .expect_err("missing path must error");
             match err {
-                crate::client::ClientError::Remote(CommandError { code, .. }) => {
+                radicle_artifact_client::ClientError::Remote(CommandError { code, .. }) => {
                     assert_eq!(code, ErrorCode::PathNotFound);
                 }
                 other => panic!("expected PathNotFound, got {other:?}"),

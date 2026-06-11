@@ -5,7 +5,7 @@ use std::fmt;
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher};
 use iroh::endpoint::presets::{self, Preset};
 
-use super::Error;
+use crate::Error;
 
 const ENV_RELAY_URLS: &str = "IROH_RELAY_URLS";
 const ENV_PKARR_URL: &str = "IROH_PKARR_URL";

@@ -39,10 +39,10 @@ use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
 use n0_future::StreamExt;
 use url::Url;
 
-use super::cid_utils::{self, ArtifactKind};
-use super::keys::EndpointId;
-use super::Error;
-use crate::protocol::FetchProgress;
+use crate::Error;
+use radicle_artifact_core::cid::{self as cid_utils, ArtifactKind};
+use radicle_artifact_core::keys::EndpointId;
+use radicle_artifact_core::protocol::FetchProgress;
 
 /// Per-provider connect bound. A provider that cannot establish a usable
 /// connection (HTTP TCP handshake or iroh QUIC+relay path) within this
