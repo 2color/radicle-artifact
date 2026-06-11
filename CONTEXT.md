@@ -2,11 +2,10 @@
 
 Two distinct layers:
 
-- Radicle collaborative object ([COB]) in the git storage, synced over the radicle
-  protocol:
-  - **create** a Release tied to a tag/commit
-  - **register** Artifacts against it
-  - **announce** download Locations (discovery metadata, never bytes)
+- Radicle collaborative object ([COB]) in the git storage, synced over the radicle protocol:
+  - **Create** a Release tied to a tag/commit
+  - **Register** Artifacts against it
+  - **Add** download Locations (discovery metadata, never bytes)
 - rad-artifact seeding node:
   - **Seeding** is a node holding an Artifact's bytes and serving them to peers over [iroh].
 
@@ -15,39 +14,27 @@ The COB says where bytes can be fetched, a seeding node holds and seeds the byte
 ## Language
 
 **Create** (verb):
-Open a new signed Release in the COB associated with a commit OID and optionally a
-git tag. This git tag is unrelated to the blob-store Tags defined below
+Open a new signed Release in the COB associated with a commit OID and optionally a git tag. This git tag is unrelated to the blob-store Tags defined below
 _Avoid_: register (you register into a Release, not the Release itself).
 
 **Register** (verb):
 Record an Artifact against a Release in the COB.
 _Avoid_: add (the CLI command was renamed from `add` to `register`), publish.
 
-**Announce** (verb):
-Add a Location to the COB under your DID, asserting that an artifact's
-bytes are retrievable at that URL. Applies to any URL scheme. For
-`radiroh://` Locations specifically, Announcing is the COB-side complement
-to Seeding: a node that announces without seeding creates an Orphaned
-Location; a node that seeds without announcing creates a Dangling Tag.
-Announce is a COB write like any other; the change reaches peers via
-Broadcast, not as part of Announcing itself.
-Note: "announce" also appears in the radicle protocol as a reference
-announcement broadcast — what we call **Broadcast** here — to disambiguate
-the COB Location operation from the network push.
-_Avoid_: don't conflate with Broadcast; every COB write is Broadcast, but
-only Locations are Announced.
+**Add** (verb):
+Record a Location in the COB under your DID, asserting that an artifact's bytes are retrievable at that URL. Applies to any URL scheme. For `radiroh://` Locations specifically, Adding is the COB-side complement to Seeding: a node that adds a its EndpointID Location without seeding creates an Orphaned Location; a node that seeds without adding a Location creates a Dangling Tag. Adding is a COB write like any other; the change reaches peers via Announce, not as part of Adding itself.
+_Avoid_: announce (that's the network push, below); publish.
 
-**Broadcast** (verb):
-Push the local COB state to the radicle network so peers can discover
-changes. Implemented as a reference announcement: the running node announces
-your updated sigrefs to its peers. Applies to every COB write (register,
-attest, announce, …). Triggered automatically after writes; deferred with
-`--no-broadcast` and sent later with `rad sync -a`.
+**Announce** (verb):
+Announcing is the first step of the radicle *Sync* process below where the local git refs that were updated are broadcast to interested radicle nodes. Note that a successful Sync requires those peers to also fetch and echo the refs back. Applies to every COB write (register, attest, add, …). Triggered automatically by `rad-artifact` after COB operations; deferred with `--no-announce` and sent later with `rad sync -a`.
+_Avoid_: broadcast, sync (earlier names for this flag); don't conflate Announcing with the full Sync it kicks off, nor with Adding a Location.
+
+**Sync** (radicle concept):
+The round-trip by which a peer confirms it has replicated your refs. A node Announces its sigrefs commit; a remote node learns of it, fetches that sigrefs commit and all references (including every COB), and — because its own refs changed — makes a new ref announcement that now includes your sigrefs commit. When the local node sees the remote echo back the same sigrefs commit it announced, that remote is in sync: one replica. `rad sync` waits for enough replicas (3 by default, or all your preferred seeds) before reporting success.
+_Avoid_: announce (that's only the first step); broadcast.
 
 **Seed** (verb):
-Hold an Artifact's bytes on a node and serve them to peers over iroh, tracked locally by a Seeded Tag. Distinct from Announcing its Location: the `seed` command composes both, but the two acts stay separate, and their drift is a Dangling Tag or an Orphaned Location.
-_Avoid_: serve/serving, host, mirror (use "seed"/"seeding"); don't widen
-"seed" to cover announcing the Location.
+Hold an Artifact's bytes on a node and serve them to peers over iroh, tracked locally by a Seeded Tag. Distinct from Adding its Location: the `seed` command composes both, but the two acts stay separate, and their drift is a Dangling Tag or an Orphaned Location. _Avoid_: serve/serving, host, mirror (use "seed"/"seeding"); don't widen "seed" to cover adding the Location.
 
 **Fetch** (verb):
 Pull an Artifact's bytes into the local node's store, resolving Locations
@@ -65,7 +52,7 @@ A node that seeds an Artifact's bytes. Distinct from a Radicle seed node,
 which holds the repo's git/COB; one machine can be both, but "Seeder" here
 always means the iroh bytes role.
 _Avoid_: host, mirror; "provider" is tolerated only as iroh-blobs' internal
-term (its download-side name for a Seeder's endpoint).
+term (its download-side name for a Seeder's endpointId).
 
 **Release**:
 A COB entry, keyed by a commit, holding a set of Artifacts for a repository.
@@ -84,7 +71,7 @@ _Avoid_: address, host; "provider endpoint" is iroh-blobs' internal phrasing.
 **Location**:
 A URL under a contributor's DID asserting where an Artifact can be fetched. A
 `radiroh://{endpoint}` URL names a Seeder's iroh Endpoint for peer-to-peer
-fetch; other schemes (e.g. `https://`) point at plain HTTP. _Announced_ and
+fetch; other schemes (e.g. `https://`) point at plain HTTP. _Added_ and
 _removed_ (`location add`/`remove`, `add_location`/`remove_location`).
 _Avoid_: source, mirror, provider; register (that's for Artifacts).
 
@@ -105,7 +92,7 @@ _Avoid_: stale location (a Stale Endpoint is the distinct case where the URL is 
 - A **Release** contains one or more **Artifacts**
 - An **Artifact** has zero or more **Locations**, grouped by contributor **DID**
 - A **Seeded Tag** should correspond to an **Artifact** in some **Release**; when it doesn't, it is a **Dangling Tag**
-- **Seeding** and **Announcing** are the two halves of making an artifact available over iroh: a node seeds the bytes and announces the `radiroh://` **Location** so peers can discover it; the two drift apart as **Dangling Tags** (seeded, not announced) and **Orphaned Locations** (announced, no longer seeded)
+- **Seeding** and **Adding** a Location are the two halves of making an artifact available over iroh: a node seeds the bytes and adds the `radiroh://` **Location** so peers can discover it; the two drift apart as **Dangling Tags** (seeded, no Location) and **Orphaned Locations** (Location added, no longer seeded)
 
 [COB]: https://radicle.dev/guides/protocol#collaborative-objects
 [canonical reference]: https://radicle.dev/2025/08/12/canonical-references

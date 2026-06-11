@@ -72,11 +72,11 @@ struct Args {
     #[clap(short, long)]
     repository: Option<RepoId>,
 
-    /// Do not broadcast COB changes to the network after modifications.
+    /// Do not announce COB changes to the network after modifications.
     ///
-    /// Use `rad sync -a` to broadcast at a later point.
+    /// Use `rad sync -a` to announce at a later point.
     #[clap(long)]
-    no_broadcast: bool,
+    no_announce: bool,
 
     /// Disable all interactive prompts.
     ///
@@ -168,18 +168,18 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         let Args {
             command,
             repository,
-            no_broadcast,
+            no_announce,
             ..
         } = args;
         return match command {
             Command::Node(cmd) => {
-                node::run(cmd, repository, no_broadcast, &profile).map_err(Into::into)
+                node::run(cmd, repository, no_announce, &profile).map_err(Into::into)
             }
             Command::Seed(cmd) => {
-                run_seed(cmd, repository, no_broadcast, &profile).map_err(Into::into)
+                run_seed(cmd, repository, no_announce, &profile).map_err(Into::into)
             }
             Command::Unseed(cmd) => {
-                run_unseed(cmd, repository, no_broadcast, &profile).map_err(Into::into)
+                run_unseed(cmd, repository, no_announce, &profile).map_err(Into::into)
             }
             Command::Reconcile(cmd) => {
                 reconcile::run(cmd, repository, &profile).map_err(Into::into)
@@ -217,7 +217,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                     &profile,
                 )?;
             }
-            if !args.no_broadcast {
+            if !args.no_announce {
                 announce(&profile, repo.id)?;
             }
         }
@@ -231,21 +231,21 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                     location_remove(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
                 }
             }
-            if !args.no_broadcast {
+            if !args.no_announce {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Attest(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
             attest_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
-            if !args.no_broadcast {
+            if !args.no_announce {
                 announce(&profile, repo.id)?;
             }
         }
         Command::Redact(cmd) => {
             let signer = profile.signer().map_err(error::Signer)?;
             redact_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
-            if !args.no_broadcast {
+            if !args.no_announce {
                 announce(&profile, repo.id)?;
             }
         }
@@ -259,7 +259,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                     metadata_unset(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
                 }
             }
-            if !args.no_broadcast {
+            if !args.no_announce {
                 announce(&profile, repo.id)?;
             }
         }
@@ -421,7 +421,7 @@ where
     let short_id = &id.to_string()[..7];
     eprintln!("Registered artifact '{name}' in release {short_id} (commit {short_oid})");
     // Skip the discovery hints when --seed is set: the caller is about to
-    // seed and announce a location, so they'd be noise.
+    // seed and add a location, so they'd be noise.
     if !seed && std::io::stderr().is_terminal() {
         eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {cid} <url>` to add a download location");
         if let Some(p) = path.as_deref() {
@@ -1068,13 +1068,13 @@ fn run_cid(args: command::ComputeCid) -> Result<(), RadArtifactError> {
 }
 
 /// What `fetch`/`download` need from the COB once the target is resolved:
-/// the CID, the union of locations to try, and the release to announce a
+/// the CID, the union of locations to try, and the release to add a
 /// `--seed` location into.
 struct Retrieval {
     cid: Cid,
     locations: Vec<FetchLocation>,
     /// Release matching the requested revision (else any containing the
-    /// CID) — the one a `--seed` location is announced to.
+    /// CID) — the one a `--seed` location is added to.
     primary_id: ReleaseId,
     /// Artifact name, for the default download output path.
     name: String,
@@ -1213,9 +1213,9 @@ fn apply_progress(p: &FetchProgress, pb: &indicatif::ProgressBar) {
     }
 }
 
-/// On `--seed`, the node now serves the bytes; announce a discoverable
+/// On `--seed`, the node now serves the bytes; add a discoverable
 /// location with a signed COB write (the node writes no COBs itself).
-fn announce_seed_location(
+fn add_seed_location(
     endpoint_id: EndpointId,
     cid: Cid,
     primary_id: ReleaseId,
@@ -1232,8 +1232,8 @@ fn announce_seed_location(
         .map_err(|e| error::Share::Usage(format!("open release {primary_id}: {e}")))?;
     release_mut
         .add_location(cid, url, &signer)
-        .map_err(|e| error::Share::Usage(format!("announce location: {e}")))?;
-    eprintln!("Now seeding {cid}; announced location to release {primary_id}");
+        .map_err(|e| error::Share::Usage(format!("add location: {e}")))?;
+    eprintln!("Now seeding {cid}; added location to release {primary_id}");
     Ok(())
 }
 
@@ -1313,7 +1313,7 @@ fn run_fetch(
     pb.finish_and_clear();
 
     if args.seed && receipt.seeded {
-        announce_seed_location(receipt.endpoint_id, cid, primary_id, repo, profile)?;
+        add_seed_location(receipt.endpoint_id, cid, primary_id, repo, profile)?;
     }
 
     // The cache path already reported "Already in local store"; only the
@@ -1394,7 +1394,7 @@ fn run_download(
     pb.finish_and_clear();
 
     if args.seed && receipt.seeded {
-        announce_seed_location(receipt.endpoint_id, cid, primary_id, repo, profile)?;
+        add_seed_location(receipt.endpoint_id, cid, primary_id, repo, profile)?;
     }
 
     eprintln!("Saved to {}", output_path.display());
@@ -1405,15 +1405,15 @@ fn run_download(
 fn run_seed(
     cmd: command::Seed,
     repo_override: Option<RepoId>,
-    no_broadcast: bool,
+    no_announce: bool,
     profile: &Profile,
 ) -> Result<(), node::Error> {
     node::seed_artifact(
         cmd.path,
         cmd.release,
         cmd.reference,
-        cmd.no_announce,
-        no_broadcast,
+        cmd.no_location,
+        no_announce,
         repo_override,
         profile,
     )
@@ -1423,10 +1423,10 @@ fn run_seed(
 fn run_unseed(
     cmd: command::Unseed,
     repo_override: Option<RepoId>,
-    no_broadcast: bool,
+    no_announce: bool,
     profile: &Profile,
 ) -> Result<(), node::Error> {
-    node::unseed_artifact(cmd.cid, cmd.release, no_broadcast, repo_override, profile)
+    node::unseed_artifact(cmd.cid, cmd.release, no_announce, repo_override, profile)
 }
 
 /// Convert locations from one or more artifacts into fetch locations.
@@ -1697,7 +1697,7 @@ mod prompt {
         artifacts: Vec<(radicle_artifact::Cid, Artifact)>,
     }
 
-    /// Pick a previously-announced location URL from a list.
+    /// Pick a previously-added location URL from a list.
     ///
     /// Used by `location remove` to let the user choose which of their
     /// own added locations to retract. Errors if `no_input` is set,
@@ -2145,7 +2145,7 @@ mod command {
 
     /// Manage discovery locations for artifacts.
     ///
-    /// Locations announce where an artifact can be retrieved from.
+    /// Locations record where an artifact can be retrieved from.
     #[derive(Parser)]
     pub struct Location {
         #[clap(subcommand)]
@@ -2225,7 +2225,7 @@ Examples:
         /// Fetch from this URL directly, skipping the artifact's locations.
         #[clap(long)]
         pub url: Option<url::Url>,
-        /// After fetching, keep seeding the artifact and announce a
+        /// After fetching, keep seeding the artifact and add a
         /// `radiroh://` location under your DID so others can fetch it.
         #[clap(long)]
         pub seed: bool,
@@ -2269,7 +2269,7 @@ Examples:
         /// Download from this URL directly, skipping the artifact's locations.
         #[clap(long)]
         pub url: Option<url::Url>,
-        /// After downloading, keep seeding the artifact and announce a
+        /// After downloading, keep seeding the artifact and add a
         /// `radiroh://` location under your DID so others can fetch it.
         #[clap(long)]
         pub seed: bool,
@@ -2284,7 +2284,7 @@ Examples:
     /// Computes the CID from the given path, asks the running node to
     /// register `seeded/{rid}/{cid}`, and writes a
     /// `radiroh://{endpoint_id}` location to the COB unless
-    /// `--no-announce`. Requires a running node — start one with
+    /// `--no-location`. Requires a running node — start one with
     /// `rad-artifact node start`.
     ///
     /// When multiple releases contain the same CID and `--release` is
@@ -2298,7 +2298,7 @@ Examples:
     $ rad-artifact seed ./my-binary
 
   Skip the COB write (e.g. for local sharing):
-    $ rad-artifact seed ./my-binary --no-announce
+    $ rad-artifact seed ./my-binary --no-location
 
   Reference the file in place instead of copying bytes:
     $ rad-artifact seed ./my-binary --reference")]
@@ -2313,7 +2313,7 @@ Examples:
         pub reference: bool,
         /// Skip adding the radiroh://<endpoint_id> location to the COB.
         #[clap(long)]
-        pub no_announce: bool,
+        pub no_location: bool,
     }
 
     /// Alias for `rad-artifact node unseed`.
@@ -2398,7 +2398,7 @@ Examples:
         #[clap(short, long)]
         pub name: Option<String>,
         /// After registering, also seed the artifact via the local node
-        /// and announce a `radiroh://` location for it — the same as a
+        /// and add a `radiroh://` location for it — the same as a
         /// follow-up `rad-artifact seed <PATH>`, but reusing the CID
         /// already computed here (one hash pass, one command). Requires a
         /// local `<PATH>` and a running node; conflicts with --cid.
@@ -2419,7 +2419,7 @@ Examples:
 
     /// Add a download location URL for an artifact CID
     ///
-    /// Announces where an artifact can be retrieved from.
+    /// Records where an artifact can be retrieved from.
     ///
     /// Without --revision/--release and --cid, interactively lists
     /// releases and artifacts to pick from. The URL is always required.
@@ -2632,11 +2632,11 @@ Examples:
 
     /// Remove a download location for an artifact.
     ///
-    /// Retracts a previously announced location.
+    /// Retracts a previously added location.
     ///
     /// Without arguments, interactively lists releases and artifacts to
     /// pick from, then prompts for the URL to remove from the locations
-    /// you previously announced. Pass --revision/--release and --cid
+    /// you previously added. Pass --revision/--release and --cid
     /// (and optionally `<URL>`) to skip the prompts.
     #[derive(Parser)]
     #[clap(
@@ -3035,7 +3035,7 @@ mod error {
         #[error("artifact with CID {0} not found")]
         ArtifactNotFound(radicle_artifact::Cid),
         // Distinct from `ArtifactNotFound`: the artifact is known, but no
-        // usable source has been announced. Surface the actionable recovery
+        // usable source has been added. Surface the actionable recovery
         // paths so the user doesn't get a generic "no locations" error.
         #[error("no download locations known for artifact {cid}\n  hint: pass --url <URL> to fetch directly, or ask a seeder to run `rad-artifact seed`")]
         NoLocationsForCid { cid: radicle_artifact::Cid },

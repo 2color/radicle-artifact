@@ -124,7 +124,7 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
 
     // bind() only guarantees a local socket; until a relay is picked,
     // peers resolving our endpoint id can't reach us. Wait (best-effort,
-    // bounded) so we don't announce locations the network can't route to
+    // bounded) so we don't add locations the network can't route to
     // yet. online() can block indefinitely when offline, so cap it.
     if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
         .await
