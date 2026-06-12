@@ -101,9 +101,9 @@ radicle-artifact is a companion to radicle, not a replacement for it. It links t
 
 A COB write (`register`, `attest`, `location add`, ...) is a local git operation. By default the CLI then **announces** the change to the network by calling the running radicle node over its control socket; this is the only step that needs the node up. Pass `--no-announce` to skip it and announce later with `rad sync -a`.
 
-For other peers to actually discover an artifact, the radicle node must keep running after you add its location: the announcement is a one-time push, but other seeder nodes need to fetch the COB refs from your node.
+For other peers to actually discover an artifact, they also need to fetch the COB refs from your node, which typically happens after receiving the announcement.
 
-Everything else works without the radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder is a **separate process** (the `rad-artifact-node` binary, spawned by `rad-artifact node start`) from the radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
+Everything else works without the radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder node is a **separate process** (the `rad-artifact-node` binary, spawned by `rad-artifact node start`) from the radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
 
 ## Collaboration and trust model
 

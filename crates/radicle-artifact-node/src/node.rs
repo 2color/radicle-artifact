@@ -5,7 +5,7 @@
 //! `<home>/artifacts/control.sock`, accepts one [`Command`] per
 //! connection and writes back one [`CommandResult`]. Parent-side
 //! helpers (detached spawn, passphrase resolution, log rotation,
-//! liveness polling) live in [`lifecycle`].
+//! liveness polling) live in the `radicle-artifact` crate's `lifecycle` module.
 //!
 //! - tags survive shutdown — restart resumes seeding what was previously
 //!   tagged

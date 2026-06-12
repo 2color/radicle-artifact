@@ -7,7 +7,8 @@ A release has two halves:
    to the `rad` remote, and publishes all four crates to crates.io in
    dependency order (`radicle-artifact-core` → `radicle-artifact-client` →
    `radicle-artifact`, `radicle-artifact-node`). All crates version in
-   lockstep via `[workspace.package]`.
+   lockstep via `[workspace.package]` (independent per-crate releases are
+   not supported) every publish bumps the whole workspace together.
 2. **The binaries** — the `Makefile` builds cross-platform binaries
    (`rad-artifact` and `rad-artifact-node`) and `scp`s them to
    `files.radicle.dev` alongside the one-line install script.

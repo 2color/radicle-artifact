@@ -36,7 +36,7 @@ The round-trip by which a peer confirms it has replicated your refs. A node Anno
 _Avoid_: announce (that's only the first step); broadcast.
 
 **Seed** (verb):
-Hold an Artifact's bytes on a node and serve them to peers over iroh, tracked locally by a Seeded Tag. Distinct from Adding its Location: the `seed` command composes both, but the two acts stay separate, and their drift is a Dangling Tag or an Orphaned Location. _Avoid_: serve/serving, host, mirror (use "seed"/"seeding"); don't widen "seed" to cover adding the Location.
+Hold an Artifact's bytes on a node and serve them to peers with `radicle-artifact-node`, tracked locally by a Seeded Tag. Distinct from Adding its Location: the `seed` command composes both, but the two acts stay separate, and their drift is a Dangling Tag or an Orphaned Location. _Avoid_: serve/serving, host, mirror (use "seed"/"seeding"); don't widen "seed" to cover adding the Location.
 
 **Fetch** (verb):
 Pull an Artifact's bytes into the local node's store, resolving Locations

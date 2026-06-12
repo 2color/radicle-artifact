@@ -159,7 +159,7 @@ impl Client {
     }
 
     /// Fetch an artifact into the node's store (no disk write), streaming
-    /// progress to `on_progress`. See [`Self::call_streaming`] for the
+    /// progress to `on_progress`. See `call_streaming` for the
     /// timeout model. Use [`Self::download`] to also export to disk.
     pub fn fetch(
         &self,
@@ -177,7 +177,7 @@ impl Client {
     }
 
     /// Download an artifact through the node and export it to `args.dest`,
-    /// streaming progress to `on_progress`. See [`Self::call_streaming`]
+    /// streaming progress to `on_progress`. See `call_streaming`
     /// for the timeout model.
     pub fn download(
         &self,
