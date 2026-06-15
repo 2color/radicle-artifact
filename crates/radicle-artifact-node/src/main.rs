@@ -46,7 +46,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // both our events and iroh's, gated by RUST_LOG. Default keeps iroh
     // quiet and our own crates at info.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new("warn,iroh=warn,iroh_blobs=warn,radicle_artifact=info")
+        tracing_subscriber::EnvFilter::new(
+            "warn,iroh=warn,iroh_blobs=warn,radicle_artifact_node=info,radicle_artifact_core=info",
+        )
     });
     let _ = tracing_subscriber::fmt()
         .json()

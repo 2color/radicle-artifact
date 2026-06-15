@@ -8,8 +8,9 @@
 //! `progress`, then one
 //! terminal `okay`/`error` whose tags match [`CommandResult`].
 //!
-//! The schema is additive-friendly on the wire (unknown JSON fields are
-//! an error, new variants are new tags), but the Rust types are plain —
+//! The schema is additive-friendly on the wire (an unknown command tag
+//! is an error; unknown struct fields are ignored, new variants are new
+//! tags), but the Rust types are plain —
 //! the node crate constructs and exhaustively matches them, and all
 //! crates in this workspace version in lockstep.
 
