@@ -100,6 +100,12 @@ The **`IROH_RELAY_URLS`** environment variable (previously `IROH_RELAY_URL`). no
 
 > *Note:* an endpoint may be connected to multiple relay servers, but it will advertise its home relay endpoint as the one best used to hole-punch or relay packets through. For more information, see the [iroh relay docs](https://github.com/n0-computer/iroh/blob/main/iroh/docs/relays.md).
 
+#### Encrypted peer discovery over pkarr
+
+`radiroh://` iroh endpoints are now resolved over HTTPS with the pkarr server instead of unencrypted DNS over UDP. The node previously resolved peers via DNS TXT queries, so endpoint discovery had no encrypted path; only publishing used HTTPS.
+
+The `IROH_DNS_ENDPOINT_ORIGIN` environment variable which would configure the DNS server for used resolution has been removed. This means that reolving the relays and pkarr publishing address relies on the system DNS configuration.
+
 ## [0.14.0] - 2026-05-12
 
 ### ⭐️ Highlights
