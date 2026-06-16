@@ -29,7 +29,7 @@ thiserror = "2.0"
 url = { version = "2.5", features = ["serde"] }
 
 [dev-dependencies]
-iroh-base = { version = "1.0.0-rc.1", default-features = false, features = ["key"] }
+iroh-base = { version = "1.0.0", default-features = false, features = ["key"] }
 tempfile = "3"
 
 [dev-dependencies.radicle]
