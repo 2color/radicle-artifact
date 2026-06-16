@@ -2,18 +2,16 @@
 
 use std::fmt;
 
-use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher};
+use iroh::address_lookup::{PkarrPublisher, PkarrResolver};
 use iroh::endpoint::presets::{self, Preset};
 
 use crate::Error;
 
 const ENV_RELAY_URLS: &str = "IROH_RELAY_URLS";
 const ENV_PKARR_URL: &str = "IROH_PKARR_URL";
-const ENV_DNS_ENDPOINT_ORIGIN: &str = "IROH_DNS_ENDPOINT_ORIGIN";
 
 const DEFAULT_RELAY_URLS: &str = "https://relay.radworks.xyz";
 const DEFAULT_PKARR_URL: &str = "https://dns.radworks.xyz/pkarr";
-const DEFAULT_DNS_ENDPOINT_ORIGIN: &str = "dns.radworks.xyz";
 
 /// Iroh endpoint configuration.
 ///
@@ -23,12 +21,10 @@ const DEFAULT_DNS_ENDPOINT_ORIGIN: &str = "dns.radworks.xyz";
 ///
 /// - `IROH_RELAY_URLS` (default `https://relay.radworks.xyz`) — comma-separated list of relay URLs
 /// - `IROH_PKARR_URL` (default `https://dns.radworks.xyz/pkarr`)
-/// - `IROH_DNS_ENDPOINT_ORIGIN` (default `dns.radworks.xyz`)
 #[derive(Debug, Clone)]
 pub struct EndpointConfig {
     relay_urls: Vec<iroh::RelayUrl>,
     pkarr_url: url::Url,
-    dns_endpoint_origin: String,
 }
 
 impl Default for EndpointConfig {
@@ -39,21 +35,19 @@ impl Default for EndpointConfig {
                 .parse()
                 .expect("valid DEFAULT_RELAY_URLS")],
             pkarr_url: DEFAULT_PKARR_URL.parse().expect("valid DEFAULT_PKARR_URL"),
-            dns_endpoint_origin: DEFAULT_DNS_ENDPOINT_ORIGIN.to_owned(),
         }
     }
 }
 
 impl EndpointConfig {
-    /// Build an [`EndpointConfig`] from the `IROH_RELAY_URLS`, `IROH_PKARR_URL`
-    /// and `IROH_DNS_ENDPOINT_ORIGIN` environment variables, falling back to the
-    /// Radworks defaults when a variable is unset or empty. A malformed URL
-    /// fails here so [`Preset::apply`] can consume the parsed values directly.
+    /// Build an [`EndpointConfig`] from the `IROH_RELAY_URLS` and
+    /// `IROH_PKARR_URL` environment variables, falling back to the Radworks
+    /// defaults when a variable is unset or empty. A malformed URL fails here so
+    /// [`Preset::apply`] can consume the parsed values directly.
     pub fn from_env() -> Result<Self, Error> {
         Ok(Self {
             relay_urls: parse_relay_urls(ENV_RELAY_URLS, DEFAULT_RELAY_URLS)?,
             pkarr_url: parse_env(ENV_PKARR_URL, DEFAULT_PKARR_URL)?,
-            dns_endpoint_origin: env_or(ENV_DNS_ENDPOINT_ORIGIN, DEFAULT_DNS_ENDPOINT_ORIGIN),
         })
     }
 }
@@ -102,11 +96,7 @@ impl fmt::Display for EndpointConfig {
             .map(|u| u.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        write!(
-            f,
-            "relay={} pkarr={} dns={}",
-            relay_urls, self.pkarr_url, self.dns_endpoint_origin
-        )
+        write!(f, "relay={} pkarr={}", relay_urls, self.pkarr_url)
     }
 }
 
@@ -114,8 +104,10 @@ impl Preset for EndpointConfig {
     fn apply(self, builder: iroh::endpoint::Builder) -> iroh::endpoint::Builder {
         presets::Minimal
             .apply(builder)
-            .address_lookup(PkarrPublisher::builder(self.pkarr_url))
-            .address_lookup(DnsAddressLookup::builder(self.dns_endpoint_origin))
+            .address_lookup(PkarrPublisher::builder(self.pkarr_url.clone()))
+            // Resolve peers over HTTPS to the pkarr server, rather than
+            // unencrypted DNS. Relay and pkarr hostnames still use system DNS.
+            .address_lookup(PkarrResolver::builder(self.pkarr_url))
             .relay_mode(iroh::RelayMode::custom(self.relay_urls))
     }
 }
@@ -134,7 +126,6 @@ mod tests {
             vec![DEFAULT_RELAY_URLS.parse::<iroh::RelayUrl>().unwrap()]
         );
         assert_eq!(config.pkarr_url, DEFAULT_PKARR_URL.parse().unwrap());
-        assert_eq!(config.dns_endpoint_origin, DEFAULT_DNS_ENDPOINT_ORIGIN);
     }
 
     #[test]
