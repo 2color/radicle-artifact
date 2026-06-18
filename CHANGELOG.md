@@ -98,6 +98,12 @@ The CLI command `add` is renamed to `register`, drawing a clear line between **R
 
 For library consumers this is a **breaking API change**: `Release::add_artifact` is now `register_artifact`, and the COB action `Action::AddArtifact` is now `Action::RegisterArtifact`. The on-the-wire format is unchanged — the action still serializes as `AddArtifact` via `#[serde(rename)]`, so existing COBs deserialize as before and no migration is needed.
 
+#### Rename the COB type to `dev.radicle.artifact`
+
+The collaborative object type name is renamed from `org.radworks.artifact` to the Radicle-namespaced `dev.radicle.artifact`, dropping the org name in favour of the project namespace.
+
+The type name is embedded in the signed COB manifest and forms part of the `refs/cobs/<typename>/<id>` ref path, so this is a **hard break**: COBs created under the old name are no longer found. No migration is provided, so recreate any local releases under the new type.
+
 #### Multiple iroh relays via `IROH_RELAY_URLS`
 
 The ability of nodes to successfully fetch artifacts in a peer-to-peer fashion depends on iroh's ability to establish either a direct connection or a relayed. This process is facilitated by a "dumb" third *relay* server that helps the node with [QUIC address discovery](https://www.iroh.computer/blog/qad) and relaying (the equivalent of STUN and TURN in WebRTC parlance).

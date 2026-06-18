@@ -82,7 +82,7 @@ pub mod error;
 
 /// Type name of an artifact release.
 pub static TYPENAME: LazyLock<TypeName> =
-    LazyLock::new(|| FromStr::from_str("org.radworks.artifact").expect("type name is valid"));
+    LazyLock::new(|| FromStr::from_str("dev.radicle.artifact").expect("type name is valid"));
 
 /// Maximum byte length for a redaction reason string.
 pub const MAX_REDACT_REASON_LEN: usize = 2048;

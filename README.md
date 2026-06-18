@@ -139,7 +139,7 @@ Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as lo
 
 ## COB type
 
-`org.radworks.artifact`
+`dev.radicle.artifact`
 
 ## CLI usage
 
@@ -222,7 +222,7 @@ The COB is implemented using the [`radicle`](https://crates.io/crates/radicle) c
 
 The `Release` type implements three traits that plug into the framework:
 
-- **`CobWithType`** — registers the type name `org.radworks.artifact`
+- **`CobWithType`** — registers the type name `dev.radicle.artifact`
 - **`Cob`** — defines how to build initial state from the first operation (`from_root`) and how to apply subsequent operations (`op`)
 - **`Evaluate`** — deserializes git entries into typed operations and feeds them through the state machine
 
