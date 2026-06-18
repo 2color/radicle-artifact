@@ -12,6 +12,28 @@ use serde::Serialize;
 
 use crate::Error;
 
+/// Serde glue for `Cid` on the wire and in COB operations.
+///
+/// The `cid` crate's derived [`serde::Serialize`] encodes a CID as a
+/// newtype-struct of raw bytes, which renders as a JSON byte array.
+/// We want the canonical multibase string (`"bafy…"`) instead, so fields
+/// carrying a [`Cid`] are annotated with `#[serde(with = "cid_string")]`.
+pub mod cid_string {
+    use std::str::FromStr;
+
+    use cid::Cid;
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &Cid, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Cid, D::Error> {
+        let s = String::deserialize(d)?;
+        Cid::from_str(&s).map_err(de::Error::custom)
+    }
+}
+
 /// BLAKE3 multihash code.
 ///
 /// Source: <https://github.com/multiformats/multicodec/blob/master/table.csv#L51>
