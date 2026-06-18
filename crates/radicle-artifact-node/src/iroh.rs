@@ -7,20 +7,20 @@ use iroh::endpoint::presets::{self, Preset};
 
 use crate::Error;
 
-const ENV_RELAY_URLS: &str = "IROH_RELAY_URLS";
+const ENV_RELAY_HOSTS: &str = "IROH_RELAY_HOSTS";
 const ENV_PKARR_URL: &str = "IROH_PKARR_URL";
 
-const DEFAULT_RELAY_URLS: &str = "https://relay.radworks.xyz";
-const DEFAULT_PKARR_URL: &str = "https://dns.radworks.xyz/pkarr";
+const DEFAULT_RELAY_HOSTS: &str = "eu-1.relay.iroh.radicle.garden";
+const DEFAULT_PKARR_URL: &str = "https://dns.iroh.radicle.garden/pkarr";
 
 /// Iroh endpoint configuration.
 ///
 /// Controls the relay server and discovery services for the endpoint. Each
-/// value defaults to the Radworks infrastructure but can be overridden via
+/// value defaults to the Radicle infrastructure but can be overridden via
 /// environment variable:
 ///
-/// - `IROH_RELAY_URLS` (default `https://relay.radworks.xyz`) — comma-separated list of relay URLs
-/// - `IROH_PKARR_URL` (default `https://dns.radworks.xyz/pkarr`)
+/// - `IROH_RELAY_HOSTS` (default `eu-1.relay.iroh.radicle.garden`) — comma-separated list of relay hosts, each served over `https://`
+/// - `IROH_PKARR_URL` (default `https://dns.iroh.radicle.garden/pkarr`)
 #[derive(Debug, Clone)]
 pub struct EndpointConfig {
     relay_urls: Vec<iroh::RelayUrl>,
@@ -29,24 +29,26 @@ pub struct EndpointConfig {
 
 impl Default for EndpointConfig {
     fn default() -> Self {
-        // Parsing compile-time constants is infallible.
+        // Parsing the compile-time defaults is infallible.
         Self {
-            relay_urls: vec![DEFAULT_RELAY_URLS
-                .parse()
-                .expect("valid DEFAULT_RELAY_URLS")],
+            relay_urls: parse_relay_hosts(DEFAULT_RELAY_HOSTS, "DEFAULT_RELAY_HOSTS")
+                .expect("valid DEFAULT_RELAY_HOSTS"),
             pkarr_url: DEFAULT_PKARR_URL.parse().expect("valid DEFAULT_PKARR_URL"),
         }
     }
 }
 
 impl EndpointConfig {
-    /// Build an [`EndpointConfig`] from the `IROH_RELAY_URLS` and
-    /// `IROH_PKARR_URL` environment variables, falling back to the Radworks
-    /// defaults when a variable is unset or empty. A malformed URL fails here so
-    /// [`Preset::apply`] can consume the parsed values directly.
+    /// Build an [`EndpointConfig`] from the `IROH_RELAY_HOSTS` and
+    /// `IROH_PKARR_URL` environment variables, falling back to the Radicle
+    /// defaults when a variable is unset or empty. A malformed value fails here
+    /// so [`Preset::apply`] can consume the parsed values directly.
     pub fn from_env() -> Result<Self, Error> {
         Ok(Self {
-            relay_urls: parse_relay_urls(ENV_RELAY_URLS, DEFAULT_RELAY_URLS)?,
+            relay_urls: parse_relay_hosts(
+                &env_or(ENV_RELAY_HOSTS, DEFAULT_RELAY_HOSTS),
+                ENV_RELAY_HOSTS,
+            )?,
             pkarr_url: parse_env(ENV_PKARR_URL, DEFAULT_PKARR_URL)?,
         })
     }
@@ -60,17 +62,19 @@ fn env_or(name: &str, default: &str) -> String {
     }
 }
 
-/// Parse `IROH_RELAY_URLS` as a comma-separated list of relay URLs, falling back
-/// to `default` when the variable is unset or empty.
-fn parse_relay_urls(name: &str, default: &str) -> Result<Vec<iroh::RelayUrl>, Error> {
-    let value = env_or(name, default);
+/// Parse a comma-separated list of relay hosts into URLs, serving each over
+/// `https://`. Listing bare hosts avoids repeating the scheme per entry, which
+/// is error-prone to maintain. Parse errors are attributed to `name` (the
+/// source environment variable or constant).
+fn parse_relay_hosts(value: &str, name: &str) -> Result<Vec<iroh::RelayUrl>, Error> {
     value
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| {
-            s.parse()
-                .map_err(|e| Error::Iroh(format!("invalid {name} value {s:?}: {e}")))
+        .map(|host| {
+            format!("https://{host}")
+                .parse()
+                .map_err(|e| Error::Iroh(format!("invalid {name} value {host:?}: {e}")))
         })
         .collect()
 }
@@ -117,24 +121,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_uses_radworks_endpoints() {
-        // Also exercises the constant parsing in `Default`, guarding against a
-        // typo'd default that would otherwise panic at startup.
+    fn default_uses_radicle_endpoints() {
+        // Also exercises the host-to-URL formatting in `Default`, guarding
+        // against a typo'd default that would otherwise panic at startup.
         let config = EndpointConfig::default();
         assert_eq!(
             config.relay_urls,
-            vec![DEFAULT_RELAY_URLS.parse::<iroh::RelayUrl>().unwrap()]
+            vec!["https://eu-1.relay.iroh.radicle.garden"
+                .parse::<iroh::RelayUrl>()
+                .unwrap()]
         );
         assert_eq!(config.pkarr_url, DEFAULT_PKARR_URL.parse().unwrap());
     }
 
     #[test]
-    fn parse_relay_urls_comma_separated() {
-        let urls = parse_relay_urls(
-            "IROH_UNSET_TEST_VAR",
-            "https://relay1.example.org,https://relay2.example.org",
-        )
-        .unwrap();
+    fn parse_relay_hosts_comma_separated() {
+        let urls =
+            parse_relay_hosts("relay1.example.org,relay2.example.org", "IROH_RELAY_HOSTS").unwrap();
         assert_eq!(urls.len(), 2);
         assert_eq!(
             urls[0],
@@ -151,8 +154,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_relay_urls_rejects_malformed() {
-        let result = parse_relay_urls("IROH_UNSET_TEST_VAR", "not a url");
+    fn parse_relay_hosts_rejects_malformed() {
+        let result = parse_relay_hosts("not a host", "IROH_RELAY_HOSTS");
         assert!(matches!(result, Err(Error::Iroh(_))));
     }
 
