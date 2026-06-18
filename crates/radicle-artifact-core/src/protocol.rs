@@ -25,29 +25,6 @@ use url::Url;
 use crate::cid::ArtifactKind;
 use crate::keys::EndpointId;
 
-/// Serde glue for `Cid` on the wire.
-///
-/// The `cid` crate's derived [`serde::Serialize`] encodes a CID as a
-/// newtype-struct of raw bytes, which renders as a JSON byte array.
-/// We want the canonical multibase string (`"bafy…"`) instead, so wire
-/// fields carrying a [`Cid`] are annotated with
-/// `#[serde(with = "cid_string")]`.
-mod cid_string {
-    use std::str::FromStr;
-
-    use cid::Cid;
-    use serde::{de, Deserialize, Deserializer, Serializer};
-
-    pub(super) fn serialize<S: Serializer>(value: &Cid, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_str(value)
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Cid, D::Error> {
-        let s = String::deserialize(d)?;
-        Cid::from_str(&s).map_err(de::Error::custom)
-    }
-}
-
 /// How imported bytes are placed in the store.
 ///
 /// A serde-friendly, project-stable representation suitable for the wire
@@ -89,7 +66,7 @@ pub enum Command {
         /// releases be unseeded per release without dropping the others.
         release: Oid,
         /// Expected content identifier.
-        #[serde(with = "cid_string")]
+        #[serde(with = "crate::cid::cid_string")]
         cid: Cid,
         /// Path to the artifact on disk (file for blobs, directory for collections).
         path: PathBuf,
@@ -108,7 +85,7 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         release: Option<Oid>,
         /// Content identifier to stop seeding.
-        #[serde(with = "cid_string")]
+        #[serde(with = "crate::cid::cid_string")]
         cid: Cid,
     },
     /// Whether `(rid, cid)` is currently seeded under any release.
@@ -116,7 +93,7 @@ pub enum Command {
         /// Repository the artifact belongs to.
         rid: RepoId,
         /// Content identifier to check.
-        #[serde(with = "cid_string")]
+        #[serde(with = "crate::cid::cid_string")]
         cid: Cid,
     },
     /// List CIDs seeded under `rid`.
@@ -129,7 +106,7 @@ pub enum Command {
     /// repo-agnostic.
     Has {
         /// Content identifier to look up.
-        #[serde(with = "cid_string")]
+        #[serde(with = "crate::cid::cid_string")]
         cid: Cid,
     },
     /// Export already-local bytes to `dest`. No network. Streaming —
@@ -137,7 +114,7 @@ pub enum Command {
     /// [`ErrorCode::NotLocal`] if the content isn't complete in the store.
     Export {
         /// Content identifier to export.
-        #[serde(with = "cid_string")]
+        #[serde(with = "crate::cid::cid_string")]
         cid: Cid,
         /// Destination path (file for blobs, directory for collections).
         dest: PathBuf,
@@ -150,7 +127,7 @@ pub enum Command {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
         /// Expected content identifier; the blob kind is derived from it.
-        #[serde(with = "cid_string")]
+        #[serde(with = "crate::cid::cid_string")]
         cid: Cid,
         /// Resolved providers/URLs to try. Iroh providers are batched into
         /// one multi-provider download; URLs are tried in sequence.
@@ -169,7 +146,7 @@ pub enum Command {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
         /// Expected content identifier; the blob kind is derived from it.
-        #[serde(with = "cid_string")]
+        #[serde(with = "crate::cid::cid_string")]
         cid: Cid,
         /// Resolved providers/URLs to try. Iroh providers are batched into
         /// one multi-provider download; URLs are tried in sequence.
@@ -318,7 +295,7 @@ pub struct SeedReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
     /// Echo of the requested CID.
-    #[serde(with = "cid_string")]
+    #[serde(with = "crate::cid::cid_string")]
     pub cid: Cid,
     /// Endpoint id the node is serving on, as a canonical `radiroh://<base32>` URL.
     pub endpoint_id: EndpointId,
@@ -335,7 +312,7 @@ pub struct UnseedReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
     /// Echo of the requested CID.
-    #[serde(with = "cid_string")]
+    #[serde(with = "crate::cid::cid_string")]
     pub cid: Cid,
     /// `true` if a tag was removed; `false` if no tag existed.
     pub was_removed: bool,
@@ -345,7 +322,7 @@ pub struct UnseedReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeededEntry {
     /// Content identifier currently tagged under the requested rid.
-    #[serde(with = "cid_string")]
+    #[serde(with = "crate::cid::cid_string")]
     pub cid: Cid,
     /// Logical artifact size in bytes. Best-effort — zero if the iroh
     /// status call temporarily fails.
@@ -367,7 +344,7 @@ pub struct HasResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExportReceipt {
     /// Echo of the exported CID.
-    #[serde(with = "cid_string")]
+    #[serde(with = "crate::cid::cid_string")]
     pub cid: Cid,
     /// Where the bytes were written.
     pub dest: PathBuf,
@@ -381,7 +358,7 @@ pub struct FetchReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
     /// Echo of the fetched CID.
-    #[serde(with = "cid_string")]
+    #[serde(with = "crate::cid::cid_string")]
     pub cid: Cid,
     /// Logical size now complete in the store, in bytes.
     pub bytes: u64,
@@ -401,7 +378,7 @@ pub struct DownloadReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
     /// Echo of the downloaded CID.
-    #[serde(with = "cid_string")]
+    #[serde(with = "crate::cid::cid_string")]
     pub cid: Cid,
     /// Where the bytes were written.
     pub dest: PathBuf,
