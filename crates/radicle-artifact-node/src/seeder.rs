@@ -99,6 +99,7 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
         .map_err(|e| Error::Iroh(format!("FsStore load: {e}")))?;
 
     let preset = EndpointConfig::from_env()?;
+    tracing::info!("iroh endpoint config: {preset}");
     let endpoint = iroh::Endpoint::builder(preset)
         .secret_key(secret)
         .bind()

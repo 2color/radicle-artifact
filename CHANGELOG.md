@@ -104,11 +104,11 @@ The collaborative object type name is renamed from `org.radworks.artifact` to th
 
 The type name is embedded in the signed COB manifest and forms part of the `refs/cobs/<typename>/<id>` ref path, so this is a **hard break**: COBs created under the old name are no longer found. No migration is provided, so recreate any local releases under the new type.
 
-#### Multiple iroh relays via `IROH_RELAY_URLS`
+#### Multiple iroh relays via `IROH_RELAY_HOSTS`
 
 The ability of nodes to successfully fetch artifacts in a peer-to-peer fashion depends on iroh's ability to establish either a direct connection or a relayed. This process is facilitated by a "dumb" third *relay* server that helps the node with [QUIC address discovery](https://www.iroh.computer/blog/qad) and relaying (the equivalent of STUN and TURN in WebRTC parlance).
 
-The **`IROH_RELAY_URLS`** environment variable (previously `IROH_RELAY_URL`). now accepts a comma-separated list of relay URLs, so deployments can point the node at more than one relay for redundancy. The default remains the [Radworks relay](https://radicle.network/nodes/daniel.radicle.garden/rad:zafWK8vuwJBJtynJUtgFjSFWZyGp).
+The **`IROH_RELAY_HOSTS`** environment variable (previously `IROH_RELAY_URL`) now accepts a comma-separated list of relay hosts, so deployments can point the node at more than one relay for redundancy. Each host is served over `https://`, so the scheme is no longer repeated per entry. The default is now `eu-1.relay.iroh.radicle.garden`.
 
 > *Note:* an endpoint may be connected to multiple relay servers, but it will advertise its home relay endpoint as the one best used to hole-punch or relay packets through. For more information, see the [iroh relay docs](https://github.com/n0-computer/iroh/blob/main/iroh/docs/relays.md).
 

@@ -47,13 +47,14 @@ Every `radiroh://` URL carries an **implicit** dependency on the consumer's
 configured discovery and relay infrastructure. The endpoint id is a public
 key, and discovery must resolve it to network coordinates. This
 implementation ([`src/share/iroh.rs`](../src/share/iroh.rs)) defaults to the
-Radworks services. Each is overridable via environment variable:
+public good relay operated by the radicle garden team. 
 
-| Setting       | Env var                    | Default                          |
-| ------------- | -------------------------- | -------------------------------- |
-| Relay         | `IROH_RELAY_URL`           | `https://relay.radworks.xyz`     |
-| pkarr publish | `IROH_PKARR_URL`           | `https://dns.radworks.xyz/pkarr` |
-| DNS discovery | `IROH_DNS_ENDPOINT_ORIGIN` | `dns.radworks.xyz`               |
+Each is overridable via environment variable:
+
+| Setting       | Env var            | Default                                 |
+| ------------- | ------------------ | --------------------------------------- |
+| Relay         | `IROH_RELAY_HOSTS` | `eu-1.relay.iroh.radicle.garden`        |
+| pkarr publish | `IROH_PKARR_URL`   | `https://dns.iroh.radicle.garden/pkarr` |
 
 Point these at your own relay and pkarr/DNS services to resolve the same
 `radiroh://` URLs through different infrastructure. The URL is unchanged,
