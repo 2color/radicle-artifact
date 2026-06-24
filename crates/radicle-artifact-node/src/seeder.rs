@@ -424,8 +424,27 @@ pub async fn is_seeded(
 }
 
 /// Whether `cid` is tagged as seeded under any release of `rid`.
+///
+/// Streams the `rid` prefix and stops at the first matching tag rather than
+/// building the full CID map, so a hit costs only as many decodes as it takes
+/// to reach it.
 pub async fn is_seeded_any(store: &Store, rid: &RepoId, cid: &Cid) -> Result<bool, Error> {
-    Ok(seeded_cids(store, rid).await?.contains_key(cid))
+    let prefix = seeded_rid_prefix(rid);
+    let mut stream = store
+        .tags()
+        .list_prefix(&prefix)
+        .await
+        .map_err(|e| Error::Iroh(format!("list seeded tags: {e}")))?;
+
+    while let Some(item) = stream.next().await {
+        let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
+        if let Some((_, _, tag_cid)) = parse_seeded_tag(info.name.as_ref()) {
+            if &tag_cid == cid {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Return every CID currently seeded under `rid`, mapped to its blob hash.
