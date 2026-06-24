@@ -257,26 +257,12 @@ async fn handle_connection(
         }
         Ok(Command::Fetch {
             rid,
-            release,
             cid,
             locations,
             seed,
-        }) => {
-            stream_fetch(
-                ctx,
-                &mut reader,
-                &mut write,
-                rid,
-                release,
-                cid,
-                locations,
-                seed,
-            )
-            .await
-        }
+        }) => stream_fetch(ctx, &mut reader, &mut write, rid, cid, locations, seed).await,
         Ok(Command::Download {
             rid,
-            release,
             cid,
             locations,
             dest,
@@ -287,7 +273,6 @@ async fn handle_connection(
                 &mut reader,
                 &mut write,
                 rid,
-                release,
                 cid,
                 locations,
                 dest,
@@ -712,16 +697,14 @@ async fn fetch_into_store(
 /// Tag is set and the value drops at the end of the closure; a disconnect
 /// mid-stream drops this future via [`run_stream`], releasing the tag so GC
 /// reclaims any partial.
-#[allow(clippy::too_many_arguments)]
 async fn stream_fetch(
     ctx: &NodeCtx,
     read: &mut (impl AsyncReadExt + Unpin),
     write: &mut (impl AsyncWriteExt + Unpin),
     rid: RepoId,
-    release: Option<Oid>,
     cid: Cid,
     locations: Vec<FetchLocation>,
-    seed: bool,
+    seed: Option<Oid>,
 ) -> io::Result<()> {
     let endpoint_id = ctx.endpoint_id;
 
@@ -732,7 +715,7 @@ async fn stream_fetch(
         let store = &ctx.store;
 
         let fetched = fetch_into_store(ctx, &cid, &locations, &mut on_progress).await?;
-        let seeded = tag_if_seeding(store, &rid, release.as_ref(), &cid, fetched.hash, seed)
+        let seeded = tag_if_seeding(store, &rid, seed.as_ref(), &cid, fetched.hash)
             .await
             .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
 
@@ -764,11 +747,10 @@ async fn stream_download(
     read: &mut (impl AsyncReadExt + Unpin),
     write: &mut (impl AsyncWriteExt + Unpin),
     rid: RepoId,
-    release: Option<Oid>,
     cid: Cid,
     locations: Vec<FetchLocation>,
     dest: PathBuf,
-    seed: bool,
+    seed: Option<Oid>,
 ) -> io::Result<()> {
     let endpoint_id = ctx.endpoint_id;
 
@@ -783,7 +765,7 @@ async fn stream_download(
         // Export inside the protected window, before the Seeded Tag is set.
         let bytes =
             export_to_dest(store, fetched.hash, fetched.kind, &dest, &mut on_progress).await?;
-        let seeded = tag_if_seeding(store, &rid, release.as_ref(), &cid, fetched.hash, seed)
+        let seeded = tag_if_seeding(store, &rid, seed.as_ref(), &cid, fetched.hash)
             .await
             .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
 
@@ -801,25 +783,20 @@ async fn stream_download(
     .await
 }
 
-/// Tag `(rid, release, cid)` as seeded when a `seed: true` fetch/download
-/// asked for it, returning whether a tag was actually set.
+/// Tag `(rid, release, cid)` as seeded when a fetch/download asked to seed
+/// under `release`, returning whether a tag was set.
 ///
-/// `seed` without a `release` can't form a tag key; the CLI always supplies
-/// one when seeding, so this only fires on a malformed request — warn and
-/// skip rather than fail the transfer the bytes already completed.
+/// `seed: None` leaves the bytes untagged; the caller already has them in the
+/// store. Pairing seed intent with its release in one `Option` means there's
+/// no unscoped-seed case to handle here.
 async fn tag_if_seeding(
     store: &iroh_blobs::api::Store,
     rid: &RepoId,
-    release: Option<&Oid>,
+    seed: Option<&Oid>,
     cid: &Cid,
     hash: iroh_blobs::Hash,
-    seed: bool,
 ) -> Result<bool, ShareError> {
-    if !seed {
-        return Ok(false);
-    }
-    let Some(release) = release else {
-        tracing::warn!("seed requested for {cid} without a release; not tagging");
+    let Some(release) = seed else {
         return Ok(false);
     };
     seeder::tag_seeded(store, rid, release, cid, hash).await?;
@@ -1541,10 +1518,9 @@ mod tests {
                 &socket,
                 &Command::Fetch {
                     rid,
-                    release: None,
                     cid,
                     locations: vec![],
-                    seed: false,
+                    seed: None,
                 },
             )
             .await;
@@ -1563,11 +1539,10 @@ mod tests {
                 &socket,
                 &Command::Download {
                     rid,
-                    release: None,
                     cid,
                     locations: vec![],
                     dest: dest.clone(),
-                    seed: false,
+                    seed: None,
                 },
             )
             .await;
@@ -1589,10 +1564,9 @@ mod tests {
                 &socket,
                 &Command::Fetch {
                     rid: rid2,
-                    release: Some(release_a()),
                     cid,
                     locations: vec![],
-                    seed: true,
+                    seed: Some(release_a()),
                 },
             )
             .await;
@@ -1611,10 +1585,9 @@ mod tests {
                 &socket,
                 &Command::Fetch {
                     rid,
-                    release: None,
                     cid: unknown,
                     locations: vec![],
-                    seed: false,
+                    seed: None,
                 },
             )
             .await;

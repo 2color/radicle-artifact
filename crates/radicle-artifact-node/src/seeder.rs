@@ -7,7 +7,7 @@
 //!
 //! Tags are scoped per repository and release: `seeded/{rid}/{release}/{cid}`.
 //! The same CID seeded under two releases (or two repos) produces distinct
-//! tags pointing at one underlying blob — unseeding one release does not
+//! tags pointing at one underlying blob; unseeding one release does not
 //! drop bytes another release still needs. GC marks from every tag, so the
 //! blob survives until the last release referencing it is unseeded.
 
@@ -128,7 +128,7 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
 ///
 /// Layout:
 /// `[SEEDED_TAG_V1][rid_len: u8][rid_bytes][rel_len: u8][rel_bytes][Cid binary form]`.
-/// Both ids are length-prefixed Oids, keeping the format hash-agnostic — a
+/// Both ids are length-prefixed Oids, keeping the format hash-agnostic; a
 /// SHA-256 id (32 bytes) slots in without a new sentinel byte. The CID's
 /// self-describing binary form runs to the end.
 ///
@@ -294,7 +294,7 @@ pub async fn import_collection(
 /// Mark a `(rid, release, cid)` triple as actively seeded.
 ///
 /// Sets the `seeded/{rid}/{release}/{cid}` tag pointing at `hash` with the
-/// format matching the CID's kind. Idempotent — re-tagging with the same
+/// format matching the CID's kind. Idempotent; re-tagging with the same
 /// hash is a no-op at the iroh-blobs layer.
 pub async fn tag_seeded(
     store: &Store,
@@ -446,7 +446,7 @@ pub async fn seeded_cids(store: &Store, rid: &RepoId) -> Result<HashMap<Cid, Has
 /// hash comes straight from the tag listing so callers can size the artifact
 /// without a second tag lookup (see [`artifact_size_for`]). A blob shared
 /// across releases appears once per release tag; callers that sum bytes
-/// should dedup by hash. Tag names that don't parse cleanly are skipped — we
+/// should dedup by hash. Tag names that don't parse cleanly are skipped; we
 /// own the writer, so this only fires on corrupt stores.
 pub async fn all_seeded(store: &Store) -> Result<Vec<(RepoId, Oid, Cid, Hash)>, Error> {
     let mut stream = store
@@ -575,7 +575,7 @@ mod tests {
 
     /// Per-release tag scoping: the same CID seeded under two releases of one
     /// repo creates two tags over one blob. Unseeding one release leaves the
-    /// other's tag — the GC root that keeps the shared blob alive.
+    /// other's tag, the GC root that keeps the shared blob alive.
     #[test]
     fn per_release_tags_isolate() {
         let rt = tokio::runtime::Runtime::new().unwrap();

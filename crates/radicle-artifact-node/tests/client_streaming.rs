@@ -76,10 +76,9 @@ fn streaming_methods_round_trip() {
             .fetch(
                 FetchArgs {
                     rid,
-                    release: None,
                     cid,
                     locations: vec![],
-                    seed: false,
+                    seed: None,
                 },
                 Duration::from_secs(30),
                 |_| {},
@@ -95,11 +94,10 @@ fn streaming_methods_round_trip() {
             .download(
                 DownloadArgs {
                     rid,
-                    release: None,
                     cid,
                     locations: vec![],
                     dest: dl_dest.clone(),
-                    seed: false,
+                    seed: None,
                 },
                 Duration::from_secs(30),
                 |_| {},

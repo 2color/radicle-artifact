@@ -149,19 +149,18 @@ pub enum Command {
     Fetch {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
-        /// Release the seeded tag is scoped to. Required when `seed` is set;
-        /// ignored otherwise.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        release: Option<Oid>,
         /// Expected content identifier; the blob kind is derived from it.
         #[serde(with = "cid_string")]
         cid: Cid,
         /// Resolved providers/URLs to try. Iroh providers are batched into
         /// one multi-provider download; URLs are tried in sequence.
         locations: Vec<FetchLocation>,
-        /// Tag `seeded/{rid}/{release}/{cid}` after completion so the node
-        /// serves it.
-        seed: bool,
+        /// Release to seed under once the fetch completes, tagged
+        /// `seeded/{rid}/{release}/{cid}` so the node serves it. `None`
+        /// fetches without seeding; pairing seed intent with its release
+        /// keeps an unscoped seed unrepresentable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed: Option<Oid>,
     },
     /// Download an artifact to disk: [`Command::Fetch`] into the store, then
     /// export to `dest`. Fast-path export if already local. Optionally tags
@@ -169,10 +168,6 @@ pub enum Command {
     Download {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
-        /// Release the seeded tag is scoped to. Required when `seed` is set;
-        /// ignored otherwise.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        release: Option<Oid>,
         /// Expected content identifier; the blob kind is derived from it.
         #[serde(with = "cid_string")]
         cid: Cid,
@@ -181,9 +176,12 @@ pub enum Command {
         locations: Vec<FetchLocation>,
         /// Destination path (file for blobs, directory for collections).
         dest: PathBuf,
-        /// Tag `seeded/{rid}/{release}/{cid}` after completion so the node
-        /// serves it.
-        seed: bool,
+        /// Release to seed under once the download completes, tagged
+        /// `seeded/{rid}/{release}/{cid}` so the node serves it. `None`
+        /// downloads without seeding; pairing seed intent with its release
+        /// keeps an unscoped seed unrepresentable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed: Option<Oid>,
     },
     /// Ask the node to shut down gracefully.
     Shutdown,
@@ -393,7 +391,7 @@ pub struct FetchReceipt {
     pub seeded: bool,
     /// Endpoint id the node serves on, as a canonical `radiroh://<base32>`
     /// URL. Present so the caller can write the `add_location` COB after a
-    /// `seed: true` fetch. Mirrors [`SeedReceipt::endpoint_id`].
+    /// seeding fetch. Mirrors [`SeedReceipt::endpoint_id`].
     pub endpoint_id: EndpointId,
 }
 
@@ -415,7 +413,7 @@ pub struct DownloadReceipt {
     pub seeded: bool,
     /// Endpoint id the node serves on, as a canonical `radiroh://<base32>`
     /// URL. Present so the caller can write the `add_location` COB after a
-    /// `seed: true` download. Mirrors [`SeedReceipt::endpoint_id`].
+    /// seeding download. Mirrors [`SeedReceipt::endpoint_id`].
     pub endpoint_id: EndpointId,
 }
 
@@ -769,42 +767,40 @@ mod tests {
             json!({"command": "export", "cid": cid.to_string(), "dest": "/tmp/out"})
         );
 
-        // Fetch is store-only: no `dest` field on the wire.
+        // Fetch is store-only: no `dest` field on the wire. `seed: Some(..)`
+        // carries the release to seed under.
         let fetch = Command::Fetch {
             rid: sample_rid(),
-            release: Some(sample_release()),
             cid,
             locations: vec![
                 FetchLocation::Iroh(endpoint_id),
                 FetchLocation::Url(Url::parse("https://e.x/f").unwrap()),
             ],
-            seed: true,
+            seed: Some(sample_release()),
         };
         assert_eq!(
             serde_json::to_value(&fetch).unwrap(),
             json!({
                 "command": "fetch",
                 "rid": SAMPLE_RID,
-                "release": SAMPLE_RELEASE,
                 "cid": cid.to_string(),
                 "locations": [
                     {"iroh": endpoint_id.to_string()},
                     {"url": "https://e.x/f"},
                 ],
-                "seed": true,
+                "seed": SAMPLE_RELEASE,
             })
         );
         let back: Command = serde_json::from_value(serde_json::to_value(&fetch).unwrap()).unwrap();
         assert_eq!(back, fetch);
 
-        // Download adds `dest`; `seed: false` omits the release.
+        // Download adds `dest`; `seed: None` omits the field entirely.
         let download = Command::Download {
             rid: sample_rid(),
-            release: None,
             cid,
             locations: vec![FetchLocation::Iroh(endpoint_id)],
             dest: PathBuf::from("/tmp/out"),
-            seed: false,
+            seed: None,
         };
         assert_eq!(
             serde_json::to_value(&download).unwrap(),
@@ -814,7 +810,6 @@ mod tests {
                 "cid": cid.to_string(),
                 "locations": [{"iroh": endpoint_id.to_string()}],
                 "dest": "/tmp/out",
-                "seed": false,
             })
         );
         let back: Command =

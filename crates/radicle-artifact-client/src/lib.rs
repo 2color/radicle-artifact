@@ -51,14 +51,13 @@ pub fn default_socket(home: &Path) -> PathBuf {
 pub struct FetchArgs {
     /// Repository the artifact belongs to (for the seeded tag).
     pub rid: RepoId,
-    /// Release the seeded tag is scoped to; required when `seed` is set.
-    pub release: Option<Oid>,
     /// Content identifier to fetch.
     pub cid: Cid,
     /// Resolved providers/URLs to try.
     pub locations: Vec<FetchLocation>,
-    /// Whether to tag the artifact as seeded after fetching.
-    pub seed: bool,
+    /// Release to seed under after fetching, or `None` to fetch without
+    /// seeding.
+    pub seed: Option<Oid>,
 }
 
 /// Arguments for a download call; mirrors `Command::Download`.
@@ -66,16 +65,15 @@ pub struct FetchArgs {
 pub struct DownloadArgs {
     /// Repository the artifact belongs to (for the seeded tag).
     pub rid: RepoId,
-    /// Release the seeded tag is scoped to; required when `seed` is set.
-    pub release: Option<Oid>,
     /// Content identifier to download.
     pub cid: Cid,
     /// Resolved providers/URLs to try.
     pub locations: Vec<FetchLocation>,
     /// Destination path the bytes are exported to.
     pub dest: PathBuf,
-    /// Whether to tag the artifact as seeded after downloading.
-    pub seed: bool,
+    /// Release to seed under after downloading, or `None` to download
+    /// without seeding.
+    pub seed: Option<Oid>,
 }
 
 /// Failure modes when calling the node.

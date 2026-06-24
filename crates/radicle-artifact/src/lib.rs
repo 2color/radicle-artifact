@@ -110,7 +110,7 @@ impl ReleaseId {
 
     /// The underlying Git object id (the Release COB's head).
     ///
-    /// Lets callers outside this crate — notably the seeder's tag layer —
+    /// Lets callers outside this crate (notably the seeder's tag layer)
     /// fold a release into a binary key without depending on `ObjectId`.
     pub fn oid(&self) -> Oid {
         *self.0

@@ -178,7 +178,6 @@ impl Client {
     ) -> Result<FetchReceipt, ClientError> {
         let cmd = Command::Fetch {
             rid: args.rid,
-            release: args.release,
             cid: args.cid,
             locations: args.locations,
             seed: args.seed,
@@ -197,7 +196,6 @@ impl Client {
     ) -> Result<DownloadReceipt, ClientError> {
         let cmd = Command::Download {
             rid: args.rid,
-            release: args.release,
             cid: args.cid,
             locations: args.locations,
             dest: args.dest,
