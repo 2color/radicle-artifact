@@ -841,20 +841,15 @@ async fn seed_response(
 }
 
 /// `release: Some(id)` drops that one release's tag; `None` stops seeding the
-/// CID across every release of `rid`. `was_removed` reports whether anything
-/// was actually tagged before the removal.
+/// CID across every release of `rid`. `was_removed` reports whether the
+/// removal actually dropped a tag, read from the delete itself so a
+/// concurrent unseed can't make it lie.
 async fn unseed_response(store: &FsStore, rid: RepoId, release: Option<Oid>, cid: Cid) -> String {
     let was_removed = match &release {
-        Some(release) => {
-            let was = match seeder::is_seeded(store, &rid, release, &cid).await {
-                Ok(v) => v,
-                Err(e) => return err_from_share::<UnseedReceipt>(e),
-            };
-            if let Err(e) = seeder::untag_seeded(store, &rid, release, &cid).await {
-                return err_from_share::<UnseedReceipt>(e);
-            }
-            was
-        }
+        Some(release) => match seeder::untag_seeded(store, &rid, release, &cid).await {
+            Ok(removed) => removed,
+            Err(e) => return err_from_share::<UnseedReceipt>(e),
+        },
         None => match seeder::untag_all(store, &rid, &cid).await {
             Ok(removed) => removed > 0,
             Err(e) => return err_from_share::<UnseedReceipt>(e),

@@ -342,22 +342,24 @@ pub async fn seed_artifact(
 
 /// Remove the `seeded/{rid}/{release}/{cid}` tag for one release.
 ///
-/// Idempotent: deleting a tag that doesn't exist returns `Ok(())`. The
-/// underlying blob bytes are not removed by this call — iroh-blobs' GC
-/// reclaims them on its next sweep once no tags reference them. Bytes
-/// another release still tags survive.
+/// Returns whether a tag was actually present and removed; the delete itself
+/// reports the count, so callers learn this without a separate read that a
+/// concurrent unseed could invalidate. Idempotent: deleting a tag that
+/// doesn't exist returns `Ok(false)`. The underlying blob bytes are not
+/// removed by this call; iroh-blobs' GC reclaims them on its next sweep once
+/// no tags reference them. Bytes another release still tags survive.
 pub async fn untag_seeded(
     store: &Store,
     rid: &RepoId,
     release: &Oid,
     cid: &Cid,
-) -> Result<(), Error> {
-    store
+) -> Result<bool, Error> {
+    let removed = store
         .tags()
         .delete(seeded_tag(rid, release, cid))
         .await
         .map_err(|e| Error::Iroh(format!("delete seeded tag: {e}")))?;
-    Ok(())
+    Ok(removed > 0)
 }
 
 /// Remove the seeded tag for `cid` under every release of `rid`.
