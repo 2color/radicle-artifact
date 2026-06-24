@@ -366,6 +366,14 @@ pub async fn untag_seeded(
 ///
 /// Fully stops seeding the CID in this repo regardless of how many releases
 /// reference it. Returns the number of release tags removed.
+///
+/// The CID sits at the tail of the key, not in the listing prefix, so we
+/// can't delete by prefix in one shot; we list once, filter to the matching
+/// release tags, and delete that snapshot. We deliberately do not re-list and
+/// converge: a seed landing after the snapshot is a newer intent than the
+/// unseed, so its tag should survive rather than be swept by an unseed the
+/// user issued earlier. The scope is the releases that referenced the CID
+/// when the request was processed.
 pub async fn untag_all(store: &Store, rid: &RepoId, cid: &Cid) -> Result<usize, Error> {
     let prefix = seeded_rid_prefix(rid);
     let mut stream = store
@@ -374,8 +382,8 @@ pub async fn untag_all(store: &Store, rid: &RepoId, cid: &Cid) -> Result<usize, 
         .await
         .map_err(|e| Error::Iroh(format!("list seeded tags: {e}")))?;
 
-    // Collect matching tag names first; deleting while streaming the same
-    // listing would mutate what we're iterating.
+    // Collect matching names first; deleting mid-stream would mutate the
+    // listing we're iterating.
     let mut names = Vec::new();
     while let Some(item) = stream.next().await {
         let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
@@ -386,13 +394,16 @@ pub async fn untag_all(store: &Store, rid: &RepoId, cid: &Cid) -> Result<usize, 
         }
     }
 
-    let removed = names.len();
+    // Tally the delete results, not the snapshot length, so the count ignores
+    // a tag a concurrent unseed already dropped.
+    let mut removed = 0;
     for name in names {
-        store
+        removed += store
             .tags()
             .delete(name)
             .await
-            .map_err(|e| Error::Iroh(format!("delete seeded tag: {e}")))?;
+            .map_err(|e| Error::Iroh(format!("delete seeded tag: {e}")))?
+            as usize;
     }
     Ok(removed)
 }
