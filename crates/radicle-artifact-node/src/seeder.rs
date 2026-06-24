@@ -366,33 +366,44 @@ pub async fn untag_seeded(
 ///
 /// Fully stops seeding the CID in this repo regardless of how many releases
 /// reference it. Returns the number of release tags removed.
+///
+/// The CID sits at the tail of the key, not in the listing prefix, so we
+/// can't delete by prefix in one shot; we list, filter, and delete. A seed
+/// landing between the listing and the deletes would leave a fresh release
+/// tag behind, so we re-list after each pass and converge once a full pass
+/// finds nothing left to drop.
 pub async fn untag_all(store: &Store, rid: &RepoId, cid: &Cid) -> Result<usize, Error> {
     let prefix = seeded_rid_prefix(rid);
-    let mut stream = store
-        .tags()
-        .list_prefix(&prefix)
-        .await
-        .map_err(|e| Error::Iroh(format!("list seeded tags: {e}")))?;
+    let mut removed = 0;
+    loop {
+        let mut stream = store
+            .tags()
+            .list_prefix(&prefix)
+            .await
+            .map_err(|e| Error::Iroh(format!("list seeded tags: {e}")))?;
 
-    // Collect matching tag names first; deleting while streaming the same
-    // listing would mutate what we're iterating.
-    let mut names = Vec::new();
-    while let Some(item) = stream.next().await {
-        let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
-        if let Some((_, _, tag_cid)) = parse_seeded_tag(info.name.as_ref()) {
-            if &tag_cid == cid {
-                names.push(info.name);
+        // Collect matching names first; deleting mid-stream would mutate the
+        // listing we're iterating.
+        let mut names = Vec::new();
+        while let Some(item) = stream.next().await {
+            let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
+            if let Some((_, _, tag_cid)) = parse_seeded_tag(info.name.as_ref()) {
+                if &tag_cid == cid {
+                    names.push(info.name);
+                }
             }
         }
-    }
-
-    let removed = names.len();
-    for name in names {
-        store
-            .tags()
-            .delete(name)
-            .await
-            .map_err(|e| Error::Iroh(format!("delete seeded tag: {e}")))?;
+        if names.is_empty() {
+            break;
+        }
+        for name in names {
+            removed += store
+                .tags()
+                .delete(name)
+                .await
+                .map_err(|e| Error::Iroh(format!("delete seeded tag: {e}")))?
+                as usize;
+        }
     }
     Ok(removed)
 }
