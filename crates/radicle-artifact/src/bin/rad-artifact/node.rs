@@ -10,6 +10,7 @@
 //! Pretty-print helpers (`print_status_pretty`, `human_bytes`,
 //! `humanize_uptime`) live here too — they're node-specific UI.
 
+use std::io::IsTerminal;
 use std::time::Duration;
 
 use clap::Parser;
@@ -102,7 +103,8 @@ pub struct Unseed {
     /// Content identifier of the artifact to stop seeding.
     #[clap(long)]
     pub cid: Cid,
-    /// Target release id; defaults to every matching release.
+    /// Target release id. When omitted, a CID in multiple releases
+    /// prompts for one at a terminal, else sweeps every release.
     #[clap(long)]
     pub release: Option<String>,
 }
@@ -170,6 +172,7 @@ pub fn run(
     cli: Cli,
     repo_override: Option<RepoId>,
     no_announce: bool,
+    no_input: bool,
     profile: &Profile,
 ) -> Result<(), Error> {
     match cli.command {
@@ -178,7 +181,7 @@ pub fn run(
         Subcommand::Status(c) => status(c, profile),
         Subcommand::List(c) => list(c, repo_override, profile),
         Subcommand::Seed(c) => seed(c, repo_override, no_announce, profile),
-        Subcommand::Unseed(c) => unseed(c, repo_override, no_announce, profile),
+        Subcommand::Unseed(c) => unseed(c, repo_override, no_announce, no_input, profile),
         Subcommand::Logs(c) => logs(c, profile),
     }
 }
@@ -490,9 +493,17 @@ fn unseed(
     cmd: Unseed,
     repo_override: Option<RepoId>,
     no_announce: bool,
+    no_input: bool,
     profile: &Profile,
 ) -> Result<(), Error> {
-    unseed_artifact(cmd.cid, cmd.release, no_announce, repo_override, profile)
+    unseed_artifact(
+        cmd.cid,
+        cmd.release,
+        no_announce,
+        no_input,
+        repo_override,
+        profile,
+    )
 }
 
 /// Shared implementation for `rad-artifact unseed --cid <CID>` and
@@ -500,12 +511,14 @@ fn unseed(
 ///
 /// Sends the unseed request to the running node and retracts every
 /// `radiroh://` location under our DID for the given CID. `release_override`
-/// restricts the retraction to a single release id; otherwise every
-/// release containing the CID is scanned.
+/// restricts the retraction to a single release id. With no override, a CID
+/// shared by several releases prompts the user to pick one (or "All") at a
+/// terminal; otherwise every release containing the CID is swept.
 pub(crate) fn unseed_artifact(
     cid: Cid,
     release_override: Option<String>,
     no_announce: bool,
+    no_input: bool,
     repo_override: Option<RepoId>,
     profile: &Profile,
 ) -> Result<(), Error> {
@@ -516,10 +529,24 @@ pub(crate) fn unseed_artifact(
     let client = Client::new(socket);
 
     // `--release` scopes both the tag removal and the COB retraction to one
-    // release; without it, every release containing the CID is swept.
+    // release. Without it, a CID in more than one release is ambiguous: at a
+    // terminal we let the user scope it (or pick "All releases"); otherwise
+    // every release containing the CID is swept.
     let release_filter: Option<ReleaseId> = match release_override.as_deref() {
         Some(s) => Some(parse_release_id(s, &repo).map_err(|e| Error::Usage(e.to_string()))?),
-        None => None,
+        None => {
+            let candidates = releases.find_by_cid(&cid).map_err(Error::Find)?;
+            if candidates.len() > 1 && !no_input && std::io::stdin().is_terminal() {
+                match crate::prompt::pick_unseed_release(&candidates, &repo, profile)
+                    .map_err(Error::Usage)?
+                {
+                    crate::prompt::UnseedScope::One(id) => Some(id),
+                    crate::prompt::UnseedScope::All => None,
+                }
+            } else {
+                None
+            }
+        }
     };
 
     let receipt = client

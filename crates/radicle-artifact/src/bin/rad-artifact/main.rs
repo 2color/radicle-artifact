@@ -169,17 +169,18 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             command,
             repository,
             no_announce,
+            no_input,
             ..
         } = args;
         return match command {
             Command::Node(cmd) => {
-                node::run(cmd, repository, no_announce, &profile).map_err(Into::into)
+                node::run(cmd, repository, no_announce, no_input, &profile).map_err(Into::into)
             }
             Command::Seed(cmd) => {
                 run_seed(cmd, repository, no_announce, &profile).map_err(Into::into)
             }
             Command::Unseed(cmd) => {
-                run_unseed(cmd, repository, no_announce, &profile).map_err(Into::into)
+                run_unseed(cmd, repository, no_announce, no_input, &profile).map_err(Into::into)
             }
             Command::Reconcile(cmd) => {
                 reconcile::run(cmd, repository, &profile).map_err(Into::into)
@@ -1428,9 +1429,17 @@ fn run_unseed(
     cmd: command::Unseed,
     repo_override: Option<RepoId>,
     no_announce: bool,
+    no_input: bool,
     profile: &Profile,
 ) -> Result<(), node::Error> {
-    node::unseed_artifact(cmd.cid, cmd.release, no_announce, repo_override, profile)
+    node::unseed_artifact(
+        cmd.cid,
+        cmd.release,
+        no_announce,
+        no_input,
+        repo_override,
+        profile,
+    )
 }
 
 /// Convert locations from one or more artifacts into fetch locations.
@@ -1523,6 +1532,28 @@ mod prompt {
         aliases: &impl AliasStore,
     ) -> Result<ReleaseId, String> {
         select_release(candidates, None, repo, aliases)?.ok_or_else(|| "no release selected".into())
+    }
+
+    /// Whether an unseed drops a single release's tag or sweeps the CID
+    /// across every release that references it.
+    pub enum UnseedScope {
+        One(ReleaseId),
+        All,
+    }
+
+    /// Disambiguate which release(s) to unseed when a CID belongs to more
+    /// than one and no `--release` was given. Offers each candidate plus an
+    /// explicit "All releases" entry so the sweep-everything behavior stays
+    /// reachable. Requires a TTY; callers gate on `no_input` first.
+    pub fn pick_unseed_release(
+        candidates: &[(ReleaseId, Release)],
+        repo: &Repository,
+        aliases: &impl AliasStore,
+    ) -> Result<UnseedScope, String> {
+        match select_release(candidates, Some("All releases".to_string()), repo, aliases)? {
+            Some(id) => Ok(UnseedScope::One(id)),
+            None => Ok(UnseedScope::All),
+        }
     }
 
     /// Show a multi-release picker. Returns `Some(id)` when the user
@@ -2322,13 +2353,15 @@ Examples:
 
     /// Alias for `rad-artifact node unseed`.
     ///
-    /// Removes the `seeded/{rid}/{cid}` tag and retracts every
+    /// Removes the `seeded/{rid}/{release}/{cid}` tag and retracts the
     /// `radiroh://` location under your DID for the given CID. With
-    /// `--release`, the retraction is restricted to a single release.
+    /// `--release`, both are restricted to a single release. Without it,
+    /// a CID shared by several releases prompts you to pick one (or "All
+    /// releases") at a terminal, and sweeps every release otherwise.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
-  Stop seeding an artifact across every matching release:
+  Stop seeding an artifact (prompts to scope when it spans releases):
     $ rad-artifact unseed --cid baf...abc
 
   Restrict the retraction to a specific release:
@@ -2337,7 +2370,8 @@ Examples:
         /// Content identifier of the artifact to stop seeding.
         #[clap(long)]
         pub cid: radicle_artifact::Cid,
-        /// Target release id; defaults to every matching release.
+        /// Target release id. When omitted, a CID in multiple releases
+        /// prompts for one at a terminal, else sweeps every release.
         #[clap(long)]
         pub release: Option<String>,
     }

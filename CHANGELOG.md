@@ -64,7 +64,7 @@ $ rad-artifact download v1.0 --cid baf.. -o ./dist/app.tar.gz
 
 The same file can ship in more than one release (a release candidate promoted to a final release, say), and those releases reference the same CID. The node now tracks what it seeds per `(repo, release, CID)` rather than per `(repo, CID)`, so the bytes stay protected as long as any release still references them.
 
-In practice this means `unseed` is release-aware: with `--release <id>` it stops seeding just that release's copy and leaves the others serving, while without it the CID is unseeded across every release of the repo. The shared blob on disk is only garbage-collected once the last release referencing it is unseeded. `seed` and `download --seed`/`fetch --seed` likewise tag under the release they announce the location to, keeping the seeded tag and the COB location in sync.
+In practice this means `unseed` is release-aware: with `--release <id>` it stops seeding just that release's copy and leaves the others serving. Without `--release`, a CID that lives in more than one release prompts you to pick one (or "All releases") at a terminal, and falls back to sweeping every release in scripts (`--no-input`) or when the CID is in only one release. The shared blob on disk is only garbage-collected once the last release referencing it is unseeded. `seed` and `download --seed`/`fetch --seed` likewise tag under the release they announce the location to, keeping the seeded tag and the COB location in sync.
 
 #### 🌱 See which artifacts you've announced at a glance
 
