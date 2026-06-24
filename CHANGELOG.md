@@ -60,6 +60,12 @@ $ rad-artifact download v1.0 --cid baf.. -o ./dist/app.tar.gz
 
 `unseed --cid <CID>` stops seeding and removes your node's `radiroh://` locations. Both announce the COB change to the network when they write one (like the other mutating commands) so peers discover. The node also runs periodic blob garbage collection, so space from unseeded artifacts is reclaimed automatically rather than growing without bound.
 
+#### 🌱 Seeding is scoped per release
+
+The same file can ship in more than one release (a release candidate promoted to a final release, say), and those releases reference the same CID. The node now tracks what it seeds per `(repo, release, CID)` rather than per `(repo, CID)`, so the bytes stay protected as long as any release still references them.
+
+In practice this means `unseed` is release-aware: with `--release <id>` it stops seeding just that release's copy and leaves the others serving, while without it the CID is unseeded across every release of the repo. The shared blob on disk is only garbage-collected once the last release referencing it is unseeded. `seed` and `download --seed`/`fetch --seed` likewise tag under the release they announce the location to, keeping the seeded tag and the COB location in sync.
+
 #### 🌱 See which artifacts you've announced at a glance
 
 `list` and `show` now mark artifacts you've announced as a seeder with 🌱, derived from the COB and your DID, no node RPC required, so it reflects what the network sees even when the node is offline.
