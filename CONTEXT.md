@@ -16,8 +16,8 @@ The two layers ship as separate crates and binaries: `radicle-artifact` is the C
 ## Language
 
 **Create** (verb):
-Open a new signed Release in the COB associated with a commit OID and optionally a git tag. This git tag is unrelated to the blob-store Tags defined below
-_Avoid_: register (you register into a Release, not the Release itself).
+Open a signed Release in the COB associated with a commit OID and optionally a git tag. Idempotent for a single author: if you already created a Release for the same commit (and tag), Create reuses it rather than opening a duplicate; Releases authored by others are never reused. This git tag is unrelated to the blob-store Tags defined below
+_Avoid_: register (you register into a Release, not the Release itself); upsert, ensure (Create is the canonical verb even though it reuses your own Release).
 
 **Register** (verb):
 Record an Artifact against a Release in the COB.
