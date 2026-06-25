@@ -1,1 +1,1 @@
-{"body":"Fixed in 2de6d82: replaced `DnsAddressLookup` with `PkarrResolver` so peer endpoint resolution goes over HTTPS to the pkarr server instead of plain UDP DNS. `IROH_DNS_ENDPOINT_ORIGIN` has been removed.","replyTo":"2c4c1a753fd531cfd3dd0e6f1f6500d9c41fc26a","type":"comment"}
+{"state":{"reason":"other","status":"closed"},"type":"lifecycle"}
