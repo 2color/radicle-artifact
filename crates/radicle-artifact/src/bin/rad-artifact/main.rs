@@ -195,6 +195,16 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     match args.command {
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Node(_) => unreachable!(),       // handled above
+        Command::Create(cmd) => {
+            let signer = profile.signer().map_err(error::Signer)?;
+            let (_, reused) =
+                create_release(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
+            // Reuse writes nothing to the COB, so there is nothing new to
+            // gossip; only announce when a release was actually minted.
+            if !reused && !args.no_announce {
+                announce(&profile, repo.id)?;
+            }
+        }
         Command::Register(cmd) => {
             // Capture the seed source before `cmd` is consumed; clap
             // guarantees a `<PATH>` is present whenever --seed is set
@@ -279,6 +289,117 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     }
 
     Ok(())
+}
+
+/// Create (or reuse) a release for a commit and return its id.
+///
+/// Hoists the lazy release creation that `register` performs into an
+/// explicit step, so a script can create once and pass `--release <id>`
+/// to many `register` calls. Reuse is idempotent but deliberately
+/// narrower than `register`'s resolution: it only ever reuses a release
+/// the local user authored, and a tag fully determines intent — naming a
+/// tag mints a fresh release when no own-release carries that exact tag,
+/// without prompting. `register`, by contrast, resolves over all visible
+/// releases (including delegates') and prompts on a tag conflict, because
+/// its job is to find where to place an artifact rather than to open a
+/// release for a specific commit+tag.
+fn create_release<G>(
+    command::Create { revision, json }: command::Create,
+    no_input: bool,
+    releases: &mut Releases<Repository>,
+    repo: &Repository,
+    profile: &Profile,
+    signer: &Device<G>,
+) -> Result<(ReleaseId, bool), error::CreateRelease>
+where
+    G: Signer<crypto::Signature>,
+{
+    let local = Did::from(*profile.id());
+
+    // Resolve the revision to a commit (+ optional annotated tag).
+    let resolved = match revision.as_deref() {
+        Some(rev) => resolve_ref(rev, repo)?,
+        None => prompt::pick_commit_or_tag(no_input, repo).map_err(error::CreateRelease::Usage)?,
+    };
+    let oid = resolved.commit;
+
+    // Only releases we authored are reuse candidates.
+    let mine: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
+        .into_iter()
+        .filter(|(_, r)| r.creator() == &local)
+        .collect();
+
+    // Decide whether to reuse an existing release or mint a fresh one.
+    // A supplied tag fully determines intent (reuse iff a same-tag
+    // release exists, else mint); a bare commit reuses a lone release and
+    // disambiguates only when several exist.
+    let reuse: Option<ReleaseId> = match resolved.tag {
+        Some(tag) => mine
+            .iter()
+            .find(|(_, r)| r.tag() == Some(&tag))
+            .map(|(id, _)| *id),
+        None => match mine.as_slice() {
+            [] => None,
+            [(id, _)] => Some(*id),
+            _ => {
+                // Several of our own releases on this commit and nothing
+                // to pick between them: prompt at a TTY, else fail with a
+                // create-specific hint (there is no `--release` flag here).
+                // No "create new" entry here — a bare commit asserts nothing
+                // that would warrant minting yet another release.
+                if no_input || !std::io::stdin().is_terminal() {
+                    return Err(error::CreateRelease::Ambiguous {
+                        oid,
+                        candidates: mine.iter().map(|(id, _)| *id).collect(),
+                    });
+                }
+                Some(
+                    prompt::pick_existing_release(&mine, repo, profile)
+                        .map_err(error::CreateRelease::Usage)?,
+                )
+            }
+        },
+    };
+
+    let (id, reused) = match reuse {
+        Some(id) => (id, true),
+        None => {
+            let release = releases
+                .create(oid, resolved.tag, signer)
+                .map_err(|err| error::CreateRelease::Create { oid, err })?;
+            (*release.id(), false)
+        }
+    };
+
+    // Machine-readable output: emit only the JSON object on stdout so the
+    // release id is capturable without scraping stderr.
+    if json {
+        let out = serde_json::json!({
+            "release_id": id.to_string(),
+            "oid": oid.to_string(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&out).map_err(error::CreateRelease::Json)?
+        );
+        return Ok((id, reused));
+    }
+
+    let short_oid = &oid.to_string()[..7];
+    let short_id = &id.to_string()[..7];
+    if reused {
+        eprintln!("Reusing release {short_id} (commit {short_oid})");
+    } else {
+        eprintln!("Created release {short_id} (commit {short_oid})");
+    }
+    if std::io::stderr().is_terminal() {
+        eprintln!(
+            "Hint: register artifacts with `rad-artifact register <path> --release {short_id}`"
+        );
+    }
+    // Bare id on stdout for scripting (`id=$(rad-artifact create v1.0)`).
+    println!("{id}");
+    Ok((id, reused))
 }
 
 /// Register the artifact and return the release it landed in plus its CID,
@@ -2137,6 +2258,8 @@ enum RadArtifactError {
     #[error(transparent)]
     Register(#[from] error::Register),
     #[error(transparent)]
+    CreateRelease(#[from] error::CreateRelease),
+    #[error(transparent)]
     Locate(#[from] error::Locate),
     #[error(transparent)]
     RemoveLocation(#[from] error::RemoveLocation),
@@ -2168,6 +2291,8 @@ mod command {
 
     #[derive(Parser)]
     pub enum Command {
+        /// Create a release for a commit (or reuse your own).
+        Create(Create),
         // `add` is kept as a hidden alias for backward compatibility.
         #[clap(alias = "add")]
         Register(Register),
@@ -2400,6 +2525,41 @@ Examples:
         /// prompts for one at a terminal, else sweeps every release.
         #[clap(long)]
         pub release: Option<String>,
+    }
+
+    /// Create a release for a commit (or reuse your own).
+    ///
+    /// Opens a release COB keyed to a commit so artifacts can be
+    /// registered into it later with `register --release <id>`. This is
+    /// the explicit form of the release that `register` would otherwise
+    /// create on demand; create it once, then pass its id to many
+    /// `register` calls.
+    ///
+    /// Idempotent for a single author: if you already created a release
+    /// for the same commit and tag, its id is reused rather than
+    /// minting a duplicate. Releases created by others are never reused,
+    /// and a different tag on the same commit is treated as a distinct
+    /// release.
+    ///
+    /// The revision is prompted interactively when omitted. Pass
+    /// --no-input (or run without a TTY) to fail instead of hanging on a
+    /// prompt.
+    #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Create a release for a tag and register artifacts into it:
+    $ id=$(rad-artifact create v1.0)
+    $ rad-artifact register ./bin-a --release \"$id\" -n bin-a
+    $ rad-artifact register ./bin-b --release \"$id\" -n bin-b
+
+  Machine-readable output:
+    $ rad-artifact create v1.0 --json")]
+    pub struct Create {
+        /// Git revision (commit, tag, or abbreviated OID) for the release.
+        pub revision: Option<String>,
+        /// Emit the release id and commit as a JSON object on stdout.
+        #[clap(long)]
+        pub json: bool,
     }
 
     /// Register an artifact in a release, creating the release if needed.
@@ -2865,6 +3025,29 @@ mod error {
         #[error("failed to get repository delegates")]
         Delegates(#[source] RepositoryError),
         #[error("failed to list releases, could not serialize to JSON")]
+        Json(#[source] serde_json::Error),
+    }
+
+    #[derive(Debug, Error)]
+    pub enum CreateRelease {
+        #[error("{0}")]
+        Usage(String),
+        #[error(transparent)]
+        Resolve(#[from] Resolve),
+        #[error(transparent)]
+        Find(#[from] Find),
+        #[error("commit {oid} has {} release(s) you authored; re-run in a terminal to pick one, or name its tag (e.g. `create <tag>`) if it has one (candidates: {})", candidates.len(), display_ids(candidates))]
+        Ambiguous {
+            oid: Oid,
+            candidates: Vec<ReleaseId>,
+        },
+        #[error("failed to create release for commit {oid}")]
+        Create {
+            oid: Oid,
+            #[source]
+            err: radicle_artifact::error::Create,
+        },
+        #[error("failed to serialize create output to JSON")]
         Json(#[source] serde_json::Error),
     }
 

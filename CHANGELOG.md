@@ -43,6 +43,21 @@ The node starts once, detaches from your terminal, and keeps serving across shel
 
 Together this means your published artifacts stay reachable peer-to-peer without you babysitting a foreground process.
 
+#### Create a release up front with `create`
+
+`rad-artifact create [<revision>]` opens a release for a commit and prints
+its id, so a script can create once and register many artifacts into it:
+
+```
+id=$(rad-artifact create v1.0)
+rad-artifact register ./bin-a --release "$id" -n bin-a
+rad-artifact register ./bin-b --release "$id" -n bin-b
+```
+
+It is idempotent per author: re-running for the same commit and tag reuses
+your existing release instead of minting a duplicate; releases authored by
+others are never reused.
+
 #### Seed without saving: `fetch` keeps bytes in the store, `download` writes to disk
 
 Previously the only way to get an artifact was to write it to disk. Now `fetch <CID>` pulls the bytes into the node's store and verifies the CID without touching the filesystem. Useful when you want to seed an artifact for others without cluttering your working directory. `download --cid <CID>` does the same and then saves the file, replacing the old `fetch` disk-export behavior.
