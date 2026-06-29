@@ -6,18 +6,85 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use std::fmt;
+use std::ops::Deref;
+use std::str::FromStr;
+
 use cid::multihash::Multihash;
 use cid::Cid;
-use serde::Serialize;
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Error;
 
-/// Serde glue for `Cid` on the wire and in COB operations.
+/// A [`Cid`] that always serializes as its canonical multibase string.
 ///
-/// The `cid` crate's derived [`serde::Serialize`] encodes a CID as a
-/// newtype-struct of raw bytes, which renders as a JSON byte array.
-/// We want the canonical multibase string (`"bafy…"`) instead, so fields
-/// carrying a [`Cid`] are annotated with `#[serde(with = "cid_string")]`.
+/// The `cid` crate's derived [`Serialize`] encodes a CID as a newtype-struct
+/// of raw bytes, which renders as an unreadable JSON byte array. Persisted
+/// COB actions and the wire protocol need the `"bafy…"` string form instead.
+///
+/// A per-field `#[serde(with = …)]` annotation could supply that, but it is
+/// opt-in and fails silently: a single forgotten field writes bytes and
+/// forks the on-disk encoding. Wrapping the CID moves the guarantee into the
+/// type, so every field of this type encodes as a string and the compiler,
+/// not the author, enforces it.
+///
+/// Derefs to the inner [`Cid`], so read-only CID methods work unchanged;
+/// convert with [`From`] in either direction at construction boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ArtifactCid(pub Cid);
+
+impl From<Cid> for ArtifactCid {
+    fn from(cid: Cid) -> Self {
+        Self(cid)
+    }
+}
+
+impl From<ArtifactCid> for Cid {
+    fn from(cid: ArtifactCid) -> Self {
+        cid.0
+    }
+}
+
+impl Deref for ArtifactCid {
+    type Target = Cid;
+
+    fn deref(&self) -> &Cid {
+        &self.0
+    }
+}
+
+impl fmt::Display for ArtifactCid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for ArtifactCid {
+    type Err = <Cid as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Cid::from_str(s).map(Self)
+    }
+}
+
+impl Serialize for ArtifactCid {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ArtifactCid {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Cid::from_str(&s).map(Self).map_err(de::Error::custom)
+    }
+}
+
+/// Serde glue for the bare [`Cid`] on the wire and in COB operations.
+///
+/// Superseded by [`ArtifactCid`], which carries the same encoding in the
+/// type. Retained until the remaining `#[serde(with = "cid_string")]` fields
+/// are migrated.
 pub mod cid_string {
     use std::str::FromStr;
 
@@ -234,6 +301,22 @@ mod tests {
             fs::write(&file_path, contents).unwrap();
         }
         dir
+    }
+
+    // -- ArtifactCid tests --
+
+    #[test]
+    fn artifact_cid_serializes_as_string() {
+        let cid = blob_cid(b"artifact-cid");
+        let wrapped = ArtifactCid(cid);
+
+        // Encodes as the multibase string, not a JSON byte array.
+        let value = serde_json::to_value(wrapped).unwrap();
+        assert_eq!(value, serde_json::Value::String(cid.to_string()));
+
+        // And round-trips back to the same CID.
+        let back: ArtifactCid = serde_json::from_value(value).unwrap();
+        assert_eq!(back, wrapped);
     }
 
     // -- CID conversion tests --
