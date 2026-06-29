@@ -305,7 +305,7 @@ fn reconcile_one(
         .client
         .call(&NodeMsg::ListSeeded { rid }, Duration::from_secs(30))
         .map_err(|e| Error::Node(node::client_err(e)))?;
-    let seeded: HashSet<Cid> = entries.into_iter().map(|e| e.cid.into()).collect();
+    let seeded: HashSet<Cid> = entries.into_iter().map(|e| e.cid).collect();
 
     // Snapshot every release once so the loop body can drop its borrow
     // before mutations begin.

@@ -3,80 +3,84 @@
 //! Provides conversions between BLAKE3 hashes and CIDs, deterministic
 //! content ID computation for directories, and CID verification.
 
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-
-use std::fmt;
-use std::ops::Deref;
 use std::str::FromStr;
 
 use cid::multihash::Multihash;
-use cid::Cid;
+use cid::Cid as InnerCid;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Error;
 
-/// A [`Cid`] that always serializes as its canonical multibase string.
+/// Content identifier for an artifact: the project-wide CID type.
 ///
-/// The `cid` crate's derived [`Serialize`] encodes a CID as a newtype-struct
-/// of raw bytes, which renders as an unreadable JSON byte array. Persisted
-/// COB actions and the wire protocol need the `"bafy…"` string form instead.
+/// A newtype around the `cid` crate's [`cid::Cid`], mirroring [`EndpointId`]:
+/// it is the type used across the codebase (COB actions, wire protocol,
+/// public APIs, maps), and the inner `cid::Cid` is reached only at the
+/// iroh-blobs hash boundary via [`Cid::as_inner`] / [`Cid::into_inner`].
 ///
-/// A per-field `#[serde(with = …)]` annotation could supply that, but it is
-/// opt-in and fails silently: a single forgotten field writes bytes and
-/// forks the on-disk encoding. Wrapping the CID moves the guarantee into the
-/// type, so every field of this type encodes as a string and the compiler,
-/// not the author, enforces it.
+/// The wrapper exists for serde. The `cid` crate's derived [`Serialize`]
+/// encodes a CID as raw bytes, which renders as an unreadable JSON byte
+/// array; a per-field `#[serde(with = …)]` adapter could fix that but is
+/// opt-in and fails silently when a field is forgotten. Owning the
+/// [`Serialize`]/[`Deserialize`] impls here makes the canonical multibase
+/// string (`"bafy…"`) the only encoding, enforced by the type rather than
+/// the author. `Display` and `FromStr` already match that string form.
 ///
-/// Derefs to the inner [`Cid`], so read-only CID methods work unchanged;
-/// convert with [`From`] in either direction at construction boundaries.
+/// [`EndpointId`]: crate::keys::EndpointId
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ArtifactCid(pub Cid);
+pub struct Cid(InnerCid);
 
-impl From<Cid> for ArtifactCid {
-    fn from(cid: Cid) -> Self {
+impl Cid {
+    /// Borrow the underlying `cid::Cid` (for the iroh-blobs hash boundary).
+    pub fn as_inner(&self) -> &InnerCid {
+        &self.0
+    }
+
+    /// Consume into the underlying `cid::Cid`.
+    pub fn into_inner(self) -> InnerCid {
+        self.0
+    }
+}
+
+impl From<InnerCid> for Cid {
+    fn from(cid: InnerCid) -> Self {
         Self(cid)
     }
 }
 
-impl From<ArtifactCid> for Cid {
-    fn from(cid: ArtifactCid) -> Self {
+impl From<Cid> for InnerCid {
+    fn from(cid: Cid) -> Self {
         cid.0
     }
 }
 
-impl Deref for ArtifactCid {
-    type Target = Cid;
-
-    fn deref(&self) -> &Cid {
-        &self.0
-    }
-}
-
-impl fmt::Display for ArtifactCid {
+impl fmt::Display for Cid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl FromStr for ArtifactCid {
-    type Err = <Cid as FromStr>::Err;
+impl FromStr for Cid {
+    type Err = <InnerCid as FromStr>::Err;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Cid::from_str(s).map(Self)
+        InnerCid::from_str(s).map(Self)
     }
 }
 
-impl Serialize for ArtifactCid {
+impl Serialize for Cid {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.collect_str(&self.0)
     }
 }
 
-impl<'de> Deserialize<'de> for ArtifactCid {
+impl<'de> Deserialize<'de> for Cid {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        Cid::from_str(&s).map(Self).map_err(de::Error::custom)
+        InnerCid::from_str(&s).map(Self).map_err(de::Error::custom)
     }
 }
 
@@ -93,7 +97,7 @@ pub const RAW_CODEC: u64 = 0x55;
 
 /// Whether the CID represents a single blob or a collection of named blobs.
 pub fn artifact_kind(cid: &Cid) -> Result<ArtifactKind, Error> {
-    match cid.codec() {
+    match cid.0.codec() {
         RAW_CODEC => Ok(ArtifactKind::Blob),
         BLAKE3_HASHSEQ_CODEC => Ok(ArtifactKind::Collection),
         other => Err(Error::Cid(format!("unsupported CID codec: 0x{other:x}"))),
@@ -121,14 +125,14 @@ pub fn blake3_hash_to_cid(hash: blake3::Hash, kind: ArtifactKind) -> Cid {
     };
     let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, hash.as_bytes())
         .expect("BLAKE3 digest is always 32 bytes");
-    Cid::new_v1(codec, mh)
+    Cid(InnerCid::new_v1(codec, mh))
 }
 
 /// Extract the BLAKE3 digest from a CID's multihash.
 ///
 /// Works with any CID codec as long as the multihash uses BLAKE3 (0x1e).
 pub fn cid_to_blake3_hash(cid: &Cid) -> Result<blake3::Hash, Error> {
-    let mh = cid.hash();
+    let mh = cid.0.hash();
     if mh.code() != HASH_CODE_BLAKE3 {
         return Err(Error::Cid(format!(
             "expected BLAKE3 multihash (0x1e), got 0x{:x}",
@@ -282,20 +286,19 @@ mod tests {
         dir
     }
 
-    // -- ArtifactCid tests --
+    // -- Cid encoding tests --
 
     #[test]
-    fn artifact_cid_serializes_as_string() {
-        let cid = blob_cid(b"artifact-cid");
-        let wrapped = ArtifactCid(cid);
+    fn cid_serializes_as_string() {
+        let cid = blob_cid(b"cid-encoding");
 
         // Encodes as the multibase string, not a JSON byte array.
-        let value = serde_json::to_value(wrapped).unwrap();
+        let value = serde_json::to_value(cid).unwrap();
         assert_eq!(value, serde_json::Value::String(cid.to_string()));
 
         // And round-trips back to the same CID.
-        let back: ArtifactCid = serde_json::from_value(value).unwrap();
-        assert_eq!(back, wrapped);
+        let back: Cid = serde_json::from_value(value).unwrap();
+        assert_eq!(back, cid);
     }
 
     // -- CID conversion tests --
@@ -321,7 +324,7 @@ mod tests {
     fn cid_to_blake3_hash_rejects_sha256() {
         let digest = [0u8; 32];
         let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
-        let cid = Cid::new_v1(RAW_CODEC, mh);
+        let cid = Cid(InnerCid::new_v1(RAW_CODEC, mh));
         assert!(matches!(cid_to_blake3_hash(&cid), Err(Error::Cid(_))));
     }
 
@@ -341,7 +344,7 @@ mod tests {
     fn artifact_kind_unknown_codec() {
         let digest = blake3::hash(b"test");
         let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
-        let cid = Cid::new_v1(0x99, mh);
+        let cid = Cid(InnerCid::new_v1(0x99, mh));
         assert!(matches!(artifact_kind(&cid), Err(Error::Cid(_))));
     }
 

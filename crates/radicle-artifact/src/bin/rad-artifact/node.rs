@@ -432,7 +432,7 @@ pub(crate) fn seed_to_release(
             &NodeMsg::Seed {
                 rid,
                 release: release_id.oid(),
-                cid: cid.into(),
+                cid,
                 path: abs_path,
                 kind,
                 mode,
@@ -554,7 +554,7 @@ pub(crate) fn unseed_artifact(
             &NodeMsg::Unseed {
                 rid,
                 release: release_filter.map(|r| r.oid()),
-                cid: cid.into(),
+                cid,
             },
             client::DEFAULT_TIMEOUT,
         )

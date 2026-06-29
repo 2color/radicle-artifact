@@ -6,9 +6,9 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cid::Cid;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
+use radicle_artifact_core::cid::Cid;
 use serde::de::DeserializeOwned;
 
 use radicle_artifact_core::cid::ArtifactKind;
@@ -122,7 +122,7 @@ impl Client {
         let cmd = Command::Seed {
             rid,
             release,
-            cid: cid.into(),
+            cid,
             path: path.to_path_buf(),
             kind,
             mode,
@@ -138,25 +138,12 @@ impl Client {
         release: Option<Oid>,
         cid: Cid,
     ) -> Result<UnseedReceipt, ClientError> {
-        self.call(
-            &Command::Unseed {
-                rid,
-                release,
-                cid: cid.into(),
-            },
-            DEFAULT_TIMEOUT,
-        )
+        self.call(&Command::Unseed { rid, release, cid }, DEFAULT_TIMEOUT)
     }
 
     /// Whether the node currently has `(rid, cid)` tagged.
     pub fn is_seeding(&self, rid: RepoId, cid: Cid) -> Result<bool, ClientError> {
-        self.call(
-            &Command::IsSeeding {
-                rid,
-                cid: cid.into(),
-            },
-            DEFAULT_TIMEOUT,
-        )
+        self.call(&Command::IsSeeding { rid, cid }, DEFAULT_TIMEOUT)
     }
 
     /// List CIDs seeded under `rid`.
@@ -177,7 +164,7 @@ impl Client {
 
     /// Whether the node holds complete (or partial) bytes for `cid`.
     pub fn has(&self, cid: Cid) -> Result<HasResult, ClientError> {
-        self.call(&Command::Has { cid: cid.into() }, DEFAULT_TIMEOUT)
+        self.call(&Command::Has { cid }, DEFAULT_TIMEOUT)
     }
 
     /// Fetch an artifact into the node's store (no disk write), streaming
@@ -191,7 +178,7 @@ impl Client {
     ) -> Result<FetchReceipt, ClientError> {
         let cmd = Command::Fetch {
             rid: args.rid,
-            cid: args.cid.into(),
+            cid: args.cid,
             locations: args.locations,
             seed: args.seed,
         };
@@ -209,7 +196,7 @@ impl Client {
     ) -> Result<DownloadReceipt, ClientError> {
         let cmd = Command::Download {
             rid: args.rid,
-            cid: args.cid.into(),
+            cid: args.cid,
             locations: args.locations,
             dest: args.dest,
             seed: args.seed,
@@ -225,14 +212,7 @@ impl Client {
         idle: Duration,
         on_progress: impl FnMut(&FetchProgress),
     ) -> Result<ExportReceipt, ClientError> {
-        self.call_streaming(
-            &Command::Export {
-                cid: cid.into(),
-                dest,
-            },
-            idle,
-            on_progress,
-        )
+        self.call_streaming(&Command::Export { cid, dest }, idle, on_progress)
     }
 
     /// Drive a streaming command: read frames until the terminal one,

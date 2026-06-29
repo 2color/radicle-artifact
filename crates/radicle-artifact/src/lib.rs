@@ -72,13 +72,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use url::Url;
 
-// Re-export cid::Cid as the content identifier type.
-// A Cid has both a binary representation (the struct itself) and a string
-// representation (multibase-encoded, used for Display/FromStr/JSON serde).
-pub use cid::Cid;
-
-// String-encoding wrapper used for the CID fields persisted in COB actions.
-use radicle_artifact_core::cid::ArtifactCid;
+// Re-export the project content identifier type. A newtype over cid::Cid
+// that serializes as its canonical multibase string; see the type's docs.
+pub use radicle_artifact_core::cid::Cid;
 
 pub mod display;
 pub mod error;
@@ -302,7 +298,7 @@ pub enum Action {
     #[serde(rename = "AddArtifact")]
     RegisterArtifact {
         /// The content identifier for this artifact.
-        cid: ArtifactCid,
+        cid: Cid,
         /// A human-readable description of the artifact.
         name: String,
     },
@@ -312,7 +308,7 @@ pub enum Action {
     /// Ignored if the CID does not exist in the release.
     AddLocation {
         /// The content identifier of the artifact.
-        cid: ArtifactCid,
+        cid: Cid,
         /// A URL where the artifact can be retrieved.
         location: Url,
     },
@@ -321,7 +317,7 @@ pub enum Action {
     /// No-op if the location or CID is not found.
     RemoveLocation {
         /// The content identifier of the artifact.
-        cid: ArtifactCid,
+        cid: Cid,
         /// The URL to remove.
         location: Url,
     },
@@ -332,7 +328,7 @@ pub enum Action {
     /// endorsement) or if the CID does not exist in the release.
     Attest {
         /// The content identifier of the artifact to attest.
-        cid: ArtifactCid,
+        cid: Cid,
     },
     /// Redact an artifact, indicating it should not be used.
     ///
@@ -348,7 +344,7 @@ pub enum Action {
     /// validates the CID before creating the action).
     Redact {
         /// The content identifier of the artifact to redact.
-        cid: ArtifactCid,
+        cid: Cid,
         /// A human-readable reason for the redaction.
         reason: String,
     },
@@ -362,7 +358,7 @@ pub enum Action {
     /// Silent no-op if the CID does not exist in the release.
     SetMetadata {
         /// The content identifier of the artifact.
-        cid: ArtifactCid,
+        cid: Cid,
         /// Metadata key.
         key: String,
         /// JSON value (any shape).
@@ -374,7 +370,7 @@ pub enum Action {
     /// CID or the key is not found.
     RemoveMetadata {
         /// The content identifier of the artifact.
-        cid: ArtifactCid,
+        cid: Cid,
         /// Metadata key to remove.
         key: String,
     },
@@ -443,7 +439,7 @@ impl Release {
             Action::Create { .. } => {}
             Action::RegisterArtifact { cid, name } => {
                 // Insert if new, or update the name if the original author resends.
-                match self.artifacts.entry(*cid) {
+                match self.artifacts.entry(cid) {
                     indexmap::map::Entry::Occupied(mut e) => {
                         if e.get().author == user {
                             e.get_mut().name = name;
@@ -462,12 +458,12 @@ impl Release {
                 }
             }
             Action::AddLocation { cid, location } => {
-                if let Some(artifact) = self.artifacts.get_mut(&*cid) {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     artifact.locations.entry(user).or_default().insert(location);
                 }
             }
             Action::RemoveLocation { cid, location } => {
-                if let Some(artifact) = self.artifacts.get_mut(&*cid) {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     if let Entry::Occupied(mut e) = artifact.locations.entry(user) {
                         e.get_mut().remove(&location);
                         if e.get().is_empty() {
@@ -477,7 +473,7 @@ impl Release {
                 }
             }
             Action::Attest { cid } => {
-                if let Some(artifact) = self.artifacts.get_mut(&*cid) {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     // A prior redaction from this user supersedes any attestation.
                     // The author implicitly vouches by creating the artifact;
                     // a self-attestation is a no-op to avoid inflating counts.
@@ -487,19 +483,19 @@ impl Release {
                 }
             }
             Action::Redact { cid, reason } => {
-                if let Some(artifact) = self.artifacts.get_mut(&*cid) {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     artifact.redactions.insert(user, reason);
                     // A redaction supersedes any prior attestation from the same user.
                     artifact.attestations.remove(&user);
                 }
             }
             Action::SetMetadata { cid, key, value } => {
-                if let Some(artifact) = self.artifacts.get_mut(&*cid) {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     artifact.metadata.insert(key, value);
                 }
             }
             Action::RemoveMetadata { cid, key } => {
-                if let Some(artifact) = self.artifacts.get_mut(&*cid) {
+                if let Some(artifact) = self.artifacts.get_mut(&cid) {
                     artifact.metadata.remove(&key);
                 }
             }
@@ -1059,39 +1055,27 @@ where
 
     /// Register an artifact in the transaction.
     fn register_artifact(&mut self, cid: Cid, name: String) -> Result<(), store::Error> {
-        self.0.push(Action::RegisterArtifact {
-            cid: cid.into(),
-            name,
-        })
+        self.0.push(Action::RegisterArtifact { cid, name })
     }
 
     /// Add a location for an artifact.
     fn add_location(&mut self, cid: Cid, location: Url) -> Result<(), store::Error> {
-        self.0.push(Action::AddLocation {
-            cid: cid.into(),
-            location,
-        })
+        self.0.push(Action::AddLocation { cid, location })
     }
 
     /// Remove a location for an artifact.
     fn remove_location(&mut self, cid: Cid, location: Url) -> Result<(), store::Error> {
-        self.0.push(Action::RemoveLocation {
-            cid: cid.into(),
-            location,
-        })
+        self.0.push(Action::RemoveLocation { cid, location })
     }
 
     /// Attest to an artifact.
     fn attest(&mut self, cid: Cid) -> Result<(), store::Error> {
-        self.0.push(Action::Attest { cid: cid.into() })
+        self.0.push(Action::Attest { cid })
     }
 
     /// Redact an artifact with a reason.
     fn redact(&mut self, cid: Cid, reason: String) -> Result<(), store::Error> {
-        self.0.push(Action::Redact {
-            cid: cid.into(),
-            reason,
-        })
+        self.0.push(Action::Redact { cid, reason })
     }
 
     /// Set or overwrite a metadata entry.
@@ -1101,19 +1085,12 @@ where
         key: String,
         value: serde_json::Value,
     ) -> Result<(), store::Error> {
-        self.0.push(Action::SetMetadata {
-            cid: cid.into(),
-            key,
-            value,
-        })
+        self.0.push(Action::SetMetadata { cid, key, value })
     }
 
     /// Remove a metadata entry.
     fn remove_metadata(&mut self, cid: Cid, key: String) -> Result<(), store::Error> {
-        self.0.push(Action::RemoveMetadata {
-            cid: cid.into(),
-            key,
-        })
+        self.0.push(Action::RemoveMetadata { cid, key })
     }
 }
 
@@ -1137,7 +1114,7 @@ mod test {
         digest[0] = n;
         // 0x12 = sha2-256 hash code, 0x55 = raw codec
         let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
-        Cid::new_v1(0x55, mh)
+        Cid::from(cid::Cid::new_v1(0x55, mh))
     }
 
     #[test]
@@ -1146,7 +1123,7 @@ mod test {
 
         let cid = test_cid(1);
         let action = Action::RegisterArtifact {
-            cid: cid.into(),
+            cid,
             name: "binary".into(),
         };
 
@@ -2255,7 +2232,7 @@ mod test {
         // the #[serde(rename)] on the variant.
         use crate::Action;
         let action = Action::RegisterArtifact {
-            cid: test_cid(1).into(),
+            cid: test_cid(1),
             name: "linux-amd64 binary".into(),
         };
         let json = serde_json::to_string(&action).unwrap();

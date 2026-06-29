@@ -1242,7 +1242,7 @@ fn add_seed_location(
 /// Returns `true` if the bytes are already complete in the local store.
 fn log_retrieval_plan(client: &Client, cid: Cid, locations: &[FetchLocation]) -> bool {
     let already_local = client
-        .call::<HasResult>(&Command::Has { cid: cid.into() }, TIMEOUT)
+        .call::<HasResult>(&Command::Has { cid }, TIMEOUT)
         .map(|h| h.complete)
         .unwrap_or(false);
 

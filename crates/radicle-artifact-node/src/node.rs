@@ -18,12 +18,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use cid::Cid;
 use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::HashAndFormat;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
+use radicle_artifact_core::cid::Cid;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
@@ -253,25 +253,14 @@ async fn handle_connection(
         // Streaming commands write their own frames directly. They also get
         // the read half to watch for client disconnect during silent phases.
         Ok(Command::Export { cid, dest }) => {
-            stream_export(ctx, &mut reader, &mut write, cid.into(), dest).await
+            stream_export(ctx, &mut reader, &mut write, cid, dest).await
         }
         Ok(Command::Fetch {
             rid,
             cid,
             locations,
             seed,
-        }) => {
-            stream_fetch(
-                ctx,
-                &mut reader,
-                &mut write,
-                rid,
-                cid.into(),
-                locations,
-                seed,
-            )
-            .await
-        }
+        }) => stream_fetch(ctx, &mut reader, &mut write, rid, cid, locations, seed).await,
         Ok(Command::Download {
             rid,
             cid,
@@ -284,7 +273,7 @@ async fn handle_connection(
                 &mut reader,
                 &mut write,
                 rid,
-                cid.into(),
+                cid,
                 locations,
                 dest,
                 seed,
@@ -358,22 +347,8 @@ async fn dispatch(cmd: Command, ctx: &NodeCtx, shutdown_tx: &broadcast::Sender<(
             path,
             kind,
             mode,
-        } => {
-            seed_response(
-                store,
-                rid,
-                release,
-                cid.into(),
-                &path,
-                kind,
-                mode,
-                ctx.endpoint_id,
-            )
-            .await
-        }
-        Command::Unseed { rid, release, cid } => {
-            unseed_response(store, rid, release, cid.into()).await
-        }
+        } => seed_response(store, rid, release, cid, &path, kind, mode, ctx.endpoint_id).await,
+        Command::Unseed { rid, release, cid } => unseed_response(store, rid, release, cid).await,
         Command::IsSeeding { rid, cid } => is_seeding_response(store, &rid, &cid).await,
         Command::ListSeeded { rid } => list_seeded_response(store, rid).await,
         Command::Has { cid } => has_response(store, &cid).await,
@@ -543,11 +518,7 @@ async fn stream_export(
             }
         }
         .map_err(|e| (share_error_to_code(&e), e.to_string()))?;
-        Ok(ExportReceipt {
-            cid: cid.into(),
-            dest,
-            bytes,
-        })
+        Ok(ExportReceipt { cid, dest, bytes })
     })
     .await
 }
@@ -752,7 +723,7 @@ async fn stream_fetch(
         let bytes = seeder::artifact_size_for(store, &cid, fetched.hash).await;
         Ok(FetchReceipt {
             rid,
-            cid: cid.into(),
+            cid,
             bytes,
             from_cache: fetched.from_cache,
             seeded,
@@ -800,7 +771,7 @@ async fn stream_download(
 
         Ok(DownloadReceipt {
             rid,
-            cid: cid.into(),
+            cid,
             dest,
             bytes,
             from_cache: fetched.from_cache,
@@ -861,7 +832,7 @@ async fn seed_response(
     let bytes = seeder::artifact_size_for(store, &cid, hash).await;
     let receipt = SeedReceipt {
         rid,
-        cid: cid.into(),
+        cid,
         endpoint_id,
         bytes,
         was_new: !was_already,
@@ -886,7 +857,7 @@ async fn unseed_response(store: &FsStore, rid: RepoId, release: Option<Oid>, cid
     };
     ok_json(UnseedReceipt {
         rid,
-        cid: cid.into(),
+        cid,
         was_removed,
     })
 }
@@ -906,10 +877,7 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
     let mut out = Vec::with_capacity(cids.len());
     for (cid, hash) in cids {
         let bytes = seeder::artifact_size_for(store, &cid, hash).await;
-        out.push(SeededEntry {
-            cid: cid.into(),
-            bytes,
-        });
+        out.push(SeededEntry { cid, bytes });
     }
     ok_json(out)
 }
@@ -1072,7 +1040,7 @@ mod tests {
     fn fake_blob_cid(data: &[u8]) -> Cid {
         let digest = blake3::hash(data);
         let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
-        Cid::new_v1(RAW_CODEC, mh)
+        Cid::from(cid::Cid::new_v1(RAW_CODEC, mh))
     }
 
     fn rid_a() -> RepoId {
@@ -1210,7 +1178,7 @@ mod tests {
             // ListSeeded returns exactly the one entry.
             let entries = client.list_seeded(rid).await.unwrap();
             assert_eq!(entries.len(), 1);
-            assert_eq!(*entries[0].cid, real_cid);
+            assert_eq!(entries[0].cid, real_cid);
             assert_eq!(entries[0].bytes, payload.len() as u64);
 
             // Status now reports one seeded artifact.
@@ -1435,7 +1403,7 @@ mod tests {
                 .unwrap();
 
             // Has: present and complete with the right size.
-            match oneshot::<HasResult>(&socket, &Command::Has { cid: cid.into() }).await {
+            match oneshot::<HasResult>(&socket, &Command::Has { cid }).await {
                 CommandResult::Okay(h) => {
                     assert!(h.present);
                     assert!(h.complete);
@@ -1446,14 +1414,7 @@ mod tests {
 
             // Has on content the store doesn't hold: absent.
             let unknown = fake_blob_cid(b"never stored");
-            match oneshot::<HasResult>(
-                &socket,
-                &Command::Has {
-                    cid: unknown.into(),
-                },
-            )
-            .await
-            {
+            match oneshot::<HasResult>(&socket, &Command::Has { cid: unknown }).await {
                 CommandResult::Okay(h) => {
                     assert!(!h.present);
                     assert!(!h.complete);
@@ -1466,7 +1427,7 @@ mod tests {
             let (_progress, term) = streaming::<ExportReceipt>(
                 &socket,
                 &Command::Export {
-                    cid: cid.into(),
+                    cid,
                     dest: dest.clone(),
                 },
             )
@@ -1484,7 +1445,7 @@ mod tests {
             let (_p, term) = streaming::<ExportReceipt>(
                 &socket,
                 &Command::Export {
-                    cid: unknown.into(),
+                    cid: unknown,
                     dest: home.path().join("nope.bin"),
                 },
             )
@@ -1552,7 +1513,7 @@ mod tests {
                 &socket,
                 &Command::Fetch {
                     rid,
-                    cid: cid.into(),
+                    cid,
                     locations: vec![],
                     seed: None,
                 },
@@ -1573,7 +1534,7 @@ mod tests {
                 &socket,
                 &Command::Download {
                     rid,
-                    cid: cid.into(),
+                    cid,
                     locations: vec![],
                     dest: dest.clone(),
                     seed: None,
@@ -1598,7 +1559,7 @@ mod tests {
                 &socket,
                 &Command::Fetch {
                     rid: rid2,
-                    cid: cid.into(),
+                    cid,
                     locations: vec![],
                     seed: Some(release_a()),
                 },
@@ -1619,7 +1580,7 @@ mod tests {
                 &socket,
                 &Command::Fetch {
                     rid,
-                    cid: unknown.into(),
+                    cid: unknown,
                     locations: vec![],
                     seed: None,
                 },
