@@ -80,27 +80,6 @@ impl<'de> Deserialize<'de> for ArtifactCid {
     }
 }
 
-/// Serde glue for the bare [`Cid`] on the wire and in COB operations.
-///
-/// Superseded by [`ArtifactCid`], which carries the same encoding in the
-/// type. Retained until the remaining `#[serde(with = "cid_string")]` fields
-/// are migrated.
-pub mod cid_string {
-    use std::str::FromStr;
-
-    use cid::Cid;
-    use serde::{de, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(value: &Cid, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_str(value)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Cid, D::Error> {
-        let s = String::deserialize(d)?;
-        Cid::from_str(&s).map_err(de::Error::custom)
-    }
-}
-
 /// BLAKE3 multihash code.
 ///
 /// Source: <https://github.com/multiformats/multicodec/blob/master/table.csv#L51>
