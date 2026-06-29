@@ -2410,6 +2410,10 @@ Examples:
     /// --cid to register a precomputed CID for an artifact you don't have
     /// locally. Exactly one of `<PATH>` or --cid must be provided.
     ///
+    /// Registering from a `<PATH>` also records a `size-bytes` metadata
+    /// hint so peers can see the artifact's size before fetching; pass
+    /// --no-size to skip it. Registering by --cid records no size.
+    ///
     /// Registering records discovery metadata only; it does not hold or
     /// serve the bytes. To do that, seed the artifact with
     /// `rad-artifact seed <PATH>`.
