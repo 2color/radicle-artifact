@@ -1,1 +1,1 @@
-{"base":"1d36efdd068d0c452fdde25d0a01df012adcdcf6","description":"","oid":"5de496bee5f384745a1a6032d44cf7ecd5d16697","type":"revision"}
+{"base":"1d36efdd068d0c452fdde25d0a01df012adcdcf6","description":"feat(cli): show size-bytes hint human-readably\n\n- render the size-bytes metadata as a human-friendly size in show/list\n  pretty output; --json keeps the raw integer for scripts\n- consolidate human_bytes into the display module so the renderer, the\n  register summary, and the node share one formatter","oid":"747854a15cb973d68c54db5a60b81efc4ef46ad3","type":"revision"}
