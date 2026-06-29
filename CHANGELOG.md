@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚠️ Breaking changes
+
+This release ships with three breaking changes:
+
+- **`iroh://` → `radiroh://` scheme**: legacy URLs no longer parse and fetch ignores them; run `rad-artifact reconcile --remove-orphaned-self` to migrate your locations in one pass.
+- **COB type `org.radworks.artifact` → `dev.radicle.artifact`**: COBs under the old name are no longer found. Recreate releases with the latest version of the CLI.
+- **CIDs serialize as base32 in storage and on the wire**: operations written with the old byte-array encoding no longer deserialize. Library consumers: use public `radicle_artifact::Cid` rather than `cid::Cid`.
+
+See the highlights section below for more detail.
+
 ### ⭐️ Highlights
 
 #### Workspace split: lean COB crate, separate seeding daemon
@@ -42,6 +52,28 @@ Added radiroh location to release abc1234
 The node starts once, detaches from your terminal, and keeps serving across shell exits and terminal closes. It reuses your radicle key for the iroh endpoint, so starting it may prompt for your passphrase if the key is encrypted. It holds a persistent iroh-blobs store on disk, so restarts don't re-import or re-hash anything you're already seeding. Check on it with `rad-artifact node status` (endpoint id, seeded count, disk, traffic, and relay status), `rad-artifact node list`, and `rad-artifact node logs --follow`; stop it cleanly with `rad-artifact node stop`, which lets in-flight transfers drain before exiting.
 
 Together this means your published artifacts stay reachable peer-to-peer without you babysitting a foreground process.
+
+#### ⚠️ Rename the location URL scheme to `radiroh://`
+
+The peer-to-peer location scheme is renamed from the invented, unowned `iroh://` to the Radicle-namespaced `radiroh://` (rad issue b93d542). Radicle owns this namespace, so we can specify what the URL means — both peer discovery and the iroh-blobs transfer protocol — without colliding with the iroh project. See [docs/uri-scheme.md](docs/uri-scheme.md) for the grammar.
+
+The host encoding is unchanged: the iroh endpoint id as lowercase base32, no padding (RFC 4648). A bare `radiroh://` still derives the endpoint id from the location author's DID.
+
+This is a **breaking change** on read: legacy `iroh://` URLs are no longer parsed, and fetch ignores them. There is no automatic dual-read; instead, `rad-artifact reconcile --remove-orphaned-self` migrates your locations in a single run. It retracts the legacy URLs and re-adds fresh `radiroh://` URLs.
+
+#### ⚠️ Rename the COB type to `dev.radicle.artifact`
+
+The collaborative object type name is renamed from `org.radworks.artifact` to the Radicle-namespaced `dev.radicle.artifact`, dropping the org name in favour of the project namespace.
+
+The type name is embedded in the signed COB manifest and forms part of the `refs/cobs/<typename>/<id>` ref path, so this is a **breaking change**: COBs created under the old name are no longer found. No migration is provided, so recreate any local releases under the new type.
+
+#### ⚠️ CIDs encoded with base32 in storage
+
+CIDs in COB operations (stored as JSON in git storage) and on the control-socket wire now serialize as their base32 string encoding (`bafk...`) instead of the raw byte array, resulting in more efficiency and consistency across the stack.
+
+This was because the `cid` crate's derived `Serialize` which encodes a `Cid` as a serde byte sequence, and `serde_json` faithfully renders any byte sequence as a JSON array of numbers rather than a string.
+
+This is a **breaking change** for stored COBs: operations written with the old byte-array encoding no longer deserialize. For library consumers it is also a **breaking API change**: the public `radicle_artifact::Cid` type is the newtype rather than `cid::Cid`.
 
 #### Create a release up front with `create`
 
@@ -93,14 +125,6 @@ In practice this means `unseed` is release-aware: with `--release <id>` it stops
 
 `fetch` no longer spins up a throwaway iroh endpoint of its own; it routes through the running node over a typed control-socket protocol, reusing the node's persistent store and connections. The same protocol exposes `has`, `fetch`, and `export` operations with streaming progress. Beyond making fetches faster and more reliable, this establishes the node as the single long-lived process that future clients — including the planned Radicle desktop integration — can talk to over a stable local interface, rather than each shelling out to the CLI.
 
-#### Rename the location URL scheme to `radiroh://`
-
-The peer-to-peer location scheme is renamed from the invented, unowned `iroh://` to the Radicle-namespaced `radiroh://` (rad issue b93d542). Radicle owns this namespace, so we can specify what the URL means — both peer discovery and the iroh-blobs transfer protocol — without colliding with the iroh project. See [docs/uri-scheme.md](docs/uri-scheme.md) for the grammar.
-
-The host encoding is unchanged: the iroh endpoint id as lowercase base32, no padding (RFC 4648). A bare `radiroh://` still derives the endpoint id from the location author's DID.
-
-This is a **hard break** on read: legacy `iroh://` URLs are no longer parsed, and fetch ignores them. There is no automatic dual-read; instead, `rad-artifact reconcile --remove-orphaned-self` migrates your locations in a single run. It retracts the legacy URLs and re-adds fresh `radiroh://` URLs.
-
 #### Rename `add` to `register`
 
 The CLI command `add` is renamed to `register`, drawing a clear line between **Registering** artifacts and download location synced over the radicle protocol (discovery metadata, never bytes) and **Seeding**, the node holding the artifact's bytes and seeding them to peers over iroh.
@@ -113,11 +137,6 @@ The CLI command `add` is renamed to `register`, drawing a clear line between **R
 
 For library consumers this is a **breaking API change**: `Release::add_artifact` is now `register_artifact`, and the COB action `Action::AddArtifact` is now `Action::RegisterArtifact`. The on-the-wire format is unchanged — the action still serializes as `AddArtifact` via `#[serde(rename)]`, so existing COBs deserialize as before and no migration is needed.
 
-#### Rename the COB type to `dev.radicle.artifact`
-
-The collaborative object type name is renamed from `org.radworks.artifact` to the Radicle-namespaced `dev.radicle.artifact`, dropping the org name in favour of the project namespace.
-
-The type name is embedded in the signed COB manifest and forms part of the `refs/cobs/<typename>/<id>` ref path, so this is a **hard break**: COBs created under the old name are no longer found. No migration is provided, so recreate any local releases under the new type.
 
 #### Multiple iroh relays via `IROH_RELAY_HOSTS`
 
@@ -139,13 +158,159 @@ Registering an artifact from a local `<PATH>` now also records a `size-bytes` me
 
 Pass `--no-size` to skip it. Registering by `--cid` records no size since there are no local bytes to measure.
 
-#### CIDs encoded with base32 in storage
+### Added
 
-CIDs in COB operations (stored as JSON in git storage) and on the control-socket wire now serialize as their base32 string encoding (`bafk...`) instead of the raw byte array, resulting in more efficiency and consistency across the stack.
+* `9731329` introduce seeder module, base32 endpoint ids *<daniel@norman.life>*
+* `ec2f7c3` add seeder primitives with per-repo tag scoping *<daniel@norman.life>*
+* `8af7a58` add control-socket protocol types *<daniel@norman.life>*
+* `eeba35c` add control-socket client *<daniel@norman.life>*
+* `b306c26` **seeder:** add all_seeded helper *<daniel@norman.life>*
+* `460dff4` add foreground node daemon *<daniel@norman.life>*
+* `e3f0bdd` **node:** add parent-side lifecycle helpers *<daniel@norman.life>*
+* `3a05898` **node:** log via the log crate facade *<daniel@norman.life>*
+* `ef4fd2c` wire rad-artifact node CLI surface *<daniel@norman.life>*
+* `70be783` rename serve to seed and add top-level unseed *<daniel@norman.life>*
+* `456b81c` add rad-artifact reconcile *<daniel@norman.life>*
+* `3800a6b` **node:** match pretty status to --json output *<daniel@norman.life>*
+* `b95b7b3` **reconcile:** broaden retraction & ouput *<daniel@norman.life>*
+* `754a407` **node:** derive CID from path in `node seed` *<daniel@norman.life>*
+* `a6e4755` **fetch:** show https/iroh breakdown in trying summary *<daniel@norman.life>*
+* `1e37268` **share:** make iroh configurable via env *<daniel@norman.life>*
+* `88216b4` **reconcile:** report dangling seeded tags *<daniel@norman.life>*
+* `dcaf2b6` **seeder:** enable periodic blob GC *<daniel@norman.life>*
+* `acae5ba` **protocol:** add InvalidRequest code for malformed wire input *<daniel@norman.life>*
+* `d3dd21f` **reconcile:** sweep legacy iroh:// URLs under our DID *<daniel@norman.life>*
+* `64c2a60` **protocol:** add fetch/export/has wire types *<daniel@norman.life>*
+* `95f331c` **node:** add NodeCtx and Has/Export handlers *<daniel@norman.life>*
+* `8926b2b` **node:** implement the streaming Fetch handler *<daniel@norman.life>*
+* `6127a5f` **client:** add has and streaming fetch/export methods *<daniel@norman.life>*
+* `b2d82f0` **cli:** route fetch through the node *<daniel@norman.life>*
+* `27a2462` **node:** wire iroh connection and traffic stats *<daniel@norman.life>*
+* `89aefb9` **node:** add cheap Alive command for liveness *<daniel@norman.life>*
+* `ae49531` **cli:** add `register --seed` to register and seed in one step *<daniel@norman.life>*
+* `817e3f9` **cli:** add `--json` to register *<daniel@norman.life>*
+* `fea2dc0` support multiple relay URLs via IROH_RELAY_URLS *<daniel@norman.life>*
+* `f8e2211` **node:** surface relay health in status *<daniel@norman.life>*
+* `8a545e7` **cli:** warm up node command output *<daniel@norman.life>*
+* `c8afba4` **display:** mark seeded artifacts with a seedling *<daniel@norman.life>*
+* `da62177` split Fetch and Download *<daniel@norman.life>*
+* `f0e9ad9` allow fetch/download with --cid only *<daniel@norman.life>*
+* `909bf6e` add --offline export to download *<daniel@norman.life>*
+* `641ebd7` add radicle-artifact-client crate *<daniel@norman.life>*
+* `2de6d82` resolve iroh peers over encrypted pkarr *<daniel@norman.life>*
+* `8eb646b` **cli:** prompt to scope unseed across releases *<daniel@norman.life>*
+* `9169d33` **cli:** record size-bytes hint on register *<daniel@norman.life>*
+* `839ee2b` **cli:** show size-bytes hint human-readably *<daniel@norman.life>*
+* `16da24e` **cli:** add create command for releases *<daniel@norman.life>*
 
-This was because the `cid` crate's derived `Serialize` which encodes a `Cid` as a serde byte sequence, and `serde_json` faithfully renders any byte sequence as a JSON array of numbers rather than a string.
+### Changed
 
-This is a **breaking change** for stored COBs: operations written with the old byte-array encoding no longer deserialize. For library consumers it is also a **breaking API change**: the public `radicle_artifact::Cid` type is the newtype rather than `cid::Cid`.
+* `49e828d` **bin:** extract node CLI into its own module *<daniel@norman.life>*
+* `8e69822` **seeder:** use multibase base32 lowercase for endpoint ids *<daniel@norman.life>*
+* `d2f2130` consolidate iroh:// URL helpers into share::iroh_url *<daniel@norman.life>*
+* `1f6d1e8` **node:** switch logging from log to tracing *<daniel@norman.life>*
+* `a4a23e7` **keys:** consolidate iroh URL handling into EndpointId *<daniel@norman.life>*
+* `24ae368` **keys:** move keys module from seeder to share *<daniel@norman.life>*
+* `c39d863` **share:** rename endpoint module to iroh *<daniel@norman.life>*
+* `70acf95` **reconcile:** rename --retract-orphaned to --remove-orphaned *<daniel@norman.life>*
+* `28eab99` **protocol:** type endpoint_id as EndpointId *<daniel@norman.life>*
+* `3f59e96` **seeder:** hold temp tag across persistent tag set *<daniel@norman.life>*
+* `0a623be` remove unneeded ref *<daniel@norman.life>*
+* `405222b` **seeder:** use binary tag-name encoding *<daniel@norman.life>*
+* `8e3893b` **seeder:** length-prefix the RID inside seeded tag names *<daniel@norman.life>*
+* `3fc5947` **protocol:** type rid as RepoId on the wire *<daniel@norman.life>*
+* `5e8e09e` **protocol:** type cid as Cid on the wire *<daniel@norman.life>*
+* `f1c16ff` **share:** rename URL scheme from iroh to radiroh *<daniel@norman.life>*
+* `9bfc742` **fetch:** extract reusable download and export core *<daniel@norman.life>*
+* `f90d141` **fetch:** remove the standalone ephemeral fetch path *<daniel@norman.life>*
+* `1e85464` **share:** drop unused Error variants *<daniel@norman.life>*
+* `4d9527f` **node:** simplify run_stream signature with AsyncFnOnce *<daniel@norman.life>*
+* `ba4ff95` **seeder:** drop redundant tag lookup in artifact_size *<daniel@norman.life>*
+* `8c10fba` **status:** drop unused did_locations_unmatched warning *<daniel@norman.life>*
+* `812044d` **cli:** rename add command to register *<daniel@norman.life>*
+* `21cc400` rename AddArtifact to RegisterArtifact *<daniel@norman.life>*
+* `c7cfb0f` **display:** centralize FetchProgress rendering *<daniel@norman.life>*
+* `74394f2` **client:** extract run_blocking *<daniel@norman.life>*
+* `ddcb763` rename to tag *<daniel@norman.life>*
+* `c6b9a75` use simpler api to check for blobs *<daniel@norman.life>*
+* `d0d5615` extract log_retrieval_plan helper *<daniel@norman.life>*
+* `846d1c4` make unseed accept cid as a flag *<daniel@norman.life>*
+* `36be9ba` drop disk stats from node status *<daniel@norman.life>*
+* `e812490` split announce into add and announce *<daniel@norman.life>*
+* `98aca4e` move crate into cargo workspace layout *<daniel@norman.life>*
+* `ef4e879` extract radicle-artifact-core crate *<daniel@norman.life>*
+* `8437d1d` split node daemon out of radicle-artifact *<daniel@norman.life>*
+* `9a5c9f1` fold seed flag and release into one option *<daniel@norman.life>*
+* `7ff869a` **seeder:** short-circuit is_seeded_any scan *<daniel@norman.life>*
+* `b61fcac` rename cob type to dev.radicle.artifact [**breaking**] *<daniel@norman.life>*
+
+### Fixed
+
+* `18f7950` **node:** print full endpoint id in status *<daniel@norman.life>*
+* `4c6a7ec` **seed:** canonicalise path before sending to node *<daniel@norman.life>*
+* `82deac3` **reconcile:** treat undecodable hosts as stale *<daniel@norman.life>*
+* `1466e9f` **reconcile:** continue --all-repos past a failing repo *<daniel@norman.life>*
+* `adda642` **node:** kill orphaned daemon on startup timeout *<daniel@norman.life>*
+* `3f85b6c` **seed:** warn user if location register fails *<daniel@norman.life>*
+* `4f61111` **seeder:** await relay connectivity before serving *<daniel@norman.life>*
+* `aff3cf7` **seeder:** use temp tags for imports to avoid leaks *<daniel@norman.life>*
+* `08e3c8b` **node:** let in-flight imports drain before shutdown *<daniel@norman.life>*
+* `356cf0c` **node:** bound control-socket command read *<daniel@norman.life>*
+* `5f5bf68` **node:** subscribe to shutdown before signal handler *<daniel@norman.life>*
+* `1f53e86` **cli:** reject legacy iroh:// at location add and fix fetch summary *<daniel@norman.life>*
+* `b0d6b0f` **fetch:** make collection export safe and atomic *<daniel@norman.life>*
+* `9220b0b` **fetch:** robust temp-file cleanup for export and HTTP *<daniel@norman.life>*
+* `d2a5b36` **node:** protect fast-path fetch bytes with a temp tag *<daniel@norman.life>*
+* `2158775` stream progress and detect client disconnect promptly *<daniel@norman.life>*
+* `8ecede5` **protocol:** mark all response payload structs non_exhaustive *<daniel@norman.life>*
+* `a4cce12` use register over add in user output *<daniel@norman.life>*
+* `fd297b1` **cli:** announce COB changes after seed/unseed *<daniel@norman.life>*
+* `2e6002a` **fetch:** resolve output path against CLI cwd *<daniel@norman.life>*
+* `64cdc34` rename revision to oid in register output *<daniel@norman.life>*
+* `bf7c35d` use announce_refs_for for ref broadcast *<daniel@norman.life>*
+* `7750b40` **seeder:** key seeded tags by release *<daniel@norman.life>*
+* `c7d139f` **seeder:** remove TOCTOU in single-release unseed *<daniel@norman.life>*
+* `93a45e4` **seeder:** bound untag_all to a snapshot of releases *<daniel@norman.life>*
+* `1d36efd` encode CIDs as multibase strings [**breaking**] *<daniel@norman.life>*
+
+### Other
+
+* `5d7bd4d` add buildkite pipeline *<daniel@norman.life>*
+* `7eb2094` add cargo doc to buildkite pipeline *<daniel@norman.life>*
+* `2739576` update README for the node + seed/unseed flow *<daniel@norman.life>*
+* `6f27193` edit for clarity *<daniel@norman.life>*
+* `21a5ba9` update reconcile flags and note dangling tags in README *<daniel@norman.life>*
+* `81acca1` **seeder:** cover all_seeded decode and tag-name layout *<daniel@norman.life>*
+* `5764254` update URL scheme in integration tests *<daniel@norman.life>*
+* `47e4baf` update iroh:// references to radiroh:// *<daniel@norman.life>*
+* `2d6fd91` rename scheme in README and CONTEXT *<daniel@norman.life>*
+* `fe467f6` **changelog:** record radiroh scheme rename and reconcile sweep *<daniel@norman.life>*
+* `6efd17e` add radiroh:// URI scheme spec *<daniel@norman.life>*
+* `df4ef15` correct migration for urls *<daniel@norman.life>*
+* `8854385` **changelog:** record the long-running node and seeding flow *<daniel@norman.life>*
+* `e970d1f` fix broken intra-doc links *<daniel@norman.life>*
+* `c59c434` **fetch:** cover HTTP import, collection export, cleanup *<daniel@norman.life>*
+* `83192c5` **node:** cover disconnect abort, stale socket, error paths *<daniel@norman.life>*
+* `bf23a86` **node:** clarify GC re-download window is low risk *<daniel@norman.life>*
+* `32a86d2` run clippy, test, doc in parallel *<daniel@norman.life>*
+* `ef1c082` clarify register vs seed distinction *<daniel@norman.life>*
+* `21987a4` **changelog:** note add to register rename *<daniel@norman.life>*
+* `6982b76` **cli:** clarify seed tie-break & improve output *<daniel@norman.life>*
+* `7990185` add note about key reuse *<daniel@norman.life>*
+* `27fbaf4` document relationship to radicle node *<daniel@norman.life>*
+* `616350d` use language consistently and coherently *<daniel@norman.life>*
+* `674d9bc` add make check target *<daniel@norman.life>*
+* `5bf6dee` define Temp Tag in CONTEXT.md *<daniel@norman.life>*
+* `7c9d369` use ubiquitous language consistently *<daniel@norman.life>*
+* `4703bfc` reorg README and correct inaccuracies *<daniel@norman.life>*
+* `731c8a9` refine glossary for clarity *<daniel@norman.life>*
+* `bf56ce5` update release plumbing for workspace split *<daniel@norman.life>*
+* `89303ca` corrections for accuracy and rust doc fixes *<daniel@norman.life>*
+* `be7c372` fix protocol/logging/release doc nits *<daniel@norman.life>*
+* `ad08276` **changelog:** note per-release seeding scope *<daniel@norman.life>*
+* `7a71f64` add git https url for direct git dependency *<daniel@norman.life>*
+* `ee347ca` revisions need to be in radicle storage *<daniel@norman.life>*
+* `ace756c` update changelog *<daniel@norman.life>*
 
 ## [0.14.0] - 2026-05-12
 
