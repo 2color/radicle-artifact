@@ -1,6 +1,6 @@
 # radicle-artifact
 
-Secure artifact distribution for [radicle](https://radicle.dev/).
+Secure artifact distribution for [radicle].
 
 Git was never built to distribute large files and binaries. Existing solutions like Git LFS encode a URL in the repository tree, which breaks Git's content-addressed nature and leaves every artifact prone to link rot.
 
@@ -29,7 +29,14 @@ cargo install radicle-artifact        # the rad-artifact CLI (COB operations)
 cargo install radicle-artifact-node   # the seeding daemon (optional, for iroh seeding)
 ```
 
-> **Note:** radicle-artifact requires radicle installed.
+Or depend on the cargo crate straight from the radicle git remote:
+
+```toml
+[dependencies]
+radicle-artifact = { git = "https://radicle.norman.life/z4VYyJ9KuwMNkXGQnmKuGPGKw3inv.git" }
+```
+
+> **Note:** The radicle-artifact cli requires [radicle] installed.
 
 The project is split into focused crates so you only pull what you use:
 
@@ -246,7 +253,8 @@ cross-platform binaries alongside the install script.
 
 MIT OR Apache-2.0
 
+[radicle]: https://radicle.dev/
 [COB]: https://radicle.dev/guides/protocol#collaborative-objects
-[CID]: https://dasl.ing/cid.html
+[CID]: https://github.com/multiformats/cid
 [multicodec]: https://github.com/multiformats/multicodec
 [BLAKE3]: https://github.com/BLAKE3-team/BLAKE3
