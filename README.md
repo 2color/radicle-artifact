@@ -51,13 +51,15 @@ Working with the COB only (registering, attesting, adding locations of any URL s
 
 ## Workflow
 
-1. **Tag:** Create a release tag or commit, ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references).
+1. **Tag:** Create a release tag or commit, ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references). Push it to your radicle remote (`git push rad`); see the note below.
 2. **Build:** Build your release artifacts.
 3. **Register:** Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. This is signed discovery metadata in the COB, synced over the radicle protoc:ol not the bytes.
 4. **Seed:** Upload artifacts to an HTTP server and add the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
 5. **Download:** Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`.
 6. **Attest:** Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
 7. **Redact:** If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
+
+> **Note:** A release is bound to a revision in your **radicle storage**, not your working copy. Release operations resolve `<REVISION>` against radicle storage, so the commit (or annotated tag) must already be there before you can register against it. Push it first with `git push rad` (and `git push rad --tags` for an annotated tag). If the revision is missing, the command fails to resolve it.
 
 See [CONTEXT.md](./CONTEXT.md) for a glossary of the project's terminology: Register, Seed, Add, Announce, and the drift states they produce.
 
@@ -150,7 +152,7 @@ Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as lo
 
 ## CLI usage
 
-`<REVISION>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**.
+`<REVISION>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**. It is resolved against radicle storage, so push it first (`git push rad`, or `git push rad --tags` for an annotated tag).
 
 These global options apply to every command:
 
