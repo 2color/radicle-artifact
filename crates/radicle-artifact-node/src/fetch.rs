@@ -29,7 +29,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use cid::Cid;
 use iroh_blobs::api::blobs::{AddPathOptions, ExportProgressItem, ImportMode as IrohImportMode};
 use iroh_blobs::api::downloader::{DownloadProgressItem, Downloader, Shuffled};
 use iroh_blobs::format::collection::Collection;
@@ -40,7 +39,7 @@ use n0_future::StreamExt;
 use url::Url;
 
 use crate::Error;
-use radicle_artifact_core::cid::{self as cid_utils, ArtifactKind};
+use radicle_artifact_core::cid::{self as cid_utils, ArtifactKind, Cid};
 use radicle_artifact_core::keys::EndpointId;
 use radicle_artifact_core::protocol::FetchProgress;
 

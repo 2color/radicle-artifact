@@ -18,12 +18,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use cid::Cid;
 use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::HashAndFormat;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
+use radicle_artifact_core::cid::Cid;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
@@ -1040,7 +1040,7 @@ mod tests {
     fn fake_blob_cid(data: &[u8]) -> Cid {
         let digest = blake3::hash(data);
         let mh = Multihash::<64>::wrap(HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
-        Cid::new_v1(RAW_CODEC, mh)
+        Cid::from(cid::Cid::new_v1(RAW_CODEC, mh))
     }
 
     fn rid_a() -> RepoId {

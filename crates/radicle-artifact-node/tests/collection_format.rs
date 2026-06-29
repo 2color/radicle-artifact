@@ -8,10 +8,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use cid::Cid;
 use iroh_blobs::format::collection::Collection;
 use radicle_artifact_core::cid::{
-    blake3_hash_to_cid, canonical_walk, compute_content_id, ArtifactKind,
+    blake3_hash_to_cid, canonical_walk, compute_content_id, ArtifactKind, Cid,
 };
 
 /// The pre-split implementation: build the Collection with iroh-blobs
