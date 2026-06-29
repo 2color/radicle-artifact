@@ -118,6 +118,14 @@ The **`IROH_RELAY_HOSTS`** environment variable (previously `IROH_RELAY_URL`) no
 
 The `IROH_DNS_ENDPOINT_ORIGIN` environment variable which would configure the DNS server for used resolution has been removed. This means that reolving the relays and pkarr publishing address relies on the system DNS configuration.
 
+#### CIDs encoded with base32 in storage
+
+CIDs in COB operations (stored as JSON in git storage) and on the control-socket wire now serialize as their base32 string encoding (`bafk...`) instead of the raw byte array, resulting in more efficiency and consistency across the stack.
+
+This was because the `cid` crate's derived `Serialize` which encodes a `Cid` as a serde byte sequence, and `serde_json` faithfully renders any byte sequence as a JSON array of numbers rather than a string.
+
+This is a **breaking change** for stored COBs: operations written with the old byte-array encoding no longer deserialize. For library consumers it is also a **breaking API change**: the public `radicle_artifact::Cid` type is the newtype rather than `cid::Cid`.
+
 ## [0.14.0] - 2026-05-12
 
 ### ⭐️ Highlights
