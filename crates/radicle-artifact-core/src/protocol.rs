@@ -16,13 +16,12 @@
 
 use std::path::PathBuf;
 
-use cid::Cid;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::cid::ArtifactKind;
+use crate::cid::{ArtifactCid, ArtifactKind};
 use crate::keys::EndpointId;
 
 /// How imported bytes are placed in the store.
@@ -66,8 +65,7 @@ pub enum Command {
         /// releases be unseeded per release without dropping the others.
         release: Oid,
         /// Expected content identifier.
-        #[serde(with = "crate::cid::cid_string")]
-        cid: Cid,
+        cid: ArtifactCid,
         /// Path to the artifact on disk (file for blobs, directory for collections).
         path: PathBuf,
         /// Whether the artifact is a single blob or a collection.
@@ -85,16 +83,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         release: Option<Oid>,
         /// Content identifier to stop seeding.
-        #[serde(with = "crate::cid::cid_string")]
-        cid: Cid,
+        cid: ArtifactCid,
     },
     /// Whether `(rid, cid)` is currently seeded under any release.
     IsSeeding {
         /// Repository the artifact belongs to.
         rid: RepoId,
         /// Content identifier to check.
-        #[serde(with = "crate::cid::cid_string")]
-        cid: Cid,
+        cid: ArtifactCid,
     },
     /// List CIDs seeded under `rid`.
     ListSeeded {
@@ -106,16 +102,14 @@ pub enum Command {
     /// repo-agnostic.
     Has {
         /// Content identifier to look up.
-        #[serde(with = "crate::cid::cid_string")]
-        cid: Cid,
+        cid: ArtifactCid,
     },
     /// Export already-local bytes to `dest`. No network. Streaming —
     /// emits `exporting` progress, then [`ExportReceipt`]. Errors with
     /// [`ErrorCode::NotLocal`] if the content isn't complete in the store.
     Export {
         /// Content identifier to export.
-        #[serde(with = "crate::cid::cid_string")]
-        cid: Cid,
+        cid: ArtifactCid,
         /// Destination path (file for blobs, directory for collections).
         dest: PathBuf,
     },
@@ -127,8 +121,7 @@ pub enum Command {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
         /// Expected content identifier; the blob kind is derived from it.
-        #[serde(with = "crate::cid::cid_string")]
-        cid: Cid,
+        cid: ArtifactCid,
         /// Resolved providers/URLs to try. Iroh providers are batched into
         /// one multi-provider download; URLs are tried in sequence.
         locations: Vec<FetchLocation>,
@@ -146,8 +139,7 @@ pub enum Command {
         /// Repository the artifact belongs to (for the seeded tag).
         rid: RepoId,
         /// Expected content identifier; the blob kind is derived from it.
-        #[serde(with = "crate::cid::cid_string")]
-        cid: Cid,
+        cid: ArtifactCid,
         /// Resolved providers/URLs to try. Iroh providers are batched into
         /// one multi-provider download; URLs are tried in sequence.
         locations: Vec<FetchLocation>,
@@ -295,8 +287,7 @@ pub struct SeedReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
     /// Echo of the requested CID.
-    #[serde(with = "crate::cid::cid_string")]
-    pub cid: Cid,
+    pub cid: ArtifactCid,
     /// Endpoint id the node is serving on, as a canonical `radiroh://<base32>` URL.
     pub endpoint_id: EndpointId,
     /// Logical size of the imported artifact in bytes.
@@ -312,8 +303,7 @@ pub struct UnseedReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
     /// Echo of the requested CID.
-    #[serde(with = "crate::cid::cid_string")]
-    pub cid: Cid,
+    pub cid: ArtifactCid,
     /// `true` if a tag was removed; `false` if no tag existed.
     pub was_removed: bool,
 }
@@ -322,8 +312,7 @@ pub struct UnseedReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeededEntry {
     /// Content identifier currently tagged under the requested rid.
-    #[serde(with = "crate::cid::cid_string")]
-    pub cid: Cid,
+    pub cid: ArtifactCid,
     /// Logical artifact size in bytes. Best-effort — zero if the iroh
     /// status call temporarily fails.
     pub bytes: u64,
@@ -344,8 +333,7 @@ pub struct HasResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExportReceipt {
     /// Echo of the exported CID.
-    #[serde(with = "crate::cid::cid_string")]
-    pub cid: Cid,
+    pub cid: ArtifactCid,
     /// Where the bytes were written.
     pub dest: PathBuf,
     /// Logical size exported, in bytes.
@@ -358,8 +346,7 @@ pub struct FetchReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
     /// Echo of the fetched CID.
-    #[serde(with = "crate::cid::cid_string")]
-    pub cid: Cid,
+    pub cid: ArtifactCid,
     /// Logical size now complete in the store, in bytes.
     pub bytes: u64,
     /// `true` if the bytes were already local; no network was used.
@@ -378,8 +365,7 @@ pub struct DownloadReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
     /// Echo of the downloaded CID.
-    #[serde(with = "crate::cid::cid_string")]
-    pub cid: Cid,
+    pub cid: ArtifactCid,
     /// Where the bytes were written.
     pub dest: PathBuf,
     /// Logical size exported, in bytes.
@@ -499,6 +485,7 @@ mod tests {
     use std::path::PathBuf;
     use std::str::FromStr;
 
+    use cid::Cid;
     use serde_json::json;
 
     use super::*;
@@ -519,12 +506,12 @@ mod tests {
 
     /// Real Blake3/raw Cid for wire snapshots — built from a pinned
     /// preimage so the multibase string stays stable across runs.
-    fn sample_cid() -> Cid {
+    fn sample_cid() -> ArtifactCid {
         let digest = blake3::hash(b"protocol-cid-sample");
         let mh =
             cid::multihash::Multihash::<64>::wrap(crate::cid::HASH_CODE_BLAKE3, digest.as_bytes())
                 .unwrap();
-        Cid::new_v1(crate::cid::RAW_CODEC, mh)
+        ArtifactCid(Cid::new_v1(crate::cid::RAW_CODEC, mh))
     }
 
     /// Catch-all check that every top-level type round-trips through
