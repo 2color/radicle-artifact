@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚠️ Breaking changes
+
+This release ships with three breaking changes:
+
+- **`iroh://` → `radiroh://` scheme**: legacy URLs no longer parse and fetch ignores them; run `rad-artifact reconcile --remove-orphaned-self` to migrate your locations in one pass.
+- **COB type `org.radworks.artifact` → `dev.radicle.artifact`**: COBs under the old name are no longer found. Recreate releases with the latest version of the CLI.
+- **CIDs serialize as base32 in storage and on the wire**: operations written with the old byte-array encoding no longer deserialize. Library consumers: use public `radicle_artifact::Cid` rather than `cid::Cid`.
+
+See the highlights section below for more detail.
+
 ### ⭐️ Highlights
 
 #### Workspace split: lean COB crate, separate seeding daemon
@@ -42,6 +52,28 @@ Added radiroh location to release abc1234
 The node starts once, detaches from your terminal, and keeps serving across shell exits and terminal closes. It reuses your radicle key for the iroh endpoint, so starting it may prompt for your passphrase if the key is encrypted. It holds a persistent iroh-blobs store on disk, so restarts don't re-import or re-hash anything you're already seeding. Check on it with `rad-artifact node status` (endpoint id, seeded count, disk, traffic, and relay status), `rad-artifact node list`, and `rad-artifact node logs --follow`; stop it cleanly with `rad-artifact node stop`, which lets in-flight transfers drain before exiting.
 
 Together this means your published artifacts stay reachable peer-to-peer without you babysitting a foreground process.
+
+#### ⚠️ Rename the location URL scheme to `radiroh://`
+
+The peer-to-peer location scheme is renamed from the invented, unowned `iroh://` to the Radicle-namespaced `radiroh://` (rad issue b93d542). Radicle owns this namespace, so we can specify what the URL means — both peer discovery and the iroh-blobs transfer protocol — without colliding with the iroh project. See [docs/uri-scheme.md](docs/uri-scheme.md) for the grammar.
+
+The host encoding is unchanged: the iroh endpoint id as lowercase base32, no padding (RFC 4648). A bare `radiroh://` still derives the endpoint id from the location author's DID.
+
+This is a **breaking change** on read: legacy `iroh://` URLs are no longer parsed, and fetch ignores them. There is no automatic dual-read; instead, `rad-artifact reconcile --remove-orphaned-self` migrates your locations in a single run. It retracts the legacy URLs and re-adds fresh `radiroh://` URLs.
+
+#### ⚠️ Rename the COB type to `dev.radicle.artifact`
+
+The collaborative object type name is renamed from `org.radworks.artifact` to the Radicle-namespaced `dev.radicle.artifact`, dropping the org name in favour of the project namespace.
+
+The type name is embedded in the signed COB manifest and forms part of the `refs/cobs/<typename>/<id>` ref path, so this is a **breaking change**: COBs created under the old name are no longer found. No migration is provided, so recreate any local releases under the new type.
+
+#### ⚠️ CIDs encoded with base32 in storage
+
+CIDs in COB operations (stored as JSON in git storage) and on the control-socket wire now serialize as their base32 string encoding (`bafk...`) instead of the raw byte array, resulting in more efficiency and consistency across the stack.
+
+This was because the `cid` crate's derived `Serialize` which encodes a `Cid` as a serde byte sequence, and `serde_json` faithfully renders any byte sequence as a JSON array of numbers rather than a string.
+
+This is a **breaking change** for stored COBs: operations written with the old byte-array encoding no longer deserialize. For library consumers it is also a **breaking API change**: the public `radicle_artifact::Cid` type is the newtype rather than `cid::Cid`.
 
 #### Create a release up front with `create`
 
@@ -93,14 +125,6 @@ In practice this means `unseed` is release-aware: with `--release <id>` it stops
 
 `fetch` no longer spins up a throwaway iroh endpoint of its own; it routes through the running node over a typed control-socket protocol, reusing the node's persistent store and connections. The same protocol exposes `has`, `fetch`, and `export` operations with streaming progress. Beyond making fetches faster and more reliable, this establishes the node as the single long-lived process that future clients — including the planned Radicle desktop integration — can talk to over a stable local interface, rather than each shelling out to the CLI.
 
-#### Rename the location URL scheme to `radiroh://`
-
-The peer-to-peer location scheme is renamed from the invented, unowned `iroh://` to the Radicle-namespaced `radiroh://` (rad issue b93d542). Radicle owns this namespace, so we can specify what the URL means — both peer discovery and the iroh-blobs transfer protocol — without colliding with the iroh project. See [docs/uri-scheme.md](docs/uri-scheme.md) for the grammar.
-
-The host encoding is unchanged: the iroh endpoint id as lowercase base32, no padding (RFC 4648). A bare `radiroh://` still derives the endpoint id from the location author's DID.
-
-This is a **hard break** on read: legacy `iroh://` URLs are no longer parsed, and fetch ignores them. There is no automatic dual-read; instead, `rad-artifact reconcile --remove-orphaned-self` migrates your locations in a single run. It retracts the legacy URLs and re-adds fresh `radiroh://` URLs.
-
 #### Rename `add` to `register`
 
 The CLI command `add` is renamed to `register`, drawing a clear line between **Registering** artifacts and download location synced over the radicle protocol (discovery metadata, never bytes) and **Seeding**, the node holding the artifact's bytes and seeding them to peers over iroh.
@@ -113,11 +137,6 @@ The CLI command `add` is renamed to `register`, drawing a clear line between **R
 
 For library consumers this is a **breaking API change**: `Release::add_artifact` is now `register_artifact`, and the COB action `Action::AddArtifact` is now `Action::RegisterArtifact`. The on-the-wire format is unchanged — the action still serializes as `AddArtifact` via `#[serde(rename)]`, so existing COBs deserialize as before and no migration is needed.
 
-#### Rename the COB type to `dev.radicle.artifact`
-
-The collaborative object type name is renamed from `org.radworks.artifact` to the Radicle-namespaced `dev.radicle.artifact`, dropping the org name in favour of the project namespace.
-
-The type name is embedded in the signed COB manifest and forms part of the `refs/cobs/<typename>/<id>` ref path, so this is a **hard break**: COBs created under the old name are no longer found. No migration is provided, so recreate any local releases under the new type.
 
 #### Multiple iroh relays via `IROH_RELAY_HOSTS`
 
@@ -138,14 +157,6 @@ The `IROH_DNS_ENDPOINT_ORIGIN` environment variable which would configure the DN
 Registering an artifact from a local `<PATH>` now also records a `size-bytes` metadata entry, so peers can get a hint about an artifact's size before fetching.
 
 Pass `--no-size` to skip it. Registering by `--cid` records no size since there are no local bytes to measure.
-
-#### CIDs encoded with base32 in storage
-
-CIDs in COB operations (stored as JSON in git storage) and on the control-socket wire now serialize as their base32 string encoding (`bafk...`) instead of the raw byte array, resulting in more efficiency and consistency across the stack.
-
-This was because the `cid` crate's derived `Serialize` which encodes a `Cid` as a serde byte sequence, and `serde_json` faithfully renders any byte sequence as a JSON array of numbers rather than a string.
-
-This is a **breaking change** for stored COBs: operations written with the old byte-array encoding no longer deserialize. For library consumers it is also a **breaking API change**: the public `radicle_artifact::Cid` type is the newtype rather than `cid::Cid`.
 
 ## [0.14.0] - 2026-05-12
 
