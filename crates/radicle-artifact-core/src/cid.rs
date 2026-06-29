@@ -268,6 +268,22 @@ pub fn compute_content_id(dir: &Path) -> Result<Cid, io::Error> {
     Ok(blake3_hash_to_cid(hash, ArtifactKind::Collection))
 }
 
+/// Total logical size of the artifact at `path`: file length for a blob,
+/// sum of member file lengths for a directory. Walks the same canonical set
+/// as [`compute_content_id`], so it matches the seeder's logical size (the
+/// sum of child blob sizes, without hashseq overhead).
+pub fn compute_size_from_path(path: &Path) -> Result<u64, io::Error> {
+    if path.is_dir() {
+        canonical_walk(path)?
+            .into_iter()
+            .try_fold(0u64, |sum, (_, p)| {
+                Ok(sum.saturating_add(std::fs::metadata(&p)?.len()))
+            })
+    } else {
+        Ok(std::fs::metadata(path)?.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

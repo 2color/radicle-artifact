@@ -92,6 +92,10 @@ pub const MAX_METADATA_KEY_LEN: usize = 256;
 /// Maximum byte length for a serialized metadata value.
 pub const MAX_METADATA_VALUE_LEN: usize = 8 * 1024;
 
+/// Metadata key recording an artifact's size hint in bytes (set on register
+/// from a local path unless suppressed).
+pub const METADATA_KEY_SIZE_BYTES: &str = "size-bytes";
+
 /// The identifier for a given [`Release`] collaborative object.
 ///
 /// When a [`Release`] is created, through [`Releases::create`], the identifier
@@ -833,6 +837,31 @@ where
     {
         self.transaction("Register artifact", signer, |tx| {
             tx.register_artifact(cid, name)
+        })
+    }
+
+    /// Register an artifact and record its size hint in the same transaction.
+    ///
+    /// The size is stored under [`METADATA_KEY_SIZE_BYTES`] as a JSON integer,
+    /// which always fits within [`MAX_METADATA_VALUE_LEN`], so no value
+    /// validation is needed. Both actions land in one signed COB entry.
+    pub fn register_artifact_with_size<G>(
+        &mut self,
+        cid: Cid,
+        name: String,
+        size_bytes: u64,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Register artifact", signer, |tx| {
+            tx.register_artifact(cid, name)?;
+            tx.set_metadata(
+                cid,
+                METADATA_KEY_SIZE_BYTES.to_string(),
+                serde_json::json!(size_bytes),
+            )
         })
     }
 

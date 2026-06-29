@@ -292,6 +292,7 @@ fn register_artifact<G>(
         name,
         seed,
         json,
+        no_size,
         all_authors,
     }: command::Register,
     no_input: bool,
@@ -322,6 +323,13 @@ where
                 "missing artifact source; pass a <PATH> or --cid <CID>".into(),
             ));
         }
+    };
+
+    // Record a size hint when registering from a local path; --cid alone has
+    // no local bytes to measure, so it skips silently.
+    let size = match (no_size, path.as_deref()) {
+        (false, Some(p)) => Some(share::compute_size_from_path(p).map_err(error::Register::Io)?),
+        _ => None,
     };
 
     let name = match name {
@@ -399,18 +407,26 @@ where
         }
     };
     let id = *release.id();
-    release
-        .register_artifact(cid, name.clone(), signer)
-        .map_err(|err| error::Register::Store { id, err })?;
+    match size {
+        Some(bytes) => release
+            .register_artifact_with_size(cid, name.clone(), bytes, signer)
+            .map_err(|err| error::Register::Store { id, err })?,
+        None => release
+            .register_artifact(cid, name.clone(), signer)
+            .map_err(|err| error::Register::Store { id, err })?,
+    };
     // Machine-readable output: emit only the JSON object on stdout so the
     // release id and CID are capturable without scraping stderr. Any
     // --seed progress still goes to stderr, keeping stdout a clean object.
     if json {
-        let out = serde_json::json!({
+        let mut out = serde_json::json!({
             "cid": cid.to_string(),
             "release_id": id.to_string(),
             "oid": oid.to_string(),
         });
+        if let Some(bytes) = size {
+            out["size_bytes"] = serde_json::json!(bytes);
+        }
         println!(
             "{}",
             serde_json::to_string(&out).map_err(error::Register::Json)?
@@ -420,7 +436,17 @@ where
 
     let short_oid = &oid.to_string()[..7];
     let short_id = &id.to_string()[..7];
-    eprintln!("Registered artifact '{name}' in release {short_id} (commit {short_oid})");
+    // Report the recorded size hint so the user knows the extra metadata entry
+    // was written.
+    match size {
+        Some(bytes) => eprintln!(
+            "Registered artifact '{name}' ({}) in release {short_id} (commit {short_oid})",
+            node::human_bytes(bytes)
+        ),
+        None => {
+            eprintln!("Registered artifact '{name}' in release {short_id} (commit {short_oid})")
+        }
+    }
     // Skip the discovery hints when --seed is set: the caller is about to
     // seed and add a location, so they'd be noise.
     if !seed && std::io::stderr().is_terminal() {
@@ -2447,6 +2473,11 @@ Examples:
         /// id and CID without scraping stderr.
         #[clap(long)]
         pub json: bool,
+        /// Skip recording the `size-bytes` metadata hint. By default,
+        /// registering from a local `<PATH>` records the artifact's byte
+        /// size; with --cid (no local bytes) no size is recorded regardless.
+        #[clap(long)]
+        pub no_size: bool,
         /// Also consider releases authored by users who are not
         /// repository delegates (and not the local user) when matching
         /// a `<revision>`. By default only delegate-authored or
