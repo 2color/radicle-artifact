@@ -1134,7 +1134,7 @@ mod test {
     use radicle::test;
     use url::Url;
 
-    use crate::{Cid, Releases};
+    use crate::{Cid, Releases, METADATA_KEY_SIZE_BYTES};
 
     /// Create a valid CIDv1 (raw codec, sha2-256) from a distinguishing byte.
     fn test_cid(n: u8) -> Cid {
@@ -1314,6 +1314,29 @@ mod test {
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.author(), &Did::from(alice.signer.public_key()));
+    }
+
+    #[test]
+    fn register_artifact_with_size_records_hint() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .register_artifact_with_size(cid, "binary".into(), 4096, &alice.signer)
+            .unwrap();
+
+        // Both the artifact entry and the size hint land from one call.
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.name(), "binary");
+        assert_eq!(
+            artifact.metadata().get(METADATA_KEY_SIZE_BYTES),
+            Some(&serde_json::json!(4096))
+        );
     }
 
     #[test]

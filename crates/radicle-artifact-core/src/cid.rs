@@ -486,4 +486,21 @@ mod tests {
             "symlinks should be skipped, not hashed"
         );
     }
+
+    // -- compute_size_from_path tests --
+
+    #[test]
+    fn size_of_file_is_its_length() {
+        let dir = create_test_dir(&[("a.bin", b"hello world")]);
+        let size = compute_size_from_path(&dir.path().join("a.bin")).unwrap();
+        assert_eq!(size, 11);
+    }
+
+    #[test]
+    fn size_of_dir_sums_member_files() {
+        // Sum of member file lengths, ignoring directory structure.
+        let dir = create_test_dir(&[("a.txt", b"abc"), ("sub/b.txt", b"de"), ("sub/c.txt", b"")]);
+        let size = compute_size_from_path(dir.path()).unwrap();
+        assert_eq!(size, 5);
+    }
 }
