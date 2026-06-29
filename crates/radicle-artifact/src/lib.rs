@@ -72,10 +72,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use url::Url;
 
-// Re-export cid::Cid as the content identifier type.
-// A Cid has both a binary representation (the struct itself) and a string
-// representation (multibase-encoded, used for Display/FromStr/JSON serde).
-pub use cid::Cid;
+// Re-export the project content identifier type. A newtype over cid::Cid
+// that serializes as its canonical multibase string; see the type's docs.
+pub use radicle_artifact_core::cid::Cid;
 
 pub mod display;
 pub mod error;
@@ -1115,7 +1114,28 @@ mod test {
         digest[0] = n;
         // 0x12 = sha2-256 hash code, 0x55 = raw codec
         let mh = Multihash::<64>::wrap(0x12, &digest).unwrap();
-        Cid::new_v1(0x55, mh)
+        Cid::from(cid::Cid::new_v1(0x55, mh))
+    }
+
+    #[test]
+    fn action_cid_serializes_as_string() {
+        use crate::Action;
+
+        let cid = test_cid(1);
+        let action = Action::RegisterArtifact {
+            cid,
+            name: "binary".into(),
+        };
+
+        // The CID must be a multibase string, not a JSON byte array.
+        let value: serde_json::Value = serde_json::to_value(&action).unwrap();
+        let serialized = value["AddArtifact"]["cid"].as_str().unwrap();
+        assert_eq!(serialized, cid.to_string());
+
+        // And it round-trips back to the same action.
+        let json = serde_json::to_string(&action).unwrap();
+        let decoded: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, action);
     }
 
     fn commit(repo: &Repository, message: &str) -> Oid {

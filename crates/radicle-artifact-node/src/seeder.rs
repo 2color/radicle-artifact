@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use crate::iroh::EndpointConfig;
 use crate::Error;
-use cid::Cid;
 use iroh::protocol::Router;
 use iroh_blobs::api::blobs::{AddPathOptions, ImportMode as IrohImportMode};
 use iroh_blobs::api::{Store, TempTag};
@@ -28,7 +27,7 @@ use iroh_blobs::{BlobFormat, BlobsProtocol, Hash, HashAndFormat};
 use n0_future::StreamExt;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
-use radicle_artifact_core::cid::{self as cid_utils, ArtifactKind};
+use radicle_artifact_core::cid::{self as cid_utils, ArtifactKind, Cid};
 
 pub use radicle_artifact_core::protocol::ImportMode;
 
@@ -138,7 +137,7 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
 /// bytes protected from GC.
 fn seeded_tag(rid: &RepoId, release: &Oid, cid: &Cid) -> Vec<u8> {
     let mut out = seeded_release_prefix(rid, release);
-    out.extend_from_slice(&cid.to_bytes());
+    out.extend_from_slice(&cid.as_inner().to_bytes());
     out
 }
 
@@ -185,7 +184,7 @@ fn parse_seeded_tag(name: &[u8]) -> Option<(RepoId, Oid, Cid)> {
     let (rel_b, cid_b) = take_len_prefixed(rest)?;
     let rid = RepoId::from(oid_from_bytes(rid_b)?);
     let release = oid_from_bytes(rel_b)?;
-    let cid = Cid::try_from(cid_b).ok()?;
+    let cid = Cid::from(cid::Cid::try_from(cid_b).ok()?);
     Some((rid, release, cid))
 }
 
@@ -547,7 +546,7 @@ mod tests {
         use cid::multihash::Multihash;
         let digest = blake3::hash(data);
         let mh = Multihash::<64>::wrap(cid_utils::HASH_CODE_BLAKE3, digest.as_bytes()).unwrap();
-        Cid::new_v1(cid_utils::RAW_CODEC, mh)
+        Cid::from(cid::Cid::new_v1(cid_utils::RAW_CODEC, mh))
     }
 
     /// Two distinct RepoIds we can refer to in tests.
@@ -715,13 +714,13 @@ mod tests {
         let rel_off = rel_len_off + 1;
         let cid_off = rel_off + SHA1_LEN;
 
-        assert_eq!(tag.len(), cid_off + cid.to_bytes().len());
+        assert_eq!(tag.len(), cid_off + cid.as_inner().to_bytes().len());
         assert_eq!(tag[0], SEEDED_TAG_V1);
         assert_eq!(usize::from(tag[1]), SHA1_LEN);
         assert_eq!(&tag[rid_off..rel_len_off], AsRef::<[u8]>::as_ref(&*rid));
         assert_eq!(usize::from(tag[rel_len_off]), SHA1_LEN);
         assert_eq!(&tag[rel_off..cid_off], AsRef::<[u8]>::as_ref(&rel));
-        assert_eq!(Cid::try_from(&tag[cid_off..]).unwrap(), cid);
+        assert_eq!(Cid::from(cid::Cid::try_from(&tag[cid_off..]).unwrap()), cid);
 
         let (rid_back, rel_back, cid_back) = parse_seeded_tag(&tag).expect("decodes");
         assert_eq!(rid_back, rid);

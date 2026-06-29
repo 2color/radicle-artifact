@@ -5,9 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cid::Cid;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
+use radicle_artifact_core::cid::Cid;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;

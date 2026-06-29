@@ -14,9 +14,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cid::Cid;
 use radicle::git::Oid;
 use radicle::identity::RepoId;
+use radicle_artifact_core::cid::Cid;
 use radicle_artifact_core::protocol::{CommandError, FetchLocation};
 
 pub mod codec;
