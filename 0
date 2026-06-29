@@ -1,1 +1,1 @@
-{"base":"61789d223a33c9c623714481121714eec7de2a33","description":"","oid":"215c4b41943a86c510ef773f8ca52911a11c8052","type":"revision"}
+{"base":"61789d223a33c9c623714481121714eec7de2a33","description":"docs(changelog): note base32 CID encoding\n\n- record that CIDs serialize as base32 strings in COBs and on the wire\n- explain the cid crate derive emitted byte arrays as the root cause\n- flag the COB storage and public Cid API breaks","oid":"75603dd6576fea47ba844670e0643e257c4d1319","type":"revision"}
