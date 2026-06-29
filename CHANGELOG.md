@@ -118,6 +118,12 @@ The **`IROH_RELAY_HOSTS`** environment variable (previously `IROH_RELAY_URL`) no
 
 The `IROH_DNS_ENDPOINT_ORIGIN` environment variable which would configure the DNS server for used resolution has been removed. This means that reolving the relays and pkarr publishing address relies on the system DNS configuration.
 
+#### Record a `size-bytes` hint on register
+
+Registering an artifact from a local `<PATH>` now also records a `size-bytes` metadata entry, so peers can get a hint about an artifact's size before fetching.
+
+Pass `--no-size` to skip it. Registering by `--cid` records no size since there are no local bytes to measure.
+
 #### CIDs encoded with base32 in storage
 
 CIDs in COB operations (stored as JSON in git storage) and on the control-socket wire now serialize as their base32 string encoding (`bafk...`) instead of the raw byte array, resulting in more efficiency and consistency across the stack.

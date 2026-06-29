@@ -92,6 +92,10 @@ pub const MAX_METADATA_KEY_LEN: usize = 256;
 /// Maximum byte length for a serialized metadata value.
 pub const MAX_METADATA_VALUE_LEN: usize = 8 * 1024;
 
+/// Metadata key recording an artifact's size hint in bytes (set on register
+/// from a local path unless suppressed).
+pub const METADATA_KEY_SIZE_BYTES: &str = "size-bytes";
+
 /// The identifier for a given [`Release`] collaborative object.
 ///
 /// When a [`Release`] is created, through [`Releases::create`], the identifier
@@ -836,6 +840,31 @@ where
         })
     }
 
+    /// Register an artifact and record its size hint in the same transaction.
+    ///
+    /// The size is stored under [`METADATA_KEY_SIZE_BYTES`] as a JSON integer,
+    /// which always fits within [`MAX_METADATA_VALUE_LEN`], so no value
+    /// validation is needed. Both actions land in one signed COB entry.
+    pub fn register_artifact_with_size<G>(
+        &mut self,
+        cid: Cid,
+        name: String,
+        size_bytes: u64,
+        signer: &Device<G>,
+    ) -> Result<EntryId, store::Error>
+    where
+        G: Signer<crypto::Signature>,
+    {
+        self.transaction("Register artifact", signer, |tx| {
+            tx.register_artifact(cid, name)?;
+            tx.set_metadata(
+                cid,
+                METADATA_KEY_SIZE_BYTES.to_string(),
+                serde_json::json!(size_bytes),
+            )
+        })
+    }
+
     /// Add a discovery location for an artifact.
     pub fn add_location<G>(
         &mut self,
@@ -1105,7 +1134,7 @@ mod test {
     use radicle::test;
     use url::Url;
 
-    use crate::{Cid, Releases};
+    use crate::{Cid, Releases, METADATA_KEY_SIZE_BYTES};
 
     /// Create a valid CIDv1 (raw codec, sha2-256) from a distinguishing byte.
     fn test_cid(n: u8) -> Cid {
@@ -1285,6 +1314,29 @@ mod test {
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.author(), &Did::from(alice.signer.public_key()));
+    }
+
+    #[test]
+    fn register_artifact_with_size_records_hint() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .register_artifact_with_size(cid, "binary".into(), 4096, &alice.signer)
+            .unwrap();
+
+        // Both the artifact entry and the size hint land from one call.
+        let artifact = release.artifact(&cid).unwrap();
+        assert_eq!(artifact.name(), "binary");
+        assert_eq!(
+            artifact.metadata().get(METADATA_KEY_SIZE_BYTES),
+            Some(&serde_json::json!(4096))
+        );
     }
 
     #[test]
