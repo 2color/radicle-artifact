@@ -67,6 +67,23 @@ pub fn format_did(did: &Did, alias: &Option<String>, full: bool) -> String {
     }
 }
 
+/// Format a byte count as a human-readable size (e.g. `1.5 MiB`). The raw
+/// integer stays in JSON output; this is for the human-facing display only.
+pub fn human_bytes(n: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if n >= GIB {
+        format!("{:.2} GiB", n as f64 / GIB as f64)
+    } else if n >= MIB {
+        format!("{:.1} MiB", n as f64 / MIB as f64)
+    } else if n >= KIB {
+        format!("{:.1} KiB", n as f64 / KIB as f64)
+    } else {
+        format!("{n} B")
+    }
+}
+
 /// Visible width of a string, ignoring ANSI SGR escape sequences and counting
 /// each remaining `char` as a single column. Sufficient for the limited set of
 /// characters used in our output (ASCII + a few BMP symbols like `…`, `●`, `▸`).
@@ -814,11 +831,17 @@ impl Release {
             if !artifact.metadata.is_empty() {
                 push_line(&mut s, format!("    {}", bare_label("metadata")));
                 for (key, value) in artifact.metadata.iter() {
-                    // Strings render unquoted to keep simple notes readable;
-                    // other JSON shapes render as compact JSON.
-                    let rendered = match value {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
+                    // The size hint renders human-friendly (the raw integer
+                    // stays in --json). Strings render unquoted to keep simple
+                    // notes readable; other JSON shapes render as compact JSON.
+                    let rendered = match (key.as_str(), value) {
+                        (crate::METADATA_KEY_SIZE_BYTES, serde_json::Value::Number(n))
+                            if n.is_u64() =>
+                        {
+                            human_bytes(n.as_u64().expect("checked is_u64"))
+                        }
+                        (_, serde_json::Value::String(s)) => s.clone(),
+                        (_, other) => other.to_string(),
                     };
                     push_line(&mut s, format!("      {} = {}", style.cyan(key), rendered));
                 }
@@ -902,5 +925,14 @@ mod tests {
             }),
             Some(ProgressUpdate::Message("exporting".into()))
         );
+    }
+
+    #[test]
+    fn human_bytes_picks_unit_by_threshold() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        assert_eq!(human_bytes(1024 * 1024), "1.0 MiB");
+        assert_eq!(human_bytes(1024 * 1024 * 1024 * 3 / 2), "1.50 GiB");
     }
 }

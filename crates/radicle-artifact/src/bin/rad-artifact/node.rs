@@ -7,8 +7,9 @@
 //! status, logs) skip repo discovery entirely so they work from any
 //! directory.
 //!
-//! Pretty-print helpers (`print_status_pretty`, `human_bytes`,
-//! `humanize_uptime`) live here too — they're node-specific UI.
+//! Pretty-print helpers (`print_status_pretty`, `humanize_uptime`) live
+//! here too — they're node-specific UI. Byte sizes use the shared
+//! [`radicle_artifact::display::human_bytes`].
 
 use std::io::IsTerminal;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use radicle::{
     prelude::Profile,
     storage::git::Repository,
 };
+use radicle_artifact::display::human_bytes;
 use radicle_artifact::lifecycle;
 use radicle_artifact::{Cid, ReleaseId, Releases};
 use radicle_artifact_client::{self as client, sync::Client, ClientError};
@@ -718,21 +720,6 @@ fn print_relay(r: &RelayStats) {
         if r.udp_v4 { "v4" } else { "no-v4" },
         if r.udp_v6 { "v6" } else { "no-v6" },
     );
-}
-
-pub(crate) fn human_bytes(n: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = 1024 * KIB;
-    const GIB: u64 = 1024 * MIB;
-    if n >= GIB {
-        format!("{:.2} GiB", n as f64 / GIB as f64)
-    } else if n >= MIB {
-        format!("{:.1} MiB", n as f64 / MIB as f64)
-    } else if n >= KIB {
-        format!("{:.1} KiB", n as f64 / KIB as f64)
-    } else {
-        format!("{n} B")
-    }
 }
 
 fn humanize_uptime(started_at_unix: i64) -> String {

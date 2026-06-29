@@ -441,7 +441,7 @@ where
     match size {
         Some(bytes) => eprintln!(
             "Registered artifact '{name}' ({}) in release {short_id} (commit {short_oid})",
-            node::human_bytes(bytes)
+            display::human_bytes(bytes)
         ),
         None => {
             eprintln!("Registered artifact '{name}' in release {short_id} (commit {short_oid})")
