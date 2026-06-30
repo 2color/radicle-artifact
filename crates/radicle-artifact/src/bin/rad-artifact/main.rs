@@ -579,7 +579,12 @@ where
             );
         }
     }
-    println!("{cid}");
+    // Bare CID on stdout for scripting (`cid=$(rad-artifact register …)`).
+    // Suppressed in a TTY, where the hint above already prints it, to avoid a
+    // redundant lone-CID line.
+    if !std::io::stdout().is_terminal() {
+        println!("{cid}");
+    }
     Ok((id, cid))
 }
 
@@ -669,9 +674,6 @@ where
         .add_location(cid, url.clone(), signer)
         .map_err(|err| error::Locate::Store { id, err })?;
     eprintln!("Added location {url} for artifact {cid}");
-    if std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact show --pretty --release {id}` to verify the release");
-    }
     Ok(())
 }
 
@@ -1381,7 +1383,8 @@ fn add_seed_location(
     release_mut
         .add_location(cid, url, &signer)
         .map_err(|e| error::Share::Usage(format!("add location: {e}")))?;
-    eprintln!("Now seeding {cid}; added location to release {primary_id}");
+    let short_id = &primary_id.to_string()[..7];
+    eprintln!("Now seeding {cid}; added location to release {short_id}");
     Ok(())
 }
 
