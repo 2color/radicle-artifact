@@ -153,18 +153,20 @@ but leaves other versions untouched.
 make register-artifacts
 ```
 
-This dogfoods `rad-artifact` on its own release. For each built binary,
-it computes the BLAKE3 CID, adds the artifact to the release COB tagged
-`releases/X.Y.Z`, and announces the `files.radicle.dev` URL as a discovery
-location:
+This dogfoods `rad-artifact` on its own release. For each built binary, it
+registers the artifact in the release COB tagged `releases/X.Y.Z` (the BLAKE3
+CID is computed from the file contents) and announces the `files.radicle.dev`
+URL as a discovery location:
 
 ```
-rad-artifact add    --cid <CID> --commit releases/X.Y.Z --name <binary>
-rad-artifact location add releases/X.Y.Z --cid <CID> <public-url>
+rad-artifact register <binary> --revision releases/X.Y.Z --name <binary> --json
+rad-artifact location add --cid <CID> --revision releases/X.Y.Z <public-url>
 ```
 
-The COB is created on the first `add` and reused for the remaining binaries.
-After this step, users can discover and fetch releases with:
+`register --json` prints `{cid, release_id, revision}`; the CID is read back
+from there and passed to `location add`. The COB is created on the first
+`register` and reused for the remaining binaries. After this step, users can
+discover and fetch releases with:
 
 ```sh
 rad-artifact list
@@ -172,8 +174,8 @@ rad-artifact fetch releases/X.Y.Z --cid <CID>
 ```
 
 Run this **after** `make upload` so the announced URL resolves. Re-running is
-safe: `add` with the same `(commit, cid)` from the same author is idempotent,
-and `location add` dedups URLs.
+safe: `register` with the same `(revision, cid)` from the same author is
+idempotent, and `location add` dedups URLs.
 
 Unlike `make release` / `make upload`, this step talks to your local Radicle
 profile and the network, so it requires `rad auth` to be configured with a

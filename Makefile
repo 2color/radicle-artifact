@@ -131,9 +131,9 @@ register-artifacts: check-bins
 	    bin="$(RELEASE_DIR)/$$name"; \
 	    url="$(BASE_URL)/$(VERSION)/$$name"; \
 	    echo "→ $$name"; \
-	    cid=$$($$RAD_ARTIFACT cid "$$bin") || exit 1; \
+	    json=$$($$RAD_ARTIFACT --no-input register "$$bin" --revision "releases/$(VERSION)" --name "$$name" --json) || exit 1; \
+	    cid=$$(echo "$$json" | jq -r '.cid'); \
 	    echo "   cid: $$cid"; \
-	    $$RAD_ARTIFACT --no-input add --cid "$$cid" --revision "releases/$(VERSION)" --name "$$name" || exit 1; \
 	    $$RAD_ARTIFACT --no-input location add --cid "$$cid" --revision "releases/$(VERSION)" "$$url" || exit 1; \
 	  done; \
 	done
