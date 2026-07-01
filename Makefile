@@ -1,4 +1,4 @@
-.PHONY: changelog release release-macos release-linux upload register-artifacts check-bins clean clean-all check help
+.PHONY: changelog release release-macos release-linux check-macos-host upload register-artifacts check-bins clean clean-all check help
 
 # Version from the workspace (all crates version in lockstep)
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .version')
@@ -70,7 +70,14 @@ build-%:
 	    echo "✓ Created: $(RELEASE_DIR)/$${b}_$(VERSION)_$*"; \
 	done
 
-release-macos: $(addprefix build-,$(MACOS_TARGETS))
+# macOS targets build with plain `cargo build`, which has no Darwin cross
+# toolchain on other hosts; guard so a Linux `make release` fails fast with a
+# clear message
+release-macos: check-macos-host $(addprefix build-,$(MACOS_TARGETS))
+
+check-macos-host:
+	@[ "$$(uname -s)" = "Darwin" ] || \
+	    (echo "release-macos must run on a macOS host (got $$(uname -s)). Run 'make release-linux' here instead." && exit 1)
 
 # Linux targets also need cargo-zigbuild + zig installed.
 release-linux: check-zig $(addprefix build-,$(LINUX_TARGETS))
