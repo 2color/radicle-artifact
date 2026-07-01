@@ -2,17 +2,17 @@
 
 Secure artifact distribution for [radicle].
 
-Git was never built to distribute large files and binaries. Existing solutions like Git LFS encode a URL in the repository tree, which breaks Git's content-addressed nature and leaves every artifact prone to link rot.
+Git was never built to distribute large files and binaries. Solutions like Git LFS resolve through a single configured endpoint; if that host moves, dies, or rate-limits you, the pointers still exist in git but the bytes are unreachable. There's no built-in fallback or multi-source resolution.
 
-`radicle-artifact` makes artifact distribution:
+**radicle-artifact** rethinks artifact distribution for git from the ground up, with a focus on security and resilience:
 
-- **Verifiable and signed** — every artifact is content-addressed via a [CID] (a [BLAKE3] hash) and bound to the exact commit it was built from. Every [action](#actions) (`RegisterArtifact`, `Attest`, `AddLocation`, ...) is signed by its author's Ed25519 key.
-- **Decentralized** — anyone can help seed artifacts, or independently rebuild and verify, increasing resilience, and making seeding participatory.
-- **Transport-agnostic** — artifacts can have multiple _locations_ and be shared over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI comes with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) support for reliable peer-to-peer seeding and fetching of artifacts with incremental verification.
+- **Verifiable and signed** — every artifact is content—addressed via a [CID] (a [BLAKE3] hash) and bound to the exact commit it was built from. Every interaction is signed by its author's Ed25519 key.
+- **Decentralized and collaborative** — seeding, attesting, and redacting are open to multiple parties, so maintainers can independently rebuild and verify a release. This shrinks the attack surface and makes seeding participatory.
+- **Transport-agnostic** — an artifact can have many _locations_ and travel over HTTP, iroh, IPFS, magnet links, [`rasl://`](https://dasl.ing/rasl.html), or any URL scheme. The CLI ships with [iroh-blobs](https://docs.iroh.computer/protocols/blobs) for reliable peer-to-peer seeding and fetching, plus HTTP fetching.
 
-Trust is multi-party and follows the repository's **delegates** — the maintainers who establish canonical branches and tags.
+Trust is anchored in the repository's **delegates**, its maintainers as named in the radicle identity; by default you see only the releases and artifacts they or you authored.
 
-radicle-artifact is useful for distributing any data related to code: binaries, static sites, model weights, and scientific datasets.
+radicle-artifact is useful for distributing any data tied to code: binaries, static sites, model weights, and scientific datasets.
 
 ## Installation
 
