@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+This is a small release with cosmetic changes to the output when registering artifacts.
+
+### Changed
+
+* `5050c27` **cli:** reduce noise in register output *<daniel@norman.life>*
+* `2bf34d9` check host machine before mac compilation *<daniel@norman.life>*
+* `541d76a` include chore & docs commits in changelog *<daniel@norman.life>*
+
+### Docs
+
+* `0f680d5` use register command in release flow *<daniel@norman.life>*
+* `d824bd0` refine the README *<daniel@norman.life>*
+* `d9f1615` add comparison to lfs, annex, and LOP *<daniel@norman.life>*
+
 ## [0.15.0] - 2026-06-29
 
 ### ⚠️ Breaking changes
