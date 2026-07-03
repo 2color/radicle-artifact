@@ -1,13 +1,13 @@
 # radicle-artifact vs git-lfs and git-annex vs LOP
 
-This document compares radicle-artifact to the two most common tools for distributing large files with Git, git-lfs and git-annex, highlighting where its content-addressed, signed, decentralized model differs from theirs.
+This document compares radicle-artifact to the most common tools for distributing large files with Git, git-lfs and git-annex, as well as the upcomming Git Large Object Promisor, highlighting where its content-addressed, signed, decentralized model differs from theirs.
 
 ## vs. git-lfs
 
 - **No single-server dependency** — LFS content is SHA-256-addressed, but resolved through one out-of-band server endpoint; if that server moves or dies, the bytes are unreachable. radicle-artifact records multiple per-DID locations for the same BLAKE3 CID, so bytes can move without breaking identity or availability.
 - **Multi-location** — any contributor can announce mirrors under their own DID. Locations are arbitrary URLs (HTTP, iroh, IPFS, magnet, `rasl://`, ...), though the CLI currently fetches only HTTP and iroh. LFS ties you to one server.
 - **No central server required** — the bytes never touch the git host; only the signed metadata COB syncs through it. Binaries are served peer-to-peer over iroh-blobs, or from one or more independent HTTP endpoints, so no single server is a chokepoint.
-- **Signed by design** — every action (register, attest, location add) is signed by the author's Ed25519 key. LFS has no signing model.
+- **Signed by design, multi-party** — every action (register, attest, location add) is signed by the author's Ed25519 key, and multiple parties can independently sign, attest, and redact the same artifact. LFS has no signing model of its own; the only option is signing the enclosing Git commit or tag, which carries a single signature and can't express independent attestation from multiple parties.
 
 ## vs. git-annex
 
@@ -24,8 +24,6 @@ This document compares radicle-artifact to the two most common tools for distrib
 - **Not platform-centric** — LOP trust still flows from the main remote and its advertised promisor (hub-and-spoke). radicle-artifact trust is multi-party, following the repo's delegate set, and any delegate can announce mirrors without server permission.
 - **Release-scoped, not history-scoped** — LOP applies to every large blob in history; radicle-artifact attaches artifacts to a tag or commit.
 - **Complementary** — LOP fixes Git's protocol ergonomics for working-tree assets; it doesn't address reproducible provenance or redaction. A project could use LOP for in-tree assets and radicle-artifact for release outputs.
-
-See [radicle-artifact vs. Git Large-Object-Promisors](./git-large-object-promisors.md) for the full comparison.
 
 ## Shared gap both solve, but differently
 
