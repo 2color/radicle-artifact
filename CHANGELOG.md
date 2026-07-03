@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### ⚠️ Breaking changes
+
+JSON output when passing the `--json` flag to the `rad-artifact` cli now follows a single **camelCase** convention, for example `release_id` becomes `releaseId`.
+
+- The conventional metadata key used to store a size hint for artifact `size-bytes` is renamed `sizeBytes`.
+
+- The `metadata` object is always present in `--json` output, empty when unset, so consumers get a stable shape.
+
+The signed replicated COB storage format is deliberately left unchanged.
+
+Artifacts registered before this keep the legacy `size-bytes` key and render their size as a raw integer, with no automatic fallback. See [`docs/adr/0001-json-casing.md`](./docs/adr/0001-json-casing.md) for the rationale.
+
+### Added
+
+* `a27a6fc` use camelCase for JSON and wire output [**breaking**] *<daniel@norman.life>*
+
+### Docs
+
+* `fbdd806` refine readme *<daniel@norman.life>*
+
 ## [0.15.1] - 2026-07-01
 
 This is a small release with cosmetic changes to the output when registering artifacts.
