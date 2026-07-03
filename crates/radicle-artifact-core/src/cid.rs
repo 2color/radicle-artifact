@@ -106,7 +106,7 @@ pub fn artifact_kind(cid: &Cid) -> Result<ArtifactKind, Error> {
 
 /// The kind of artifact a CID points to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum ArtifactKind {
     /// A single blob (raw codec 0x55).
     Blob,

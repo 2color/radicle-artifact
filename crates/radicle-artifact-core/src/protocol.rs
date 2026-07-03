@@ -29,7 +29,7 @@ use crate::keys::EndpointId;
 /// A serde-friendly, project-stable representation suitable for the wire
 /// protocol; the node maps it onto `iroh_blobs::api::blobs::ImportMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum ImportMode {
     /// Copy bytes into the store. The source file can be moved or
     /// deleted afterwards without breaking seeding. Default for the
@@ -44,11 +44,11 @@ pub enum ImportMode {
 
 /// A control-socket request.
 ///
-/// Serialized as JSON with an internal `"command"` tag, kebab-case
+/// Serialized as JSON with an internal `"command"` tag, camelCase
 /// variant names. Unit variants (`Status`, `Shutdown`) serialize to
 /// `{"command":"status"}`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "command", rename_all = "kebab-case")]
+#[serde(tag = "command", rename_all = "camelCase")]
 pub enum Command {
     /// Cheap liveness probe: the node replies `{"okay":null}` and does no
     /// work. Used to tell a live owner from a stale socket file. Distinct
@@ -163,7 +163,7 @@ pub enum Command {
 /// `radiroh://` entries) into this concrete form; the node does no
 /// identity resolution of its own.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum FetchLocation {
     /// An HTTP(S) (or other-scheme) URL, serialized as the URL string.
     Url(Url),
@@ -176,7 +176,7 @@ pub enum FetchLocation {
 /// Externally tagged so the wire reads `{"okay": <T>}` or
 /// `{"error": <CommandError>}`. Type-stable across commands by parameter.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum CommandResult<T> {
     /// Success with command-specific payload.
     Okay(T),
@@ -192,7 +192,7 @@ pub enum CommandResult<T> {
 /// terminal tags deliberately match [`CommandResult`] so a generic reader
 /// recognizes them; `progress` is the new, non-terminal frame.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum StreamEvent<T> {
     /// Non-terminal progress update.
     Progress(FetchProgress),
@@ -209,7 +209,11 @@ pub enum StreamEvent<T> {
 /// map onto the iroh `DownloadProgressItem` kinds the download loop
 /// already produces. `Export` only ever emits [`FetchProgress::Exporting`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub enum FetchProgress {
     /// Endpoint/relay setup, before any Location is tried.
     Connecting,
@@ -243,6 +247,7 @@ pub enum FetchProgress {
 
 /// Structured failure: an [`ErrorCode`] plus a human-readable message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandError {
     /// Machine-readable category.
     pub code: ErrorCode,
@@ -253,7 +258,7 @@ pub struct CommandError {
 /// Classifier for [`CommandError`]. `#[non_exhaustive]` so new codes are
 /// additive.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum ErrorCode {
     /// Content hash from `path` did not match the requested `cid`.
     CidMismatch,
@@ -283,6 +288,7 @@ pub enum ErrorCode {
 
 /// Successful result of [`Command::Seed`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SeedReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
@@ -299,6 +305,7 @@ pub struct SeedReceipt {
 
 /// Successful result of [`Command::Unseed`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct UnseedReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
@@ -310,6 +317,7 @@ pub struct UnseedReceipt {
 
 /// One entry returned by [`Command::ListSeeded`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SeededEntry {
     /// Content identifier currently tagged under the requested rid.
     pub cid: Cid,
@@ -320,6 +328,7 @@ pub struct SeededEntry {
 
 /// Result of [`Command::Has`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HasResult {
     /// Some bytes for this CID are in the store.
     pub present: bool,
@@ -331,6 +340,7 @@ pub struct HasResult {
 
 /// Terminal result of [`Command::Export`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportReceipt {
     /// Echo of the exported CID.
     pub cid: Cid,
@@ -342,6 +352,7 @@ pub struct ExportReceipt {
 
 /// Terminal result of [`Command::Fetch`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
@@ -361,6 +372,7 @@ pub struct FetchReceipt {
 
 /// Terminal result of [`Command::Download`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadReceipt {
     /// Echo of the requested repository.
     pub rid: RepoId,
@@ -384,6 +396,7 @@ pub struct DownloadReceipt {
 /// per-field source recipes; in v1 only the obvious fields are wired and
 /// the rest default to zero.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Status {
     /// Endpoint id the node is serving on, as a canonical `radiroh://<base32>` URL.
     pub endpoint_id: EndpointId,
@@ -403,6 +416,7 @@ pub struct Status {
 
 /// Aggregated `seeded/{rid}/{cid}` tag stats across all repos.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SeededStats {
     /// Number of tagged `(rid, cid)` pairs.
     pub count: usize,
@@ -412,6 +426,7 @@ pub struct SeededStats {
 
 /// QUIC connection counters from iroh's socket metrics.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ConnectionStats {
     /// Currently open connections (`opened_total - closed_total`).
     pub active: u32,
@@ -433,6 +448,7 @@ pub struct ConnectionStats {
 /// doc for the disco-vs-data semantics — `out_bytes` includes disco
 /// frames, `in_bytes` excludes them.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct TrafficStats {
     /// Bytes sent across ipv4/ipv6/relay (includes disco).
     pub out_bytes: u64,
@@ -444,6 +460,7 @@ pub struct TrafficStats {
 /// direct path reach this node, so a disconnected relay means reduced
 /// reachability even while the local socket is bound.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayStats {
     /// Per-home-relay status. Empty before a relay is selected, or when
     /// relays are disabled.
@@ -459,6 +476,7 @@ pub struct RelayStats {
 
 /// Connection status and measured latency of a single home relay.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayHealth {
     /// Relay URL.
     pub url: String,
@@ -474,6 +492,7 @@ pub struct RelayHealth {
 
 /// Soft warnings surfaced in `Status`, rendered as advice to the user.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Warnings {
     /// Set when no home relay is connected; peers that can't holepunch may
     /// be unable to reach this node.
@@ -591,13 +610,13 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(&is_seeding).unwrap(),
-            json!({"command":"is-seeding", "rid": SAMPLE_RID, "cid": cid.to_string()})
+            json!({"command":"isSeeding", "rid": SAMPLE_RID, "cid": cid.to_string()})
         );
 
         let list = Command::ListSeeded { rid: sample_rid() };
         assert_eq!(
             serde_json::to_value(&list).unwrap(),
-            json!({"command":"list-seeded", "rid": SAMPLE_RID})
+            json!({"command":"listSeeded", "rid": SAMPLE_RID})
         );
 
         let shutdown = Command::Shutdown;
@@ -618,7 +637,7 @@ mod tests {
         });
         assert_eq!(
             serde_json::to_value(&err).unwrap(),
-            json!({"error": {"code": "cid-mismatch", "message": "expected != actual"}})
+            json!({"error": {"code": "cidMismatch", "message": "expected != actual"}})
         );
     }
 
@@ -639,9 +658,9 @@ mod tests {
                 "rid": SAMPLE_RID,
                 "cid": cid.to_string(),
                 // Serialized as the canonical radiroh:// URL form.
-                "endpoint_id": endpoint_id.to_string(),
+                "endpointId": endpoint_id.to_string(),
                 "bytes": 42,
-                "was_new": true,
+                "wasNew": true,
             })
         );
         // Round-trips back to the same typed value.
@@ -656,7 +675,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(&unseed).unwrap(),
-            json!({"rid": SAMPLE_RID, "cid": cid.to_string(), "was_removed": false})
+            json!({"rid": SAMPLE_RID, "cid": cid.to_string(), "wasRemoved": false})
         );
 
         let entry = SeededEntry { cid, bytes: 1024 };
@@ -686,26 +705,26 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&st).unwrap(),
             json!({
-                "endpoint_id": endpoint_id.to_string(),
-                "started_at_unix": 0,
-                "seeded": {"count": 0, "bytes_logical": 0},
+                "endpointId": endpoint_id.to_string(),
+                "startedAtUnix": 0,
+                "seeded": {"count": 0, "bytesLogical": 0},
                 "connections": {
                     "active": 0,
-                    "opened_total": 0,
-                    "closed_total": 0,
-                    "direct_total": 0,
-                    "holepunch_attempts": 0,
-                    "paths_direct": 0,
-                    "paths_relayed": 0,
+                    "openedTotal": 0,
+                    "closedTotal": 0,
+                    "directTotal": 0,
+                    "holepunchAttempts": 0,
+                    "pathsDirect": 0,
+                    "pathsRelayed": 0,
                 },
-                "traffic": {"out_bytes": 0, "in_bytes": 0},
+                "traffic": {"outBytes": 0, "inBytes": 0},
                 "relay": {
                     "relays": [],
                     "preferred": null,
-                    "udp_v4": false,
-                    "udp_v6": false,
+                    "udpV4": false,
+                    "udpV6": false,
                 },
-                "warnings": {"relay_unreachable": false},
+                "warnings": {"relayUnreachable": false},
             })
         );
     }
@@ -798,7 +817,7 @@ mod tests {
         });
         assert_eq!(
             serde_json::to_value(&err).unwrap(),
-            json!({"error": {"code": "all-failed", "message": "no locations"}})
+            json!({"error": {"code": "allFailed", "message": "no locations"}})
         );
     }
 
@@ -809,11 +828,11 @@ mod tests {
             (FetchProgress::Connecting, json!({"kind": "connecting"})),
             (
                 FetchProgress::TryingLocation { endpoint_id },
-                json!({"kind": "trying-location", "endpoint_id": endpoint_id.to_string()}),
+                json!({"kind": "tryingLocation", "endpointId": endpoint_id.to_string()}),
             ),
             (
                 FetchProgress::LocationFailed { endpoint_id },
-                json!({"kind": "location-failed", "endpoint_id": endpoint_id.to_string()}),
+                json!({"kind": "locationFailed", "endpointId": endpoint_id.to_string()}),
             ),
             (
                 FetchProgress::Downloading {
@@ -879,9 +898,9 @@ mod tests {
                 "rid": SAMPLE_RID,
                 "cid": cid.to_string(),
                 "bytes": 4096,
-                "from_cache": false,
+                "fromCache": false,
                 "seeded": true,
-                "endpoint_id": endpoint_id.to_string(),
+                "endpointId": endpoint_id.to_string(),
             })
         );
         let back: FetchReceipt =
@@ -905,9 +924,9 @@ mod tests {
                 "cid": cid.to_string(),
                 "dest": "/tmp/out",
                 "bytes": 4096,
-                "from_cache": true,
+                "fromCache": true,
                 "seeded": false,
-                "endpoint_id": endpoint_id.to_string(),
+                "endpointId": endpoint_id.to_string(),
             })
         );
         let back: DownloadReceipt =

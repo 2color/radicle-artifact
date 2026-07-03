@@ -10,7 +10,7 @@ use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repositor
 use serde::Serialize;
 use url::Url;
 
-use crate::ReleaseId;
+use crate::{Cid, ReleaseId};
 use radicle_artifact_core::keys::EndpointId;
 use radicle_artifact_core::protocol::FetchProgress;
 
@@ -321,6 +321,7 @@ pub struct Filters<'a> {
 
 /// A set of [`Release`]s sorted by creation time.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Releases {
     releases: Vec<Release>,
 }
@@ -428,6 +429,7 @@ impl Releases {
 ///
 /// [release]: crate::Release
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Release {
     release_id: ReleaseId,
     /// Unix seconds when this release COB was created.
@@ -852,6 +854,7 @@ impl Release {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Artifact {
     cid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -861,11 +864,13 @@ struct Artifact {
     locations: Vec<Location>,
     attestations: Vec<Attestation>,
     redactions: Vec<Redaction>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    // Always emitted, empty when unset, like the sibling collections
+    // (locations/attestations/redactions); see docs/adr/0001-json-casing.md.
     metadata: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Location {
     #[serde(skip_serializing_if = "Option::is_none")]
     alias: Option<String>,
@@ -874,6 +879,7 @@ struct Location {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Attestation {
     #[serde(skip_serializing_if = "Option::is_none")]
     alias: Option<String>,
@@ -881,6 +887,7 @@ struct Attestation {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Redaction {
     #[serde(skip_serializing_if = "Option::is_none")]
     alias: Option<String>,
@@ -888,9 +895,196 @@ struct Redaction {
     reason: String,
 }
 
+/// `create --json` payload: the release that was created or reused. Named
+/// like the wire `*Receipt` command results in `radicle-artifact-core`.
+///
+/// camelCase keys via `rename_all`, like the other output forms here; see
+/// `docs/adr/0001-json-casing.md`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateReceipt {
+    release_id: ReleaseId,
+    oid: Oid,
+}
+
+impl CreateReceipt {
+    /// Build the `create --json` payload from the created/reused release id.
+    pub fn new(release_id: ReleaseId, oid: Oid) -> Self {
+        Self { release_id, oid }
+    }
+}
+
+/// `register --json` payload: the registered artifact and its release.
+///
+/// A recorded size hint nests under `metadata` (keys verbatim, matching
+/// `list`/`show`); `metadata` is always present, empty when no size was
+/// recorded. See `docs/adr/0001-json-casing.md`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterReceipt {
+    cid: Cid,
+    release_id: ReleaseId,
+    oid: Oid,
+    metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl RegisterReceipt {
+    /// Build the `register --json` payload; `size` is the byte hint recorded
+    /// on the artifact, or `None` when registering by `--cid`.
+    pub fn new(cid: Cid, release_id: ReleaseId, oid: Oid, size: Option<u64>) -> Self {
+        let mut metadata = BTreeMap::new();
+        if let Some(bytes) = size {
+            // Keyed by the stored COB metadata key so the output field
+            // stays coupled to what `register` actually wrote.
+            metadata.insert(
+                crate::METADATA_KEY_SIZE_BYTES.to_string(),
+                serde_json::json!(bytes),
+            );
+        }
+        Self {
+            cid,
+            release_id,
+            oid,
+            metadata,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
+
+    /// A valid CIDv1 (raw codec, sha2-256) for output-shape assertions.
+    fn test_cid() -> Cid {
+        use cid::multihash::Multihash;
+        let mh = Multihash::<64>::wrap(0x12, &[0u8; 32]).unwrap();
+        Cid::from(cid::Cid::new_v1(0x55, mh))
+    }
+
+    fn test_oid() -> Oid {
+        Oid::from_str("0123456789abcdef0123456789abcdef01234567").unwrap()
+    }
+
+    #[test]
+    fn create_receipt_is_camelcase() {
+        let oid = test_oid();
+        let release_id = ReleaseId::from(oid);
+        let out = CreateReceipt::new(release_id, oid);
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!({"releaseId": release_id.to_string(), "oid": oid.to_string()})
+        );
+    }
+
+    #[test]
+    fn register_receipt_nests_size_under_metadata() {
+        let (cid, oid) = (test_cid(), test_oid());
+        let release_id = ReleaseId::from(oid);
+        let out = RegisterReceipt::new(cid, release_id, oid, Some(1048576));
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!({
+                "cid": cid.to_string(),
+                "releaseId": release_id.to_string(),
+                "oid": oid.to_string(),
+                // camelCase system metadata key, nested under `metadata`.
+                "metadata": {"sizeBytes": 1048576},
+            })
+        );
+    }
+
+    #[test]
+    fn register_receipt_emits_empty_metadata_when_no_size() {
+        let (cid, oid) = (test_cid(), test_oid());
+        let release_id = ReleaseId::from(oid);
+        let out = RegisterReceipt::new(cid, release_id, oid, None);
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!({
+                "cid": cid.to_string(),
+                "releaseId": release_id.to_string(),
+                "oid": oid.to_string(),
+                // Always present so the shape is stable, empty when no size.
+                "metadata": {},
+            })
+        );
+    }
+
+    /// The `--json` display forms use camelCase structural keys, while
+    /// metadata keys (user- and system-defined) pass through verbatim.
+    /// Locks the convention in `docs/adr/0001-json-casing.md`.
+    #[test]
+    fn release_json_is_camelcase_with_verbatim_metadata() {
+        let did =
+            Did::from_str("did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp").unwrap();
+        let oid = Oid::from_str("0123456789abcdef0123456789abcdef01234567").unwrap();
+        let release_id = ReleaseId::from(oid);
+        let url = Url::parse("https://example.com/a").unwrap();
+
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            crate::METADATA_KEY_SIZE_BYTES.to_string(),
+            serde_json::json!(1048576),
+        );
+        metadata.insert("user-note".to_string(), serde_json::json!("hello"));
+
+        let artifact = Artifact {
+            cid: "bafybeigdyrartifactcid".to_string(),
+            author_alias: Some("alice".to_string()),
+            author: did,
+            name: "app.bin".to_string(),
+            locations: vec![Location {
+                alias: Some("alice".to_string()),
+                did,
+                url: url.clone(),
+            }],
+            attestations: vec![Attestation { alias: None, did }],
+            redactions: vec![Redaction {
+                alias: None,
+                did,
+                reason: "superseded".to_string(),
+            }],
+            metadata,
+        };
+        let release = Release {
+            release_id,
+            created_at: 1_700_000_000,
+            oid,
+            tag: Some(oid),
+            tag_name: Some("v1.0".to_string()),
+            title: Some("Release 1".to_string()),
+            creator: did,
+            creator_alias: Some("alice".to_string()),
+            artifacts: vec![artifact],
+            local: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&release).unwrap(),
+            serde_json::json!({
+                "releaseId": release_id.to_string(),
+                "createdAt": 1_700_000_000,
+                "oid": oid.to_string(),
+                "tag": oid.to_string(),
+                "tagName": "v1.0",
+                "title": "Release 1",
+                "creator": did.to_string(),
+                "creatorAlias": "alice",
+                "artifacts": [{
+                    "cid": "bafybeigdyrartifactcid",
+                    "authorAlias": "alice",
+                    "author": did.to_string(),
+                    "name": "app.bin",
+                    "locations": [{"alias": "alice", "did": did.to_string(), "url": "https://example.com/a"}],
+                    "attestations": [{"did": did.to_string()}],
+                    "redactions": [{"did": did.to_string(), "reason": "superseded"}],
+                    // System key camelCase; user key verbatim.
+                    "metadata": {"sizeBytes": 1048576, "user-note": "hello"},
+                }],
+            })
+        );
+    }
 
     /// `describe_progress` maps every `FetchProgress` arm to its display
     /// intent, and collapses the no-op Location-failure frame to `None`.

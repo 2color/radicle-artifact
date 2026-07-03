@@ -94,7 +94,11 @@ pub const MAX_METADATA_VALUE_LEN: usize = 8 * 1024;
 
 /// Metadata key recording an artifact's size hint in bytes (set on register
 /// from a local path unless suppressed).
-pub const METADATA_KEY_SIZE_BYTES: &str = "size-bytes";
+///
+/// camelCase like all keys we author (see `docs/adr/0001-json-casing.md`).
+/// Renamed from the legacy `size-bytes`; artifacts registered before the
+/// rename keep the old key and render their size as a raw integer.
+pub const METADATA_KEY_SIZE_BYTES: &str = "sizeBytes";
 
 /// The identifier for a given [`Release`] collaborative object.
 ///
@@ -279,6 +283,13 @@ impl Artifact {
 }
 
 /// The collaborative object actions for artifact releases.
+///
+/// This is the persisted COB format: each action serializes to canonical
+/// JSON that is committed to git, replicated to peers, and signed. Its
+/// variant tags (PascalCase) and field names (snake_case) are therefore a
+/// frozen wire format and are deliberately NOT camelCased like the CLI /
+/// control-socket output. Do not add `rename_all` here or rename variants
+/// without a compatibility path; see `docs/adr/0001-json-casing.md`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
     /// Create a [`Release`] for the given commit [`Oid`].

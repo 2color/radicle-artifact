@@ -1240,11 +1240,11 @@ mod tests {
             // fields are now RepoId / Cid, so we hand-roll the wire.
             for (frame, expected_field) in [
                 (
-                    br#"{"command":"list-seeded","rid":"not-a-real-rid"}"#.as_slice(),
+                    br#"{"command":"listSeeded","rid":"not-a-real-rid"}"#.as_slice(),
                     "rid",
                 ),
                 (
-                    br#"{"command":"is-seeding","rid":"rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip","cid":"not-a-real-cid"}"#.as_slice(),
+                    br#"{"command":"isSeeding","rid":"rad:z2u2CP3ZJzB7ZqE8jHrau19yjpdip","cid":"not-a-real-cid"}"#.as_slice(),
                     "cid",
                 ),
             ] {

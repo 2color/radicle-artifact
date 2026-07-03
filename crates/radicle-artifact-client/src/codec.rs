@@ -47,7 +47,7 @@ mod tests {
         let v: u32 = decode_result(r#"{"okay": 7}"#).unwrap();
         assert_eq!(v, 7);
 
-        let err = decode_result::<u32>(r#"{"error": {"code": "cid-mismatch", "message": "boom"}}"#)
+        let err = decode_result::<u32>(r#"{"error": {"code": "cidMismatch", "message": "boom"}}"#)
             .unwrap_err();
         assert!(matches!(
             err,

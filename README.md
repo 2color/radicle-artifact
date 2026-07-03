@@ -175,7 +175,7 @@ These global options apply to every command:
 ### COB-facing commands
 
 ```
-rad-artifact register <PATH> [--revision <REVISION>] [-n <NAME>] # register artifact (creates release if needed; records a size-bytes hint, skip with --no-size)
+rad-artifact register <PATH> [--revision <REVISION>] [-n <NAME>] # register artifact (creates release if needed; records a sizeBytes hint, skip with --no-size)
 rad-artifact register --cid <CID> --revision <REVISION> -n <NAME>  # register a precomputed CID without local bytes
 rad-artifact location add --revision <REVISION> --cid <CID> <URL>    # add discovery URL
 rad-artifact location remove --revision <REVISION> --cid <CID> <URL> # remove discovery URL

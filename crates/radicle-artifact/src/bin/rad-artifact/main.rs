@@ -374,10 +374,7 @@ where
     // Machine-readable output: emit only the JSON object on stdout so the
     // release id is capturable without scraping stderr.
     if json {
-        let out = serde_json::json!({
-            "release_id": id.to_string(),
-            "oid": oid.to_string(),
-        });
+        let out = display::CreateReceipt::new(id, oid);
         println!(
             "{}",
             serde_json::to_string(&out).map_err(error::CreateRelease::Json)?
@@ -540,14 +537,7 @@ where
     // release id and CID are capturable without scraping stderr. Any
     // --seed progress still goes to stderr, keeping stdout a clean object.
     if json {
-        let mut out = serde_json::json!({
-            "cid": cid.to_string(),
-            "release_id": id.to_string(),
-            "oid": oid.to_string(),
-        });
-        if let Some(bytes) = size {
-            out["size_bytes"] = serde_json::json!(bytes);
-        }
+        let out = display::RegisterReceipt::new(cid, id, oid, size);
         println!(
             "{}",
             serde_json::to_string(&out).map_err(error::Register::Json)?
@@ -2573,7 +2563,7 @@ Examples:
     /// --cid to register a precomputed CID for an artifact you don't have
     /// locally. Exactly one of `<PATH>` or --cid must be provided.
     ///
-    /// Registering from a `<PATH>` also records a `size-bytes` metadata
+    /// Registering from a `<PATH>` also records a `sizeBytes` metadata
     /// hint so peers can see the artifact's size before fetching; pass
     /// --no-size to skip it. Registering by --cid records no size.
     ///
@@ -2635,12 +2625,13 @@ Examples:
         /// local `<PATH>` and a running node; conflicts with --cid.
         #[clap(long, conflicts_with = "cid")]
         pub seed: bool,
-        /// Emit `{cid, release_id, revision}` as JSON on stdout instead of
-        /// the human-readable summary, so scripts can capture the release
-        /// id and CID without scraping stderr.
+        /// Emit `{cid, releaseId, oid, metadata}` as JSON on stdout instead of
+        /// the human-readable summary, so scripts can capture the release id and
+        /// CID without scraping stderr. `metadata` carries the `sizeBytes` hint
+        /// when recorded, and is empty otherwise.
         #[clap(long)]
         pub json: bool,
-        /// Skip recording the `size-bytes` metadata hint. By default,
+        /// Skip recording the `sizeBytes` metadata hint. By default,
         /// registering from a local `<PATH>` records the artifact's byte
         /// size; with --cid (no local bytes) no size is recorded regardless.
         #[clap(long)]
