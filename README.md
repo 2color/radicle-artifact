@@ -4,6 +4,17 @@ Secure artifact distribution for [Radicle].
 
 **radicle-artifact** helps you securely publish large files bound to git commits and tags, without bloating your repo.
 
+The project is split into focused crates:
+
+| Crate                     | What it is                                                                              |
+| ------------------------- | --------------------------------------------------------------------------------------- |
+| `radicle-artifact`        | [COB] types/operations + the `rad-artifact` CLI.                                        |
+| `radicle-artifact-node`   | The seeding daemon: iroh endpoint, iroh-blobs store + blob serving.                     |
+| `radicle-artifact-core`   | Shared substrate: wire protocol, CID helpers, endpoint identity. For library consumers. |
+| `radicle-artifact-client` | Control-socket client for interaction with `radicle-artifact-node`                      |
+
+> _Note:_ COB operations with `radicle-artifact` (creating releases, registering artifacts, attesting, and adding locations) never touch the iroh stack; the `radicle-artifact-node` crate is needed to seed or fetch artifacts.
+
 ## Principles
 
 - **Signed and verifiable** — every artifact is content-addressed via a [CID] (with a [BLAKE3] hash) and bound to the exact commit it was built from. Every interaction is signed by the user's Ed25519 key.
@@ -24,7 +35,6 @@ Existing solutions like Git LFS are designed around a server-client centric mode
 Moreover, existing solutions have no signing model of their own; the only option is signing the enclosing Git commit or tag, which carries a single signature and can't express independent, multi-party attestation. With radicle-artifact, signing, attestation, and redaction are multi-party by design, built on Radicle's key-based identity, giving you verifiable assurances about artifact provenance.
 
 For a more elaborate comparison to Git LFS, git-annex, and Git's upcoming Large Object Promisor, see the [comparison document](./docs/vs-git-lfs-annex-lop.md).
-
 
 ## Installation
 
@@ -49,17 +59,6 @@ radicle-artifact = { git = "https://radicle.norman.life/z4VYyJ9KuwMNkXGQnmKuGPGK
 ```
 
 > **Note:** The radicle-artifact cli requires [Radicle] installed.
-
-The project is split into focused crates so you only pull what you use:
-
-| Crate                     | What it is                                                                                    |
-| ------------------------- | --------------------------------------------------------------------------------------------- |
-| `radicle-artifact`        | COB types/operations + the `rad-artifact` CLI. No iroh, no tokio.                             |
-| `radicle-artifact-node`   | The `rad-artifact-node` seeding daemon: iroh-blobs store + blob serving.                      |
-| `radicle-artifact-core`   | Shared substrate: wire protocol, CID helpers, endpoint identity. For library consumers.       |
-| `radicle-artifact-client` | Control-socket client. Sync by default; a `tokio` feature adds an async client for embedders. |
-
-Working with the COB only (registering, attesting, adding locations of any URL scheme) never touches the iroh stack; the node crate is needed only to seed or fetch over iroh.
 
 ## Workflow
 
