@@ -22,8 +22,8 @@ iroh = { version = "1.0.0", features = ["unstable-net-report"] }
 iroh-blobs = { version = "0.103.0" }
 n0-future = { version = "0.3" }
 radicle = { version = "0.24" }
-radicle-artifact-client = { version = "0.15.1", path = "../radicle-artifact-client", features = ["tokio"] }
-radicle-artifact-core = { version = "0.15.1", path = "../radicle-artifact-core" }
+radicle-artifact-client = { version = "0.16.0", path = "../radicle-artifact-client", features = ["tokio"] }
+radicle-artifact-core = { version = "0.16.0", path = "../radicle-artifact-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
