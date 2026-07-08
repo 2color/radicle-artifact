@@ -1,14 +1,14 @@
 //! SQLite cache for the artifact [`Release`] COB.
 //!
-//! Reads of the `Release` COB otherwise re-fold every action from git storage
-//! on every call. This module stores each materialized `Release` as a JSON blob
+//! Reads of the `Release` COB otherwise re-materialize it from every action in
+//! git storage on every call. This module stores each materialized `Release` as a JSON blob
 //! plus a normalized `locations` index, so steady-state reads become SQLite
 //! queries with, at most, a cheap git-ref walk to check freshness (see the
 //! `Releases` read paths in the crate root).
 //!
 //! The cache mirrors heartwood's issue/patch caches (`radicle::cob::cache`) but
 //! is owned here, with its own database file and migrations. Because reads
-//! populate the cache lazily (a stale entry is re-folded on read), the handle is
+//! populate the cache lazily (a stale entry is re-materialized on read), the handle is
 //! always writable; there is no read-only variant. Freshness is validated on
 //! read against the COB's tip refs rather than via a git-fetch hook (which this
 //! crate has no access to).
@@ -216,18 +216,6 @@ impl Store {
             out.insert(id, row.try_read::<&str, _>("head")?.to_string());
         }
         Ok(out)
-    }
-
-    /// Number of cached releases for a repository.
-    pub fn count(&self, repo: &RepoId) -> Result<usize, Error> {
-        let mut stmt = self
-            .db
-            .prepare("SELECT COUNT(*) AS count FROM releases WHERE repo = ?1")?;
-        stmt.bind((1, sql::Value::String(repo.to_string())))?;
-        match stmt.into_iter().next().transpose()? {
-            Some(row) => Ok(row.try_read::<i64, _>("count")? as usize),
-            None => Ok(0),
-        }
     }
 
     /// Release ids that contain an artifact with `cid`.

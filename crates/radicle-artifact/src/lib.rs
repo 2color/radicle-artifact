@@ -631,7 +631,7 @@ where
     /// Open a releases store backed by a SQLite cache at `path`.
     ///
     /// Reads are served from the cache after a cheap check that the COB's git
-    /// tips are unchanged, re-folding only stale objects. The cache is a
+    /// tips are unchanged, re-materializing only stale objects. The cache is a
     /// best-effort optimization: if it cannot be opened or migrated, a warning
     /// is logged and the store falls back to reading directly from git.
     pub fn open_cached(
@@ -673,27 +673,26 @@ where
         )
     }
 
-    /// Return the number of [`Release`]s in the store.
+    /// Return the number of [`Release`]s in the repository.
     ///
-    /// With a cache, this is served from SQLite after a cheap freshness check.
-    /// Without one it deserializes every COB, so it is O(n).
+    /// Counts the distinct COB objects of the release type from a git ref walk;
+    /// it materializes no release, so it is O(refs) and ignores the cache. Note
+    /// this counts ref-backed objects: one that no longer materializes (e.g. a
+    /// fully-redacted COB) is still counted here but excluded by [`Self::all`].
     pub fn count(&self) -> Result<usize, store::Error> {
-        if self.cache.is_some() {
-            match self.cached_count() {
-                Ok(n) => return Ok(n),
-                Err(CacheOpError::Store(err)) => return Err(err),
-                Err(CacheOpError::Cache(msg)) => {
-                    log::warn!(target: "artifact", "cache count failed ({msg}); using git");
-                }
-            }
-        }
-        self.read_store()?.count()
+        // Mirror how `cob::list` surfaces a `types()` failure, minus the fold.
+        self.repo
+            .types(&TYPENAME)
+            .map(|objects| objects.len())
+            .map_err(|err| {
+                store::Error::Retrieve(cob::error::Retrieve::Refs { err: Box::new(err) })
+            })
     }
 
     /// Iterate over every [`Release`] in the store.
     ///
     /// With a cache, releases are served from SQLite after a cheap freshness
-    /// check that re-folds only the objects whose git tips changed.
+    /// check that re-materializes only the objects whose git tips changed.
     pub fn all(
         &self,
     ) -> Result<
@@ -855,7 +854,7 @@ where
     R: ReadRepository + cob::Store<Namespace = NodeId>,
 {
     /// Ensure every cached release for this repo matches the COB's current git
-    /// tips, re-folding only the objects whose tips changed and pruning removed
+    /// tips, re-materializing only the objects whose tips changed and pruning removed
     /// ones. Cheap in steady state: one ref walk plus token comparisons.
     fn refresh_repo(&self, cache: &cache::Store) -> Result<(), CacheOpError> {
         let repo_id = self.repo.id();
@@ -874,7 +873,7 @@ where
             if cached.get(&id).is_some_and(|head| head == &token) {
                 continue;
             }
-            // Stale or missing: re-fold this one object. A broken object is
+            // Stale or missing: re-materialize this one object. A broken object is
             // skipped (matching `cob::list`), not treated as fatal.
             match store.get(oid) {
                 Ok(Some(release)) => cache
@@ -911,14 +910,6 @@ where
             .collect())
     }
 
-    fn cached_count(&self) -> Result<usize, CacheOpError> {
-        let cache = self.cache.as_ref().expect("cache is present");
-        self.refresh_repo(cache)?;
-        cache
-            .count(&self.repo.id())
-            .map_err(|e| CacheOpError::Cache(e.to_string()))
-    }
-
     fn cached_get(&self, id: &ReleaseId) -> Result<Option<Release>, CacheOpError> {
         let cache = self.cache.as_ref().expect("cache is present");
         let repo_id = self.repo.id();
@@ -943,7 +934,7 @@ where
                 return Ok(Some(release));
             }
         }
-        // Stale or missing: re-fold.
+        // Stale or missing: re-materialize.
         let store = self.read_store().map_err(CacheOpError::Store)?;
         match store.get(id.as_object_id()).map_err(CacheOpError::Store)? {
             Some(release) => {
@@ -3084,7 +3075,7 @@ mod test {
                 .unwrap();
         }
 
-        // The freshness check detects the moved tip and re-folds on read.
+        // The freshness check detects the moved tip and re-materializes on read.
         let refreshed = releases.get(&id).unwrap().unwrap();
         assert_eq!(refreshed.artifacts().len(), 2);
         let all: Vec<_> = releases.all().unwrap().collect::<Result<_, _>>().unwrap();
@@ -3201,7 +3192,7 @@ mod test {
         let tmp = tempfile::tempdir().unwrap();
         let index = crate::discovery::Index::open(&node.storage, tmp.path().join("db"));
 
-        // A cold query folds and caches: one location.
+        // A cold query materializes and caches: one location.
         assert_eq!(index.locations_by_cid(&cid).unwrap().len(), 1);
 
         // Add a location WITHOUT going through the index's cache.
@@ -3239,7 +3230,7 @@ mod test {
         let unusable = alice.root.join("no-such-dir").join("cache.db");
         let releases = Releases::open_cached(&*repo, unusable).unwrap();
 
-        // Reads still succeed, folded straight from git.
+        // Reads still succeed, materialized straight from git.
         assert_eq!(releases.find_by_cid(&cid).unwrap().len(), 1);
         let locations = releases.locations_for(&cid).unwrap();
         assert_eq!(locations.len(), 1);
@@ -3271,7 +3262,7 @@ mod test {
             r.add_location(cid, url2, &node.signer).unwrap();
         }
 
-        // An unopenable cache path forces the Index onto the git-fold path; the
+        // An unopenable cache path forces the Index onto the git-materialization path; the
         // cross-repo aggregation must still work without a cache.
         let index =
             crate::discovery::Index::open(&node.storage, node.root.join("nope").join("cache.db"));
@@ -3303,9 +3294,49 @@ mod test {
             .unwrap();
         assert!(cache.get(&repo.id, &bogus_id).unwrap().is_some());
 
-        // A repo-wide read refreshes and prunes entries absent from git.
-        assert_eq!(releases.count().unwrap(), 1);
+        // A repo-wide cached read refreshes and prunes entries absent from git.
+        assert_eq!(releases.all().unwrap().count(), 1);
         assert!(cache.get(&repo.id, &bogus_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn count_counts_release_cobs_without_folding() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let cid = test_cid(1);
+
+        let first = {
+            let mut releases = Releases::open(&*repo).unwrap();
+            let ids: Vec<_> = (0..3)
+                .map(|i| {
+                    let oid = commit(&repo.backend, &format!("r{i}"));
+                    let mut r = releases.create(oid, None, &alice.signer).unwrap();
+                    r.register_artifact(cid, format!("bin-{i}"), &alice.signer)
+                        .unwrap();
+                    *r.id()
+                })
+                .collect();
+            ids[0]
+        };
+
+        // Count is the number of release COBs, from a ref walk. A cache-backed
+        // handle agrees, and neither materializes a release to answer.
+        assert_eq!(Releases::open(&*repo).unwrap().count().unwrap(), 3);
+        let cached = Releases::open(&*repo).unwrap().with_cache(memory_cache());
+        assert_eq!(cached.count().unwrap(), 3);
+
+        // Redacting an artifact rewrites a release's contents but not the set of
+        // COBs, so the count is unchanged.
+        {
+            let mut releases = Releases::open(&*repo).unwrap();
+            releases
+                .get_mut(&first)
+                .unwrap()
+                .redact(cid, "oops".into(), &alice.signer)
+                .unwrap();
+        }
+        assert_eq!(Releases::open(&*repo).unwrap().count().unwrap(), 3);
     }
 
     #[test]

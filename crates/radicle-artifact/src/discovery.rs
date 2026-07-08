@@ -87,7 +87,7 @@ impl<'a, S> Index<'a, S> {
     /// Open a discovery index over `storage`, backed by a cache at `path`.
     ///
     /// Best-effort, like [`Releases::open_cached`]: if the cache cannot be
-    /// opened or migrated, a warning is logged and lookups fall back to folding
+    /// opened or migrated, a warning is logged and lookups fall back to materializing
     /// from git (correct, just slower).
     pub fn open(storage: &'a S, path: impl AsRef<Path>) -> Self {
         let cache = match cache::open_writer(path) {
