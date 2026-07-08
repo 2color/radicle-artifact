@@ -121,11 +121,7 @@ pub(crate) fn open_releases<'a>(
     repo: &'a Repository,
     profile: &Profile,
 ) -> Result<Releases<'a, Repository>, error::Releases> {
-    // The cache lives alongside heartwood's COB cache in the profile's cobs
-    // directory, in its own database file so migrations never collide. Opening
-    // is best-effort: on failure the store falls back to reading from git (see
-    // `Releases::open_cached`).
-    let db = profile.cobs().join("artifacts.db");
+    let db = cache_db_path(profile.cobs());
     Releases::open_cached(repo, db).map_err(|err| error::Releases { rid: repo.id, err })
 }
 
@@ -168,7 +164,11 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
     // at all; the rest open it through `open_repo`.
     if matches!(
         args.command,
-        Command::Node(_) | Command::Seed(_) | Command::Unseed(_) | Command::Reconcile(_)
+        Command::Node(_)
+            | Command::Seed(_)
+            | Command::Unseed(_)
+            | Command::Reconcile(_)
+            | Command::Locate(_)
     ) {
         let profile = load_profile()?;
         let Args {
@@ -191,6 +191,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             Command::Reconcile(cmd) => {
                 reconcile::run(cmd, repository, &profile).map_err(Into::into)
             }
+            Command::Locate(cmd) => run_locate(cmd, &profile).map_err(Into::into),
             _ => unreachable!(),
         };
     }
@@ -291,7 +292,10 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         }
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
         Command::Download(cmd) => run_download(cmd, args.no_input, &profile, &releases, &repo)?,
-        Command::Seed(_) | Command::Unseed(_) | Command::Reconcile(_) => unreachable!(), // handled above
+        // handled above
+        Command::Locate(_) | Command::Seed(_) | Command::Unseed(_) | Command::Reconcile(_) => {
+            unreachable!()
+        }
     }
 
     Ok(())
@@ -1192,6 +1196,29 @@ fn list_releases(
             serde_json::to_string_pretty(&releases).map_err(error::List::Json)?
         );
     }
+    Ok(())
+}
+
+/// Locate a CID across every repository in local storage, printing JSON.
+///
+/// This is a node-wide query, so it uses `profile.storage` directly rather than
+/// a single repository and ignores `--repository`.
+fn run_locate(cmd: command::Locate, profile: &Profile) -> Result<(), error::Locations> {
+    let command::Locate { cid, releases } = cmd;
+    let index =
+        radicle_artifact::discovery::Index::open(&profile.storage, cache_db_path(profile.cobs()));
+    let json = if releases {
+        let matches = index
+            .releases_by_cid(&cid)
+            .map_err(error::Locations::Storage)?;
+        serde_json::to_string_pretty(&matches).map_err(error::Locations::Json)?
+    } else {
+        let locations = index
+            .locations_by_cid(&cid)
+            .map_err(error::Locations::Storage)?;
+        serde_json::to_string_pretty(&locations).map_err(error::Locations::Json)?
+    };
+    println!("{json}");
     Ok(())
 }
 
@@ -2255,6 +2282,8 @@ enum RadArtifactError {
     #[error(transparent)]
     List(#[from] error::List),
     #[error(transparent)]
+    Locations(#[from] error::Locations),
+    #[error(transparent)]
     Register(#[from] error::Register),
     #[error(transparent)]
     CreateRelease(#[from] error::CreateRelease),
@@ -2303,6 +2332,8 @@ mod command {
         Metadata(Metadata),
         Show(Show),
         List(List),
+        /// Locate a content identifier across every repository in local storage.
+        Locate(Locate),
         /// Compute the BLAKE3 CID of a file or directory
         #[clap(name = "cid")]
         ComputeCid(ComputeCid),
@@ -2326,6 +2357,21 @@ mod command {
         Reconcile(crate::reconcile::Cli),
         /// Control the local rad-artifact seeder node.
         Node(crate::node::Cli),
+    }
+
+    /// Locate a content identifier across every repository in local storage.
+    ///
+    /// Prints, as JSON, every discovery location (repository, release,
+    /// contributor, URL) that references the CID across all seeded repositories;
+    /// with --releases, prints the releases that contain it instead. Ignores
+    /// --repository.
+    #[derive(Parser)]
+    pub struct Locate {
+        /// The content identifier to locate.
+        pub cid: Cid,
+        /// Print the releases that contain the CID instead of their locations.
+        #[clap(long)]
+        pub releases: bool,
     }
 
     /// Manage discovery locations for artifacts.
@@ -3025,6 +3071,14 @@ mod error {
         #[error("failed to get repository delegates")]
         Delegates(#[source] RepositoryError),
         #[error("failed to list releases, could not serialize to JSON")]
+        Json(#[source] serde_json::Error),
+    }
+
+    #[derive(Debug, Error)]
+    pub enum Locations {
+        #[error("failed to enumerate repositories")]
+        Storage(#[source] radicle::storage::Error),
+        #[error("failed to serialize locate output to JSON")]
         Json(#[source] serde_json::Error),
     }
 

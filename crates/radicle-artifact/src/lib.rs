@@ -13,6 +13,7 @@
 //! ```
 //! # use radicle::crypto::Signer;
 //! # use radicle::git::{raw::Repository, Oid};
+//! # use radicle::identity::Did;
 //! # use radicle::test;
 //! # use url::Url;
 //! #
@@ -44,7 +45,12 @@
 //! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse().unwrap();
 //! let url = Url::parse("https://example.com/artifacts/linux-amd64.tar.gz").unwrap();
 //! release.register_artifact(cid, "linux-amd64 binary".into(), &alice.signer).unwrap();
-//! release.add_location(cid, url, &alice.signer).unwrap();
+//! release.add_location(cid, url.clone(), &alice.signer).unwrap();
+//!
+//! // Read back the discovery locations a specific user contributed.
+//! let alice_did = Did::from(alice.signer.public_key());
+//! let locations = release.artifact(&cid).unwrap().locations_of(&alice_did).unwrap();
+//! assert!(locations.contains(&url));
 //! ```
 
 #![deny(missing_docs)]
@@ -76,6 +82,11 @@ use url::Url;
 // that serializes as its canonical multibase string; see the type's docs.
 pub use radicle_artifact_core::cid::Cid;
 
+// Resolve the cache database path from a node's COBs directory, without
+// exposing the filename the `cache` module owns.
+pub use cache::db_path as cache_db_path;
+
+pub mod discovery;
 pub mod display;
 pub mod error;
 
@@ -635,8 +646,9 @@ where
         Ok(store)
     }
 
-    /// Attach an already-open cache (used by tests).
-    #[cfg(test)]
+    /// Attach an already-open cache, sharing its connection. Used by the
+    /// node-wide [`discovery`](crate::discovery) index to reuse one cache across
+    /// every repository, and by tests.
     pub(crate) fn with_cache(mut self, cache: cache::Store) -> Self {
         self.cache = Some(cache);
         self
@@ -3105,5 +3117,222 @@ mod test {
         let locations = releases.locations_for(&cid).unwrap();
         assert_eq!(locations.len(), 1);
         assert_eq!(locations[0].2, b);
+    }
+
+    /// Initialize a second repository in `node`'s storage with a distinct name
+    /// (distinct identity doc, hence distinct RID), returning its handle. No
+    /// test fixture gives a single storage with multiple repos, so we init one.
+    fn init_repo(node: &test::setup::Node, name: &str) -> radicle::storage::git::Repository {
+        let (working, _) = test::fixtures::repository(node.root.join(format!("working-{name}")));
+        let (rid, _, _) = radicle::rad::init(
+            &working,
+            name.try_into().unwrap(),
+            "second project",
+            radicle::git::fmt::refname!("master"),
+            radicle::identity::Visibility::default(),
+            &node.signer,
+            &node.storage,
+        )
+        .unwrap();
+        node.storage.repository(rid).unwrap()
+    }
+
+    #[test]
+    fn index_aggregates_across_repos() {
+        let test::setup::NodeWithRepo { node, repo } = test::setup::NodeWithRepo::default();
+        let repo2 = init_repo(&node, "beta");
+
+        let cid = test_cid(1);
+        let url1 = Url::parse("https://one.example.com/x").unwrap();
+        let url2 = Url::parse("https://two.example.com/x").unwrap();
+
+        // A release referencing the same `cid` in each repository.
+        let oid1 = commit(&repo.backend, "r1");
+        {
+            let mut releases = Releases::open(&*repo).unwrap();
+            let mut r = releases.create(oid1, None, &node.signer).unwrap();
+            r.register_artifact(cid, "one".into(), &node.signer)
+                .unwrap();
+            r.add_location(cid, url1.clone(), &node.signer).unwrap();
+        }
+        let oid2 = commit(&repo2.backend, "r2");
+        {
+            let mut releases = Releases::open(&repo2).unwrap();
+            let mut r = releases.create(oid2, None, &node.signer).unwrap();
+            r.register_artifact(cid, "two".into(), &node.signer)
+                .unwrap();
+            r.add_location(cid, url2.clone(), &node.signer).unwrap();
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let index = crate::discovery::Index::open(&node.storage, tmp.path().join("db"));
+
+        // Locations are aggregated across both repositories.
+        let locations = index.locations_by_cid(&cid).unwrap();
+        assert_eq!(locations.len(), 2);
+        let repos: BTreeSet<_> = locations.iter().map(|l| l.repo).collect();
+        assert!(repos.contains(&repo.id) && repos.contains(&repo2.id));
+        let urls: BTreeSet<_> = locations.iter().map(|l| l.url.clone()).collect();
+        assert!(urls.contains(&url1) && urls.contains(&url2));
+
+        // As are releases.
+        let matches = index.releases_by_cid(&cid).unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|m| m.release.artifact(&cid).is_some()));
+    }
+
+    #[test]
+    fn index_reflects_fresh_writes() {
+        let test::setup::NodeWithRepo { node, repo } = test::setup::NodeWithRepo::default();
+        let cid = test_cid(1);
+        let a = Url::parse("https://a.example.com/x").unwrap();
+        let b = Url::parse("https://b.example.com/x").unwrap();
+
+        let oid = commit(&repo.backend, "r1");
+        let id = {
+            let mut releases = Releases::open(&*repo).unwrap();
+            let mut r = releases.create(oid, None, &node.signer).unwrap();
+            r.register_artifact(cid, "one".into(), &node.signer)
+                .unwrap();
+            r.add_location(cid, a.clone(), &node.signer).unwrap();
+            *r.id()
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let index = crate::discovery::Index::open(&node.storage, tmp.path().join("db"));
+
+        // A cold query folds and caches: one location.
+        assert_eq!(index.locations_by_cid(&cid).unwrap().len(), 1);
+
+        // Add a location WITHOUT going through the index's cache.
+        {
+            let mut releases = Releases::open(&*repo).unwrap();
+            releases
+                .get_mut(&id)
+                .unwrap()
+                .add_location(cid, b.clone(), &node.signer)
+                .unwrap();
+        }
+
+        // The index refreshes each repo before querying, so the write shows up.
+        assert_eq!(index.locations_by_cid(&cid).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn open_cached_degrades_to_git_when_cache_unavailable() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let cid = test_cid(1);
+        let url = Url::parse("https://x.example.com/x").unwrap();
+        {
+            let mut releases = Releases::open(&*repo).unwrap();
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
+            r.register_artifact(cid, "bin".into(), &alice.signer)
+                .unwrap();
+            r.add_location(cid, url.clone(), &alice.signer).unwrap();
+        }
+
+        // A cache path whose parent directory does not exist cannot be opened;
+        // open_cached must log and disable the cache, not fail.
+        let unusable = alice.root.join("no-such-dir").join("cache.db");
+        let releases = Releases::open_cached(&*repo, unusable).unwrap();
+
+        // Reads still succeed, folded straight from git.
+        assert_eq!(releases.find_by_cid(&cid).unwrap().len(), 1);
+        let locations = releases.locations_for(&cid).unwrap();
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].2, url);
+    }
+
+    #[test]
+    fn index_aggregates_without_cache() {
+        let test::setup::NodeWithRepo { node, repo } = test::setup::NodeWithRepo::default();
+        let repo2 = init_repo(&node, "beta");
+        let cid = test_cid(1);
+        let url1 = Url::parse("https://one.example.com/x").unwrap();
+        let url2 = Url::parse("https://two.example.com/x").unwrap();
+
+        let oid1 = commit(&repo.backend, "r1");
+        {
+            let mut releases = Releases::open(&*repo).unwrap();
+            let mut r = releases.create(oid1, None, &node.signer).unwrap();
+            r.register_artifact(cid, "one".into(), &node.signer)
+                .unwrap();
+            r.add_location(cid, url1, &node.signer).unwrap();
+        }
+        let oid2 = commit(&repo2.backend, "r2");
+        {
+            let mut releases = Releases::open(&repo2).unwrap();
+            let mut r = releases.create(oid2, None, &node.signer).unwrap();
+            r.register_artifact(cid, "two".into(), &node.signer)
+                .unwrap();
+            r.add_location(cid, url2, &node.signer).unwrap();
+        }
+
+        // An unopenable cache path forces the Index onto the git-fold path; the
+        // cross-repo aggregation must still work without a cache.
+        let index =
+            crate::discovery::Index::open(&node.storage, node.root.join("nope").join("cache.db"));
+        assert_eq!(index.locations_by_cid(&cid).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn cache_prunes_releases_absent_from_git() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let cache = memory_cache();
+        let mut releases = Releases::open(&*repo).unwrap().with_cache(cache.clone());
+
+        // A real release written through the cached handle.
+        let real_id = {
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
+            r.register_artifact(test_cid(1), "bin".into(), &alice.signer)
+                .unwrap();
+            *r.id()
+        };
+
+        // Inject a cached entry for a COB id that does not exist in git.
+        let bogus_id = crate::ReleaseId::from(commit(&repo.backend, "not a cob"));
+        let release = cache.get(&repo.id, &real_id).unwrap().unwrap().1;
+        cache
+            .update(&repo.id, &bogus_id, "stale-head", &release)
+            .unwrap();
+        assert!(cache.get(&repo.id, &bogus_id).unwrap().is_some());
+
+        // A repo-wide read refreshes and prunes entries absent from git.
+        assert_eq!(releases.count().unwrap(), 1);
+        assert!(cache.get(&repo.id, &bogus_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn cache_finds_artifact_without_location() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let cache = memory_cache();
+        let mut releases = Releases::open(&*repo).unwrap().with_cache(cache.clone());
+
+        let cid = test_cid(1);
+        {
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
+            // Register the artifact but add no location.
+            r.register_artifact(cid, "bin".into(), &alice.signer)
+                .unwrap();
+        }
+
+        // The public cache-backed lookup matches the location-less artifact,
+        // while locations_for returns nothing.
+        assert_eq!(releases.find_by_cid(&cid).unwrap().len(), 1);
+        assert!(releases.locations_for(&cid).unwrap().is_empty());
+
+        // It is backed by a sentinel row: releases_for_cid matches by cid, but
+        // the locations index filters the empty-url sentinel out.
+        assert_eq!(cache.releases_for_cid(&repo.id, &cid).unwrap().len(), 1);
+        assert!(cache.locations_for(&repo.id, &cid).unwrap().is_empty());
     }
 }

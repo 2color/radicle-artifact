@@ -14,7 +14,7 @@
 //! crate has no access to).
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +29,11 @@ use crate::{Cid, Release, ReleaseId};
 
 /// How long to wait for the database lock before failing.
 const DB_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Filename of the cache database within a node's COBs directory. An internal
+/// detail of this module; callers resolve the full path via [`db_path`] rather
+/// than hardcoding the name.
+const DB_FILE: &str = "artifacts.db";
 
 /// Ordered database migrations. Each entry is applied once, in order, bumping
 /// `PRAGMA user_version`.
@@ -57,6 +62,12 @@ pub struct Store {
     db: Arc<sql::ConnectionThreadSafe>,
 }
 
+/// Resolve the cache database path within a node's COBs directory (e.g.
+/// `profile.cobs()`). Keeps the [`DB_FILE`] name owned by this module.
+pub fn db_path(cobs_dir: impl AsRef<Path>) -> PathBuf {
+    cobs_dir.as_ref().join(DB_FILE)
+}
+
 /// Open a cache at `path` and migrate it to the latest schema.
 pub fn open_writer(path: impl AsRef<Path>) -> Result<Store, Error> {
     let mut store = Store::open(path)?;
@@ -69,9 +80,12 @@ impl Store {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let mut db = sql::Connection::open_thread_safe(path)?;
         db.set_busy_timeout(DB_TIMEOUT.as_millis() as usize)?;
-        // WAL lets the daemon and CLI read concurrently with a single writer.
-        // Harmless no-op for in-memory databases.
+        // WAL lets the daemon and CLI read concurrently with a single writer;
+        // synchronous=NORMAL is the safe, fast pairing for WAL (the cache is
+        // rebuildable, so the small crash-durability tradeoff is irrelevant).
+        // Both are harmless no-ops for in-memory databases.
         let _ = db.execute("PRAGMA journal_mode = WAL");
+        let _ = db.execute("PRAGMA synchronous = NORMAL");
         Ok(Self { db: Arc::new(db) })
     }
 

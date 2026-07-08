@@ -49,6 +49,10 @@ already in the store).
 Fetch an Artifact into the store, then export the bytes to a file on disk.
 _Avoid_: fetch (that's store-only).
 
+**Locate** (verb):
+Query, across every repository in local storage, where an Artifact can be found — the node-wide read over Locations, keyed by CID. Returns the discovery Locations by default, or the Releases that contain the CID with `--releases`. Read-only and local: it reads COBs already in storage and never touches the network.
+_Avoid_: find (reserved for the per-repo lookup — one repository, not node-wide); discover (implies network/peer discovery, which Locate never does); search.
+
 **Seeder**:
 A node that seeds an Artifact's bytes. Distinct from a Radicle seed node,
 which holds the repo's git/COB; one machine can be both, but "Seeder" here
@@ -93,6 +97,7 @@ _Avoid_: stale location (a Stale Endpoint is the distinct case where the URL is 
 
 - A **Release** contains one or more **Artifacts**
 - An **Artifact** has zero or more **Locations**, grouped by contributor **DID**
+- **Locate** answers, for a **CID**, every **Location** (and every **Release** that holds it) across all repositories in local storage
 - A **Seeded Tag** should correspond to an **Artifact** in some **Release**; when it doesn't, it is a **Dangling Tag**
 - **Seeding** and **Adding** a Location are the two halves of making an artifact available over iroh: a node seeds the bytes and adds the `radiroh://` **Location** so peers can discover it; the two drift apart as **Dangling Tags** (seeded, no Location) and **Orphaned Locations** (Location added, no longer seeded)
 
