@@ -298,7 +298,7 @@ fn reconcile_one(
     profile: &Profile,
 ) -> Result<RepoReport, Error> {
     let mut releases =
-        open_releases(repo).map_err(|e| Error::Node(node::Error::Usage(e.to_string())))?;
+        open_releases(repo, profile).map_err(|e| Error::Node(node::Error::Usage(e.to_string())))?;
 
     // Ask the node what's tagged for this rid.
     let entries: Vec<SeededEntry> = ctx

@@ -117,10 +117,16 @@ fn load_profile() -> Result<Profile, error::Profile> {
     Profile::load().map_err(error::Profile)
 }
 
-pub(crate) fn open_releases(
-    repo: &Repository,
-) -> Result<Releases<'_, Repository>, error::Releases> {
-    Releases::open(repo).map_err(|err| error::Releases { rid: repo.id, err })
+pub(crate) fn open_releases<'a>(
+    repo: &'a Repository,
+    profile: &Profile,
+) -> Result<Releases<'a, Repository>, error::Releases> {
+    // The cache lives alongside heartwood's COB cache in the profile's cobs
+    // directory, in its own database file so migrations never collide. Opening
+    // is best-effort: on failure the store falls back to reading from git (see
+    // `Releases::open_cached`).
+    let db = profile.cobs().join("artifacts.db");
+    Releases::open_cached(repo, db).map_err(|err| error::Releases { rid: repo.id, err })
 }
 
 fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> {
@@ -191,7 +197,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
 
     let profile = load_profile()?;
     let repo = args.repository(&profile)?;
-    let mut releases = open_releases(&repo)?;
+    let mut releases = open_releases(&repo, &profile)?;
     match args.command {
         Command::ComputeCid(_) => unreachable!(), // handled above
         Command::Node(_) => unreachable!(),       // handled above
@@ -1362,7 +1368,7 @@ fn add_seed_location(
     repo: &Repository,
     profile: &Profile,
 ) -> Result<(), RadArtifactError> {
-    let mut releases_mut = open_releases(repo)?;
+    let mut releases_mut = open_releases(repo, profile)?;
     let signer = profile
         .signer()
         .map_err(|e| error::Share::Usage(format!("signer: {e}")))?;

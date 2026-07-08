@@ -359,7 +359,7 @@ pub(crate) fn seed_artifact(
         share::compute_blob_cid(&path).map_err(Error::Protocol)?
     };
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
-    let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
+    let mut releases = open_releases(&repo, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let rid = repo.id;
 
     // Resolve target release: --release wins, else most recent matching.
@@ -525,7 +525,7 @@ pub(crate) fn unseed_artifact(
     profile: &Profile,
 ) -> Result<(), Error> {
     let repo = open_repo(repo_override, profile).map_err(|e| Error::Usage(e.to_string()))?;
-    let mut releases = open_releases(&repo).map_err(|e| Error::Usage(e.to_string()))?;
+    let mut releases = open_releases(&repo, profile).map_err(|e| Error::Usage(e.to_string()))?;
     let rid = repo.id;
     let socket = Client::default_socket(profile.home.path());
     let client = Client::new(socket);

@@ -21,11 +21,13 @@ clap = { version = "4.5", features = ["derive", "wrap_help"] }
 indexmap = { version = "2.7", features = ["serde"] }
 indicatif = "0.18"
 inquire = { version = "0.9" }
+log = "0.4"
 radicle = { version = "0.24" }
 radicle-artifact-client = { version = "0.16.0", path = "../radicle-artifact-client" }
 radicle-artifact-core = { version = "0.16.0", path = "../radicle-artifact-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sqlite = { version = "0.37", features = ["bundled"] }
 thiserror = "2.0"
 url = { version = "2.5", features = ["serde"] }
 

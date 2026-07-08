@@ -79,6 +79,8 @@ pub use radicle_artifact_core::cid::Cid;
 pub mod display;
 pub mod error;
 
+pub(crate) mod cache;
+
 /// Type name of an artifact release.
 pub static TYPENAME: LazyLock<TypeName> =
     LazyLock::new(|| FromStr::from_str("dev.radicle.artifact").expect("type name is valid"));
@@ -595,6 +597,10 @@ impl<R: ReadRepository> Evaluate<R> for Release {
 pub struct Releases<'a, R> {
     repo: &'a R,
     identity: Oid,
+    /// Optional SQLite cache. When present, reads are served from it after a
+    /// cheap freshness check and writes are mirrored into it. It is a
+    /// best-effort optimization: on any cache error, reads fall back to git.
+    cache: Option<cache::Store>,
 }
 
 impl<'a, R> Releases<'a, R>
@@ -607,7 +613,33 @@ where
         Ok(Self {
             repo: repository,
             identity,
+            cache: None,
         })
+    }
+
+    /// Open a releases store backed by a SQLite cache at `path`.
+    ///
+    /// Reads are served from the cache after a cheap check that the COB's git
+    /// tips are unchanged, re-folding only stale objects. The cache is a
+    /// best-effort optimization: if it cannot be opened or migrated, a warning
+    /// is logged and the store falls back to reading directly from git.
+    pub fn open_cached(
+        repository: &'a R,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, RepositoryError> {
+        let mut store = Self::open(repository)?;
+        match cache::open_writer(path) {
+            Ok(cache) => store.cache = Some(cache),
+            Err(err) => log::warn!(target: "artifact", "artifact cache disabled: {err}"),
+        }
+        Ok(store)
+    }
+
+    /// Attach an already-open cache (used by tests).
+    #[cfg(test)]
+    pub(crate) fn with_cache(mut self, cache: cache::Store) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     /// Build a read-only view of the underlying COB store.
@@ -631,23 +663,57 @@ where
 
     /// Return the number of [`Release`]s in the store.
     ///
-    /// Note: this deserializes every COB, so it is O(n).
+    /// With a cache, this is served from SQLite after a cheap freshness check.
+    /// Without one it deserializes every COB, so it is O(n).
     pub fn count(&self) -> Result<usize, store::Error> {
+        if self.cache.is_some() {
+            match self.cached_count() {
+                Ok(n) => return Ok(n),
+                Err(CacheOpError::Store(err)) => return Err(err),
+                Err(CacheOpError::Cache(msg)) => {
+                    log::warn!(target: "artifact", "cache count failed ({msg}); using git");
+                }
+            }
+        }
         self.read_store()?.count()
     }
 
     /// Iterate over every [`Release`] in the store.
+    ///
+    /// With a cache, releases are served from SQLite after a cheap freshness
+    /// check that re-folds only the objects whose git tips changed.
     pub fn all(
         &self,
     ) -> Result<
         impl ExactSizeIterator<Item = Result<(ObjectId, Release), store::Error>> + use<'a, R>,
         store::Error,
     > {
-        self.read_store()?.all()
+        let items: Vec<Result<(ObjectId, Release), store::Error>> = if self.cache.is_some() {
+            match self.cached_all() {
+                Ok(list) => list.into_iter().map(Ok).collect(),
+                Err(CacheOpError::Store(err)) => return Err(err),
+                Err(CacheOpError::Cache(msg)) => {
+                    log::warn!(target: "artifact", "cache list failed ({msg}); using git");
+                    self.read_store()?.all()?.collect()
+                }
+            }
+        } else {
+            self.read_store()?.all()?.collect()
+        };
+        Ok(items.into_iter())
     }
 
     /// Get a [`Release`], given its [`ReleaseId`] identifier.
     pub fn get(&self, id: &ReleaseId) -> Result<Option<Release>, store::Error> {
+        if self.cache.is_some() {
+            match self.cached_get(id) {
+                Ok(release) => return Ok(release),
+                Err(CacheOpError::Store(err)) => return Err(err),
+                Err(CacheOpError::Cache(msg)) => {
+                    log::warn!(target: "artifact", "cache get failed ({msg}); using git");
+                }
+            }
+        }
         self.read_store()?.get(id.as_object_id())
     }
 
@@ -664,11 +730,54 @@ where
     /// union locations across all of them, so callers building a fetch plan
     /// should aggregate across the returned releases.
     pub fn find_by_cid(&self, cid: &Cid) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
+        if self.cache.is_some() {
+            match self.cached_find_by_cid(cid) {
+                Ok(out) => return Ok(out),
+                Err(CacheOpError::Store(err)) => return Err(err),
+                Err(CacheOpError::Cache(msg)) => {
+                    log::warn!(target: "artifact", "cache find_by_cid failed ({msg}); using git");
+                }
+            }
+        }
         let mut out = Vec::new();
-        for result in self.all()? {
+        for result in self.read_store()?.all()? {
             let (id, release) = result?;
             if release.artifact(cid).is_some() {
                 out.push((ReleaseId::from(id), release));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Return every discovery location for `cid` across all releases in the
+    /// repository, as `(release, contributor, url)` tuples.
+    ///
+    /// Backed by the cache's normalized locations index when available (a
+    /// direct indexed lookup); otherwise scans every release from git. The
+    /// same URL may appear under multiple releases or contributors, so callers
+    /// building a fetch plan should aggregate.
+    pub fn locations_for(
+        &self,
+        cid: &Cid,
+    ) -> Result<Vec<(ReleaseId, Did, Url)>, cob::store::Error> {
+        if self.cache.is_some() {
+            match self.cached_locations_for(cid) {
+                Ok(out) => return Ok(out),
+                Err(CacheOpError::Store(err)) => return Err(err),
+                Err(CacheOpError::Cache(msg)) => {
+                    log::warn!(target: "artifact", "cache locations_for failed ({msg}); using git");
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for result in self.read_store()?.all()? {
+            let (id, release) = result?;
+            if let Some(artifact) = release.artifact(cid) {
+                for (did, urls) in artifact.locations() {
+                    for url in urls {
+                        out.push((ReleaseId::from(id), *did, url.clone()));
+                    }
+                }
             }
         }
         Ok(out)
@@ -712,6 +821,179 @@ impl Iterator for FindByCommit<'_> {
                 Ok(_) => continue,
                 Err(err) => return Some(Err(err)),
             }
+        }
+    }
+}
+
+/// Internal result of a cache-backed read.
+///
+/// Distinguishes a real git/store error (propagated to the caller) from a soft
+/// cache/refs error (logged, then the caller falls back to the git path).
+enum CacheOpError {
+    /// A git/store error; propagate it.
+    Store(store::Error),
+    /// A cache or refs-read failure; fall back to git.
+    Cache(String),
+}
+
+/// Private cache-backed read helpers for [`Releases`]. Each returns
+/// [`CacheOpError`] so the public methods can fall back to git on soft errors.
+impl<'a, R> Releases<'a, R>
+where
+    R: ReadRepository + cob::Store<Namespace = NodeId>,
+{
+    /// Ensure every cached release for this repo matches the COB's current git
+    /// tips, re-folding only the objects whose tips changed and pruning removed
+    /// ones. Cheap in steady state: one ref walk plus token comparisons.
+    fn refresh_repo(&self, cache: &cache::Store) -> Result<(), CacheOpError> {
+        let repo_id = self.repo.id();
+        let current = self
+            .repo
+            .types(&TYPENAME)
+            .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+        let cached = cache
+            .heads(&repo_id)
+            .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+        let store = self.read_store().map_err(CacheOpError::Store)?;
+
+        for (oid, objects) in &current {
+            let id = ReleaseId::from(*oid);
+            let token = cache::head_token(objects.iter().map(|r| r.target.id));
+            if cached.get(&id).is_some_and(|head| head == &token) {
+                continue;
+            }
+            // Stale or missing: re-fold this one object. A broken object is
+            // skipped (matching `cob::list`), not treated as fatal.
+            match store.get(oid) {
+                Ok(Some(release)) => cache
+                    .update(&repo_id, &id, &token, &release)
+                    .map_err(|e| CacheOpError::Cache(e.to_string()))?,
+                Ok(None) => cache
+                    .remove(&repo_id, &id)
+                    .map_err(|e| CacheOpError::Cache(e.to_string()))?,
+                Err(err) => {
+                    log::warn!(target: "artifact", "skipping unreadable release {id}: {err}");
+                }
+            }
+        }
+        // Prune cached releases whose objects no longer exist in git.
+        for id in cached.keys() {
+            if !current.contains_key(id.as_object_id()) {
+                cache
+                    .remove(&repo_id, id)
+                    .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn cached_all(&self) -> Result<Vec<(ObjectId, Release)>, CacheOpError> {
+        let cache = self.cache.as_ref().expect("cache is present");
+        self.refresh_repo(cache)?;
+        let list = cache
+            .list(&self.repo.id())
+            .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+        Ok(list
+            .into_iter()
+            .map(|(id, release)| (*id.as_object_id(), release))
+            .collect())
+    }
+
+    fn cached_count(&self) -> Result<usize, CacheOpError> {
+        let cache = self.cache.as_ref().expect("cache is present");
+        self.refresh_repo(cache)?;
+        cache
+            .count(&self.repo.id())
+            .map_err(|e| CacheOpError::Cache(e.to_string()))
+    }
+
+    fn cached_get(&self, id: &ReleaseId) -> Result<Option<Release>, CacheOpError> {
+        let cache = self.cache.as_ref().expect("cache is present");
+        let repo_id = self.repo.id();
+        let objects = self
+            .repo
+            .objects(&TYPENAME, id.as_object_id())
+            .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+        let tips: Vec<Oid> = objects.iter().map(|r| r.target.id).collect();
+        if tips.is_empty() {
+            // Object no longer exists in git.
+            cache
+                .remove(&repo_id, id)
+                .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+            return Ok(None);
+        }
+        let token = cache::head_token(tips);
+        if let Some((head, release)) = cache
+            .get(&repo_id, id)
+            .map_err(|e| CacheOpError::Cache(e.to_string()))?
+        {
+            if head == token {
+                return Ok(Some(release));
+            }
+        }
+        // Stale or missing: re-fold.
+        let store = self.read_store().map_err(CacheOpError::Store)?;
+        match store.get(id.as_object_id()).map_err(CacheOpError::Store)? {
+            Some(release) => {
+                cache
+                    .update(&repo_id, id, &token, &release)
+                    .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+                Ok(Some(release))
+            }
+            None => {
+                cache
+                    .remove(&repo_id, id)
+                    .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+                Ok(None)
+            }
+        }
+    }
+
+    fn cached_find_by_cid(&self, cid: &Cid) -> Result<Vec<(ReleaseId, Release)>, CacheOpError> {
+        let cache = self.cache.as_ref().expect("cache is present");
+        self.refresh_repo(cache)?;
+        let repo_id = self.repo.id();
+        let ids = cache
+            .releases_for_cid(&repo_id, cid)
+            .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some((_, release)) = cache
+                .get(&repo_id, &id)
+                .map_err(|e| CacheOpError::Cache(e.to_string()))?
+            {
+                if release.artifact(cid).is_some() {
+                    out.push((id, release));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn cached_locations_for(&self, cid: &Cid) -> Result<Vec<(ReleaseId, Did, Url)>, CacheOpError> {
+        let cache = self.cache.as_ref().expect("cache is present");
+        self.refresh_repo(cache)?;
+        cache
+            .locations_for(&self.repo.id(), cid)
+            .map_err(|e| CacheOpError::Cache(e.to_string()))
+    }
+
+    /// Mirror a freshly-committed release into the cache (best effort; errors
+    /// are logged, never propagated, since the git write already succeeded).
+    fn cache_update(&self, id: &ReleaseId, release: &Release) {
+        let Some(cache) = self.cache.as_ref() else {
+            return;
+        };
+        let repo_id = self.repo.id();
+        let token = match self.repo.objects(&TYPENAME, id.as_object_id()) {
+            Ok(objects) => cache::head_token(objects.iter().map(|r| r.target.id)),
+            Err(err) => {
+                log::warn!(target: "artifact", "cache update skipped for {id}: {err}");
+                return;
+            }
+        };
+        if let Err(err) = cache.update(&repo_id, id, &token, release) {
+            log::warn!(target: "artifact", "cache update failed for {id}: {err}");
         }
     }
 }
@@ -790,9 +1072,13 @@ where
                 Ok(())
             },
         )?;
+        let id = ReleaseId::from(id);
+
+        // Write-through: mirror the new release into the cache (best effort).
+        self.cache_update(&id, &release);
 
         Ok(ReleaseMut {
-            id: id.into(),
+            id,
             release,
             store: self,
         })
@@ -997,6 +1283,9 @@ where
         let mut store = self.store.write_store(signer)?;
         let (release, commit) = tx.0.commit(message, self.id.into(), &mut store)?;
         self.release = release;
+
+        // Write-through: mirror the new state into the cache (best effort).
+        self.store.cache_update(&self.id, &self.release);
 
         Ok(commit)
     }
@@ -2699,5 +2988,122 @@ mod test {
         let anon_out = display::Release::new(id, &release, &aliases, anon, None, None)
             .pretty(display::Style::plain(false));
         assert!(!anon_out.contains('🌱'));
+    }
+
+    /// A migrated in-memory cache for tests.
+    fn memory_cache() -> crate::cache::Store {
+        crate::cache::Store::memory()
+            .unwrap()
+            .with_migrations()
+            .unwrap()
+    }
+
+    #[test]
+    fn cache_write_through() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let cache = memory_cache();
+        let mut releases = Releases::open(&*repo).unwrap().with_cache(cache.clone());
+
+        let cid = test_cid(1);
+        let url = Url::parse("https://alice.example.com/bin.tar.gz").unwrap();
+        let (id, timestamp) = {
+            let mut release = releases.create(oid, None, &alice.signer).unwrap();
+            release
+                .register_artifact(cid, "linux binary".into(), &alice.signer)
+                .unwrap();
+            release
+                .add_location(cid, url.clone(), &alice.signer)
+                .unwrap();
+            (*release.id(), release.timestamp())
+        };
+
+        // Write-through populated the cache directly (no read/refresh needed).
+        let repo_id = repo.id;
+        let (_, cached) = cache
+            .get(&repo_id, &id)
+            .unwrap()
+            .expect("release is cached after write-through");
+        assert_eq!(cached.artifact(&cid).unwrap().name(), "linux binary");
+        // The serde-skipped timestamp round-trips via its column.
+        assert_eq!(cached.timestamp(), timestamp);
+
+        // The locations index was rebuilt on write.
+        let locations = cache.locations_for(&repo_id, &cid).unwrap();
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].2, url);
+
+        // Public cache-backed lookups agree.
+        assert_eq!(releases.count().unwrap(), 1);
+        assert_eq!(releases.find_by_cid(&cid).unwrap().len(), 1);
+        let via_releases = releases.locations_for(&cid).unwrap();
+        assert_eq!(via_releases.len(), 1);
+        assert_eq!(via_releases[0].2, url);
+    }
+
+    #[test]
+    fn cache_reflects_external_change() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let cache = memory_cache();
+        let mut releases = Releases::open(&*repo).unwrap().with_cache(cache);
+
+        let id = {
+            let mut release = releases.create(oid, None, &alice.signer).unwrap();
+            release
+                .register_artifact(test_cid(1), "first".into(), &alice.signer)
+                .unwrap();
+            *release.id()
+        };
+        assert_eq!(releases.get(&id).unwrap().unwrap().artifacts().len(), 1);
+
+        // A change that does NOT go through the cached handle, simulating a
+        // remote op fetched into git. The cache is now stale.
+        {
+            let mut uncached = Releases::open(&*repo).unwrap();
+            uncached
+                .get_mut(&id)
+                .unwrap()
+                .register_artifact(test_cid(2), "second".into(), &alice.signer)
+                .unwrap();
+        }
+
+        // The freshness check detects the moved tip and re-folds on read.
+        let refreshed = releases.get(&id).unwrap().unwrap();
+        assert_eq!(refreshed.artifacts().len(), 2);
+        let all: Vec<_> = releases.all().unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].1.artifacts().len(), 2);
+    }
+
+    #[test]
+    fn cache_locations_index_tracks_removals() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let mut releases = Releases::open(&*repo).unwrap().with_cache(memory_cache());
+
+        let cid = test_cid(1);
+        let a = Url::parse("https://a.example.com/x").unwrap();
+        let b = Url::parse("https://b.example.com/x").unwrap();
+        {
+            let mut release = releases.create(oid, None, &alice.signer).unwrap();
+            release
+                .register_artifact(cid, "bin".into(), &alice.signer)
+                .unwrap();
+            release.add_location(cid, a.clone(), &alice.signer).unwrap();
+            release.add_location(cid, b.clone(), &alice.signer).unwrap();
+            // Removing a location must be reflected in the rebuilt index.
+            release.remove_location(cid, a, &alice.signer).unwrap();
+        }
+
+        let locations = releases.locations_for(&cid).unwrap();
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].2, b);
     }
 }
