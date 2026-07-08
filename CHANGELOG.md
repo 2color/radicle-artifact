@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### ⭐️ Highlights
+
+#### Faster (50x) reads with a cache
+
+Reading releases (both with `rad-artifact list` and the library) no longer re-materializes them from every COB action in git on each call. A new SQLite cache stores each materialized release alongside a normalized index for CID lookups, so state reads become simple queries after a cheap freshness check against the COB's git tips.
+
+Repository-wide operations that previously took hundreds of milliseconds now finish in single-digit milliseconds! The cache is a pure optimization: it validates freshness on every read, re-materializes only the objects whose git tips changed. See [docs/cache-benchmarks.md](docs/cache-benchmarks.md) for the measured speedups.
+
+Counting releases is now cache-free: `Releases::count` walks the COB refs instead of materializing every release just to return a number, reducing what was took ~290 ms on a cold cache down to ~5 ms.
+
+#### Cross-repo artifact lookup with `locate <cid>`
+
+Building on the new cache, the new `rad-artifact locate <cid>` command returns every location for a given CID across every repository in local storage (or, with `--releases`, the releases that contain it) as JSON. It reads only local storage and never touches the network, refreshing one shared cache across all repositories before the lookup so results always reflect the current COB state.
+
 ## [0.16.0] - 2026-07-06
 
 ### ⚠️ Breaking changes
