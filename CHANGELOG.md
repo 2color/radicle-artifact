@@ -21,6 +21,22 @@ Counting releases is now cache-free: `Releases::count` walks the COB refs instea
 
 Building on the new cache, the new `rad-artifact locate <cid>` command returns every location for a given CID across every repository in local storage (or, with `--releases`, the releases that contain it) as JSON. It reads only local storage and never touches the network, refreshing one shared cache across all repositories before the lookup so results always reflect the current COB state.
 
+### Added
+
+* `43d66a8` add SQLite cache for Release COB *<daniel@norman.life>*
+* `62231e6` add cross-repo CID lookup *<daniel@norman.life>*
+
+### Changed
+
+* `434a058` count releases via ref walk, not materialization *<daniel@norman.life>*
+* `c3530bf` add cache read benchmark and results doc *<daniel@norman.life>*
+* `9d09ef1` store release timestamp in the blob *<daniel@norman.life>*
+
+### Docs
+
+* `4218d4e` publish workspace README for all crates *<daniel@norman.life>*
+* `5136ce3` update CHANGELOG *<daniel@norman.life>*
+
 ## [0.16.0] - 2026-07-06
 
 ### ⚠️ Breaking changes
