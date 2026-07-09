@@ -129,16 +129,15 @@ impl Store {
     ) -> Result<(), Error> {
         transaction(&self.db, |db| {
             let mut stmt = db.prepare(
-                "INSERT INTO releases (id, repo, head, timestamp, release)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO releases (id, repo, head, release)
+                 VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(id) DO UPDATE
-                 SET repo = ?2, head = ?3, timestamp = ?4, release = ?5",
+                 SET repo = ?2, head = ?3, release = ?4",
             )?;
             stmt.bind((1, sql::Value::String(id.to_string())))?;
             stmt.bind((2, sql::Value::String(repo.to_string())))?;
             stmt.bind((3, sql::Value::String(head.to_string())))?;
-            stmt.bind((4, sql::Value::Integer(release.timestamp() as i64)))?;
-            stmt.bind((5, sql::Value::String(serde_json::to_string(release)?)))?;
+            stmt.bind((4, sql::Value::String(serde_json::to_string(release)?)))?;
             stmt.next()?;
 
             // Rebuild the locations index for this release.
@@ -175,9 +174,9 @@ impl Store {
 
     /// The `(head, release)` for a cached release, if present.
     pub fn get(&self, repo: &RepoId, id: &ReleaseId) -> Result<Option<(String, Release)>, Error> {
-        let mut stmt = self.db.prepare(
-            "SELECT id, head, timestamp, release FROM releases WHERE repo = ?1 AND id = ?2",
-        )?;
+        let mut stmt = self
+            .db
+            .prepare("SELECT id, head, release FROM releases WHERE repo = ?1 AND id = ?2")?;
         stmt.bind((1, sql::Value::String(repo.to_string())))?;
         stmt.bind((2, sql::Value::String(id.to_string())))?;
         match stmt.into_iter().next().transpose()? {
@@ -193,7 +192,7 @@ impl Store {
     pub fn list(&self, repo: &RepoId) -> Result<Vec<(ReleaseId, Release)>, Error> {
         let mut stmt = self
             .db
-            .prepare("SELECT id, head, timestamp, release FROM releases WHERE repo = ?1")?;
+            .prepare("SELECT id, head, release FROM releases WHERE repo = ?1")?;
         stmt.bind((1, sql::Value::String(repo.to_string())))?;
         let mut out = Vec::new();
         for row in stmt.into_iter() {
@@ -337,16 +336,10 @@ fn parse_release_id(s: &str) -> Result<ReleaseId, Error> {
     ReleaseId::from_str(s).map_err(|e| Error::Parse(format!("release id: {e}")))
 }
 
-/// Parse a `(id, head, release)` triple from a `releases` row, restoring the
-/// serde-skipped `timestamp` from its column.
+/// Parse a `(id, head, release)` triple from a `releases` row.
 fn parse_release_row(row: &sql::Row) -> Result<(ReleaseId, String, Release), Error> {
     let id = parse_release_id(row.try_read::<&str, _>("id")?)?;
     let head = row.try_read::<&str, _>("head")?.to_string();
-    let timestamp = row.try_read::<i64, _>("timestamp")? as u64;
-    let mut release: Release = serde_json::from_str(row.try_read::<&str, _>("release")?)?;
-    // `Release::timestamp` is `#[serde(skip)]`; restore it from its column.
-    // Accessible here because `cache` is a submodule of the crate root where
-    // `Release` is defined.
-    release.timestamp = timestamp;
+    let release: Release = serde_json::from_str(row.try_read::<&str, _>("release")?)?;
     Ok((id, head, release))
 }

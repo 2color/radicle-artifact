@@ -564,7 +564,7 @@ impl Release {
         let creator = *release.creator();
         Self {
             release_id,
-            created_at: release.timestamp(),
+            created_at: release.timestamp().as_secs(),
             oid: *release.oid(),
             tag: release.tag().copied(),
             tag_name,

@@ -323,7 +323,7 @@ fn reconcile_one(
         for (cid, artifact) in release.artifacts() {
             all_artifacts.push(ReleaseArtifact {
                 release_id: *release_id,
-                timestamp: release.timestamp(),
+                timestamp: release.timestamp().as_secs(),
                 cid: *cid,
             });
             let Some(urls) = artifact.locations_of(ctx.local_did) else {

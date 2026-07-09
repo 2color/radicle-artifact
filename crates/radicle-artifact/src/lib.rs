@@ -187,9 +187,8 @@ pub struct Release {
     /// action stream.
     creator: Did,
     artifacts: IndexMap<Cid, Artifact>,
-    /// Derived from the first op's timestamp; not in the action payload.
-    #[serde(skip)]
-    timestamp: u64,
+    /// Creation time, from the root op's timestamp; not in the action payload.
+    timestamp: cob::Timestamp,
 }
 
 /// A single artifact identified by its [`Cid`].
@@ -417,7 +416,7 @@ impl CobAction for Action {
 
 impl Release {
     /// Construct a new [`Release`].
-    fn new(oid: Oid, tag: Option<Oid>, creator: Did, timestamp: u64) -> Self {
+    fn new(oid: Oid, tag: Option<Oid>, creator: Did, timestamp: cob::Timestamp) -> Self {
         Self {
             oid,
             tag,
@@ -445,8 +444,8 @@ impl Release {
         &self.creator
     }
 
-    /// Get the Unix timestamp (seconds) when this release was created.
-    pub fn timestamp(&self) -> u64 {
+    /// Get the timestamp when this release was created.
+    pub fn timestamp(&self) -> cob::Timestamp {
         self.timestamp
     }
 
@@ -550,7 +549,7 @@ impl store::Cob for Release {
             .map_err(|err| error::Build::MissingCommit { oid, err })?;
         // Initial op's signer becomes the creator and the per-action author.
         let author = Did::from(op.author);
-        let mut release = Self::new(oid, tag, author, op.timestamp.as_secs());
+        let mut release = Self::new(oid, tag, author, op.timestamp);
         for action in actions {
             release.action(author, action);
         }
@@ -3030,7 +3029,7 @@ mod test {
             .unwrap()
             .expect("release is cached after write-through");
         assert_eq!(cached.artifact(&cid).unwrap().name(), "linux binary");
-        // The serde-skipped timestamp round-trips via its column.
+        // The timestamp round-trips via the release blob.
         assert_eq!(cached.timestamp(), timestamp);
 
         // The locations index was rebuilt on write.

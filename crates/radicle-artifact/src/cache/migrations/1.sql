@@ -9,8 +9,6 @@ create table if not exists "releases" (
   -- Freshness token: sorted, joined tip OIDs of the COB's change graph.
   -- A read compares this against the current tips to decide if the row is stale.
   "head"      text not null,
-  -- Release.timestamp, which is `#[serde(skip)]` and so absent from the blob.
-  "timestamp" integer not null,
   -- The materialized Release as JSON.
   "release"   text not null
 ) strict;

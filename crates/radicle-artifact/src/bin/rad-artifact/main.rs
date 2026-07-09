@@ -1837,7 +1837,7 @@ mod prompt {
             std::collections::BTreeMap::new();
         for release in all.into_iter() {
             let oid = *release.oid();
-            let ts = release.timestamp();
+            let ts = release.timestamp().as_secs();
             let group = groups.entry(oid).or_insert_with(|| CommitGroup {
                 oid,
                 timestamp: ts,
