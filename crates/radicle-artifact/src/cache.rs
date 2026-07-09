@@ -63,7 +63,7 @@ pub struct Store {
 }
 
 /// Resolve the cache database path within a node's COBs directory (e.g.
-/// `profile.cobs()`). Keeps the [`DB_FILE`] name owned by this module.
+/// `profile.cobs()`).
 pub fn db_path(cobs_dir: impl AsRef<Path>) -> PathBuf {
     cobs_dir.as_ref().join(DB_FILE)
 }
