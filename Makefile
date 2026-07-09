@@ -1,4 +1,4 @@
-.PHONY: changelog release release-macos release-linux check-macos-host upload register-artifacts check-bins clean clean-all check help
+.PHONY: changelog build build-macos build-linux check-macos-host upload register-artifacts check-bins clean clean-all check help
 
 # Version from the workspace (all crates version in lockstep)
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .version')
@@ -32,9 +32,9 @@ help:
 	@echo "Available targets:"
 	@echo "  make check            - Build, fmt, and clippy"
 	@echo "  make changelog        - Prepend commit list since last tag to CHANGELOG.md under [Unreleased]"
-	@echo "  make release          - Build all architectures (macOS + Linux)"
-	@echo "  make release-macos    - Build native macOS architectures (run on macOS)"
-	@echo "  make release-linux    - Build Linux musl architectures (cross via zigbuild)"
+	@echo "  make build            - Build all architectures (macOS + Linux)"
+	@echo "  make build-macos      - Build native macOS architectures (run on macOS)"
+	@echo "  make build-linux      - Build Linux musl architectures (cross via zigbuild)"
 	@echo "  make upload           - scp binaries + install script to $(UPLOAD_HOST)"
 	@echo "  make register-artifacts - Record binary CIDs + download URLs in the release COB"
 	@echo "  make clean            - Remove built release binaries"
@@ -52,9 +52,9 @@ changelog:
 	    (echo "git-cliff not found. Install with: cargo install git-cliff" && exit 1)
 	git cliff --unreleased --prepend CHANGELOG.md
 
-# Build all targets. Note: release-macos only works on macOS hosts; run
-# release-macos / release-linux individually on single-OS machines.
-release: release-macos release-linux
+# Build all targets. Note: build-macos only works on macOS hosts; run
+# build-macos / build-linux individually on single-OS machines.
+build: build-macos build-linux
 	@echo "✓ All builds complete"
 
 # Per-triple build rule. The stem ($*) is the target triple; BUILD_CMD_$*
@@ -71,16 +71,16 @@ build-%:
 	done
 
 # macOS targets build with plain `cargo build`, which has no Darwin cross
-# toolchain on other hosts; guard so a Linux `make release` fails fast with a
+# toolchain on other hosts; guard so a Linux `make build` fails fast with a
 # clear message
-release-macos: check-macos-host $(addprefix build-,$(MACOS_TARGETS))
+build-macos: check-macos-host $(addprefix build-,$(MACOS_TARGETS))
 
 check-macos-host:
 	@[ "$$(uname -s)" = "Darwin" ] || \
-	    (echo "release-macos must run on a macOS host (got $$(uname -s)). Run 'make release-linux' here instead." && exit 1)
+	    (echo "build-macos must run on a macOS host (got $$(uname -s)). Run 'make build-linux' here instead." && exit 1)
 
 # Linux targets also need cargo-zigbuild + zig installed.
-release-linux: check-zig $(addprefix build-,$(LINUX_TARGETS))
+build-linux: check-zig $(addprefix build-,$(LINUX_TARGETS))
 
 check-zig:
 	@command -v cargo-zigbuild >/dev/null 2>&1 || \
@@ -90,11 +90,11 @@ check-zig:
 
 # Pre-flight check: every release binary must exist on disk. Shared by
 # `upload` and `register-artifacts` so both fail early with the same
-# message if `make release` hasn't been run.
+# message if `make build` hasn't been run.
 check-bins:
 	@for bin in $(RELEASE_BINS); do \
 	    if [ ! -f "$$bin" ]; then \
-	        echo "Missing $$bin — run 'make release' first"; \
+	        echo "Missing $$bin — run 'make build' first"; \
 	        exit 1; \
 	    fi; \
 	done

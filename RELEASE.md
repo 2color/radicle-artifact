@@ -44,7 +44,7 @@ git commit -am "Update changelog"
 cargo release X.Y.Z --execute
 
 # 3. Build and upload binaries + install script
-make release
+make build
 make upload
 
 # 4. Record each binary's CID and download URL in the release COB.
@@ -96,13 +96,13 @@ top of `CHANGELOG.md` so the next cycle has something to accumulate under.
 ## Build
 
 ```sh
-make release              # all platforms (macOS host required for macOS targets)
-make release-macos        # macOS (aarch64 + x86_64)
-make release-linux        # Linux musl (aarch64 + x86_64)
+make build                # all platforms (macOS host required for macOS targets)
+make build-macos          # macOS (aarch64 + x86_64)
+make build-linux          # Linux musl (aarch64 + x86_64)
 ```
 
-`make release` builds both macOS and Linux targets. macOS binaries can only be
-built on a macOS host — on Linux or CI, run `make release-linux` and do macOS
+`make build` builds both macOS and Linux targets. macOS binaries can only be
+built on a macOS host — on Linux or CI, run `make build-linux` and do macOS
 builds separately on a Mac.
 
 The version comes from the workspace `Cargo.toml` via `cargo metadata`, so
@@ -177,7 +177,7 @@ Run this **after** `make upload` so the announced URL resolves. Re-running is
 safe: `register` with the same `(revision, cid)` from the same author is
 idempotent, and `location add` dedups URLs.
 
-Unlike `make release` / `make upload`, this step talks to your local Radicle
+Unlike `make build` / `make upload`, this step talks to your local Radicle
 profile and the network, so it requires `rad auth` to be configured with a
 key that has publishing rights on this repo. Inspect the result with
 `rad-artifact show releases/X.Y.Z --pretty`.
