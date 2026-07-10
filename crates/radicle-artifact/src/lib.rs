@@ -608,8 +608,10 @@ pub struct Releases<'a, R> {
     repo: &'a R,
     identity: Oid,
     /// Optional SQLite cache. When present, reads are served from it after a
-    /// cheap freshness check and writes are mirrored into it. It is a
-    /// best-effort optimization: on any cache error, reads fall back to git.
+    /// cheap freshness check that re-materializes stale entries. It is
+    /// populated lazily by reads, not by writes: a write advances the COB's git
+    /// tips, so the next read sees the freshness token change and re-materializes.
+    /// Best-effort — on any cache error, reads fall back to git.
     cache: Option<cache::Store>,
 }
 
@@ -979,25 +981,6 @@ where
             .locations_for(&self.repo.id(), cid)
             .map_err(|e| CacheOpError::Cache(e.to_string()))
     }
-
-    /// Mirror a freshly-committed release into the cache (best effort; errors
-    /// are logged, never propagated, since the git write already succeeded).
-    fn cache_update(&self, id: &ReleaseId, release: &Release) {
-        let Some(cache) = self.cache.as_ref() else {
-            return;
-        };
-        let repo_id = self.repo.id();
-        let token = match self.repo.objects(&TYPENAME, id.as_object_id()) {
-            Ok(objects) => cache::head_token(objects.iter().map(|r| r.target.id)),
-            Err(err) => {
-                log::warn!(target: "artifact", "cache update skipped for {id}: {err}");
-                return;
-            }
-        };
-        if let Err(err) = cache.update(&repo_id, id, &token, release) {
-            log::warn!(target: "artifact", "cache update failed for {id}: {err}");
-        }
-    }
 }
 
 impl<'a, R> Releases<'a, R>
@@ -1075,9 +1058,6 @@ where
             },
         )?;
         let id = ReleaseId::from(id);
-
-        // Write-through: mirror the new release into the cache (best effort).
-        self.cache_update(&id, &release);
 
         Ok(ReleaseMut {
             id,
@@ -1285,9 +1265,6 @@ where
         let mut store = self.store.write_store(signer)?;
         let (release, commit) = tx.0.commit(message, self.id.into(), &mut store)?;
         self.release = release;
-
-        // Write-through: mirror the new state into the cache (best effort).
-        self.store.cache_update(&self.id, &self.release);
 
         Ok(commit)
     }
@@ -3001,7 +2978,7 @@ mod test {
     }
 
     #[test]
-    fn cache_write_through() {
+    fn cache_populated_on_read() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -3022,17 +2999,22 @@ mod test {
             (*release.id(), release.timestamp())
         };
 
-        // Write-through populated the cache directly (no read/refresh needed).
+        // Writes never touch the cache; it is populated lazily on the first read.
         let repo_id = repo.id;
+        assert!(cache.get(&repo_id, &id).unwrap().is_none());
+
+        // A cache-backed read validates the COB's git tips and materializes it.
+        releases.get(&id).unwrap().expect("release exists");
+
         let (_, cached) = cache
             .get(&repo_id, &id)
             .unwrap()
-            .expect("release is cached after write-through");
+            .expect("release is cached after read");
         assert_eq!(cached.artifact(&cid).unwrap().name(), "linux binary");
         // The timestamp round-trips via the release blob.
         assert_eq!(cached.timestamp(), timestamp);
 
-        // The locations index was rebuilt on write.
+        // The locations index was rebuilt on read.
         let locations = cache.locations_for(&repo_id, &cid).unwrap();
         assert_eq!(locations.len(), 1);
         assert_eq!(locations[0].2, url);
@@ -3277,13 +3259,14 @@ mod test {
         let cache = memory_cache();
         let mut releases = Releases::open(&*repo).unwrap().with_cache(cache.clone());
 
-        // A real release written through the cached handle.
+        // A real release, then a read to materialize it into the cache.
         let real_id = {
             let mut r = releases.create(oid, None, &alice.signer).unwrap();
             r.register_artifact(test_cid(1), "bin".into(), &alice.signer)
                 .unwrap();
             *r.id()
         };
+        releases.get(&real_id).unwrap().expect("release exists");
 
         // Inject a cached entry for a COB id that does not exist in git.
         let bogus_id = crate::ReleaseId::from(commit(&repo.backend, "not a cob"));
