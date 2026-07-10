@@ -312,6 +312,7 @@ fn reconcile_one(
     let all_releases: Vec<(radicle_artifact::ReleaseId, radicle_artifact::Release)> = releases
         .all()
         .map_err(|e| Error::Node(node::Error::Find(e)))?
+        .into_iter()
         .filter_map(|r| r.ok())
         .map(|(oid, r)| (radicle_artifact::ReleaseId::from(oid), r))
         .collect();

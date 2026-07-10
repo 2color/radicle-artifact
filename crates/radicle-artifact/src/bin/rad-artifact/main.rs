@@ -1171,6 +1171,7 @@ fn list_releases(
     let iter = releases
         .all()
         .map_err(error::List::All)?
+        .into_iter()
         .filter_map(|res| match res {
             Ok((id, release)) => Some((ReleaseId::from(id), release)),
             Err(err) => {
@@ -1822,6 +1823,7 @@ mod prompt {
         let all: Vec<Release> = releases
             .all()
             .map_err(|e| e.to_string())?
+            .into_iter()
             .filter_map(|res| res.ok())
             .map(|(_, release)| release)
             .collect();

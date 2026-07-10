@@ -114,6 +114,7 @@ fn run_reads<'r>(
                 let v = releases
                     .all()
                     .unwrap()
+                    .into_iter()
                     .collect::<Result<Vec<_>, _>>()
                     .unwrap();
                 black_box(v);

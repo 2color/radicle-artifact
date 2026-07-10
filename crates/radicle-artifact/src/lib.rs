@@ -591,6 +591,10 @@ impl<R: ReadRepository> Evaluate<R> for Release {
     }
 }
 
+/// One entry from [`Releases::all`]: a release with its id, or the error hit
+/// while materializing that COB object.
+pub type ReleaseEntry = Result<(ObjectId, Release), store::Error>;
+
 /// The storage for all [`Release`] items.
 ///
 /// To get a handle for [`Releases`] use [`Releases::open`].
@@ -694,13 +698,8 @@ where
     ///
     /// With a cache, releases are served from SQLite after a cheap freshness
     /// check that re-materializes only the objects whose git tips changed.
-    pub fn all(
-        &self,
-    ) -> Result<
-        impl ExactSizeIterator<Item = Result<(ObjectId, Release), store::Error>> + use<'a, R>,
-        store::Error,
-    > {
-        let items: Vec<Result<(ObjectId, Release), store::Error>> = if self.cache.is_some() {
+    pub fn all(&self) -> Result<Vec<ReleaseEntry>, store::Error> {
+        let items: Vec<ReleaseEntry> = if self.cache.is_some() {
             match self.cached_all() {
                 Ok(list) => list.into_iter().map(Ok).collect(),
                 Err(CacheOpError::Store(err)) => return Err(err),
@@ -712,7 +711,7 @@ where
         } else {
             self.read_store()?.all()?.collect()
         };
-        Ok(items.into_iter())
+        Ok(items)
     }
 
     /// Get a [`Release`], given its [`ReleaseId`] identifier.
@@ -809,7 +808,7 @@ impl<'a> FindByCommit<'a> {
         R: ReadRepository + cob::Store<Namespace = NodeId>,
     {
         Ok(Self {
-            releases: Box::new(releases.all()?),
+            releases: Box::new(releases.all()?.into_iter()),
             needle,
         })
     }
@@ -3059,7 +3058,12 @@ mod test {
         // The freshness check detects the moved tip and re-materializes on read.
         let refreshed = releases.get(&id).unwrap().unwrap();
         assert_eq!(refreshed.artifacts().len(), 2);
-        let all: Vec<_> = releases.all().unwrap().collect::<Result<_, _>>().unwrap();
+        let all: Vec<_> = releases
+            .all()
+            .unwrap()
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].1.artifacts().len(), 2);
     }
@@ -3277,7 +3281,7 @@ mod test {
         assert!(cache.get(&repo.id, &bogus_id).unwrap().is_some());
 
         // A repo-wide cached read refreshes and prunes entries absent from git.
-        assert_eq!(releases.all().unwrap().count(), 1);
+        assert_eq!(releases.all().unwrap().len(), 1);
         assert!(cache.get(&repo.id, &bogus_id).unwrap().is_none());
     }
 
