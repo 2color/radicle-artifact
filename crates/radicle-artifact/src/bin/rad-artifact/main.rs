@@ -1526,7 +1526,7 @@ fn run_download(
 
     let requested_path = args
         .output
-        .unwrap_or_else(|| std::path::PathBuf::from(format!("{}_{cid}", name.replace(' ', "_"))));
+        .unwrap_or_else(|| std::path::PathBuf::from(name.replace(' ', "_")));
 
     // Resolve the download destination to an absolute path.
     //
