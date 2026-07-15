@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Cache fix
+
+The artifact cache is now populated lazily on read rather than mirrored on every write. This drops an extra ref walk and rebuild from the write path, and closes a race where a concurrent op could stamp a freshness token newer than the mirrored blob, letting a later read match the token and serve stale data. Reads still revalidate against the COB's git tips and re-materialize any stale entries, so a write advances the tip and the next read picks up the change.
+
+
 ## [0.17.0] - 2026-07-09
 
 ### ⭐️ Highlights
