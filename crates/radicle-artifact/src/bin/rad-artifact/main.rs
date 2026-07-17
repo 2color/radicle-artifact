@@ -116,12 +116,25 @@ fn load_profile() -> Result<Profile, error::Profile> {
     Profile::load().map_err(error::Profile)
 }
 
+/// Open a repository's releases, sharing the node-wide artifact cache.
+#[cfg(feature = "sqlite")]
 pub(crate) fn open_releases<'a>(
     repo: &'a Repository,
     profile: &Profile,
 ) -> Result<Releases<'a, Repository>, error::Releases> {
     let db = cache_db_path(profile.cobs());
     Releases::open_cached(repo, db).map_err(|err| error::Releases { rid: repo.id, err })
+}
+
+/// Open a repository's releases without a cache; every read materializes from
+/// git (correct, just slower).
+#[cfg(not(feature = "sqlite"))]
+pub(crate) fn open_releases<'a>(
+    repo: &'a Repository,
+    _profile: &Profile,
+) -> Result<Releases<'a, Repository>, error::Releases> {
+    log::debug!(target: "artifact", "built without the sqlite feature: artifact cache disabled");
+    Releases::open(repo).map_err(|err| error::Releases { rid: repo.id, err })
 }
 
 fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> {
@@ -1205,8 +1218,16 @@ fn list_releases(
 /// a single repository and ignores `--repository`.
 fn run_locate(cmd: command::Locate, profile: &Profile) -> Result<(), error::Locations> {
     let command::Locate { cid, releases } = cmd;
-    let index =
-        radicle_artifact::discovery::Index::open(&profile.storage, cache_db_path(profile.cobs()));
+    #[cfg(feature = "sqlite")]
+    let index = radicle_artifact::discovery::Index::open_cached(
+        &profile.storage,
+        cache_db_path(profile.cobs()),
+    );
+    #[cfg(not(feature = "sqlite"))]
+    let index = {
+        log::debug!(target: "artifact", "built without the sqlite feature: artifact cache disabled");
+        radicle_artifact::discovery::Index::open(&profile.storage)
+    };
     let json = if releases {
         let matches = index
             .releases_by_cid(&cid)

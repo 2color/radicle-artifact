@@ -3,9 +3,11 @@
 //! [`Releases`] is scoped to a single repository. An [`Index`] sits above it and
 //! answers "where, across *every* repository in storage, does this CID live?"
 //!
-//! Each lookup opens and refreshes a repository's cache before querying it, so
-//! results always reflect the current COB state. Per-repository failures are
-//! logged and skipped; only failing to enumerate repositories is fatal.
+//! Lookups always reflect the current COB state: a cached index (see
+//! `Index::open_cached`, behind the `sqlite` feature) refreshes each
+//! repository's cache before querying it, and an uncached one materializes from
+//! git every time. Per-repository failures are logged and skipped; only failing
+//! to enumerate repositories is fatal.
 //!
 //! # Example
 //!
@@ -13,13 +15,22 @@
 //! # use radicle::Profile;
 //! #
 //! # use radicle_artifact::discovery::Index;
-//! # use radicle_artifact::{cache_db_path, Cid};
+//! # use radicle_artifact::Cid;
+//! # #[cfg(feature = "sqlite")]
+//! # use radicle_artifact::cache_db_path;
 //! #
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let profile = Profile::load()?;
+//!
 //! // Open a discovery index over the local node's storage, reusing its shared
 //! // artifact cache (the same db `rad artifact` writes through).
-//! let profile = Profile::load()?;
-//! let index = Index::open(&profile.storage, cache_db_path(profile.cobs()));
+//! #[cfg(feature = "sqlite")]
+//! let index = Index::open_cached(&profile.storage, cache_db_path(profile.cobs()));
+//!
+//! // Without the `sqlite` feature there's no cache; every lookup materializes
+//! // releases directly from git.
+//! #[cfg(not(feature = "sqlite"))]
+//! let index = Index::open(&profile.storage);
 //!
 //! let cid: Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".parse()?;
 //!
@@ -36,6 +47,7 @@
 //! # }
 //! ```
 
+#[cfg(feature = "sqlite")]
 use std::path::Path;
 
 use radicle::cob;
@@ -45,6 +57,7 @@ use radicle::prelude::{ReadRepository, ReadStorage, RepoId};
 use serde::Serialize;
 use url::Url;
 
+#[cfg(feature = "sqlite")]
 use crate::cache;
 use crate::{Cid, Release, ReleaseId, Releases};
 
@@ -74,22 +87,35 @@ pub struct ReleaseMatch {
     pub release: Release,
 }
 
-/// A node-wide, cache-backed view over every repository's releases.
+/// A node-wide view over every repository's releases.
 ///
-/// Construct with [`Index::open`]; query with [`Index::locations_by_cid`] and
-/// [`Index::releases_by_cid`].
+/// Construct with `Index::open_cached` (behind the `sqlite` feature) to share
+/// the node's artifact cache, or with [`Index::open`] to read straight from
+/// git; query with [`Index::locations_by_cid`] and [`Index::releases_by_cid`].
 pub struct Index<'a, S> {
     storage: &'a S,
+    #[cfg(feature = "sqlite")]
     cache: Option<cache::Store>,
 }
 
 impl<'a, S> Index<'a, S> {
+    /// Open a discovery index over `storage`, without a cache. Every lookup
+    /// materializes releases directly from git.
+    pub fn open(storage: &'a S) -> Self {
+        Self {
+            storage,
+            #[cfg(feature = "sqlite")]
+            cache: None,
+        }
+    }
+
     /// Open a discovery index over `storage`, backed by a cache at `path`.
     ///
     /// Best-effort, like [`Releases::open_cached`]: if the cache cannot be
     /// opened or migrated, a warning is logged and lookups fall back to materializing
     /// from git (correct, just slower).
-    pub fn open(storage: &'a S, path: impl AsRef<Path>) -> Self {
+    #[cfg(feature = "sqlite")]
+    pub fn open_cached(storage: &'a S, path: impl AsRef<Path>) -> Self {
         let cache = match cache::open_writer(path) {
             Ok(cache) => Some(cache),
             Err(err) => {
@@ -172,10 +198,12 @@ where
         &self,
         repo: &'r S::Repository,
     ) -> Result<Releases<'r, S::Repository>, error::Repo> {
-        let mut releases = Releases::open(repo)?;
-        if let Some(cache) = &self.cache {
-            releases = releases.with_cache(cache.clone());
-        }
+        let releases = Releases::open(repo)?;
+        #[cfg(feature = "sqlite")]
+        let releases = match &self.cache {
+            Some(cache) => releases.with_cache(cache.clone()),
+            None => releases,
+        };
         Ok(releases)
     }
 }

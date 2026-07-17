@@ -30,7 +30,7 @@ BASE_URL    := https://files.radicle.dev/releases/radicle-artifact
 
 help:
 	@echo "Available targets:"
-	@echo "  make check            - Build, fmt, and clippy"
+	@echo "  make check            - Build, fmt, and clippy (with and without sqlite)"
 	@echo "  make changelog        - Prepend commit list since last tag to CHANGELOG.md under [Unreleased]"
 	@echo "  make build            - Build all architectures (macOS + Linux)"
 	@echo "  make build-macos      - Build native macOS architectures (run on macOS)"
@@ -40,9 +40,12 @@ help:
 	@echo "  make clean            - Remove built release binaries"
 	@echo "  make clean-all        - Also run cargo clean"
 
+# `sqlite` is a default feature, so a plain clippy run never compiles the
+# cfg'd-out arms. The second run keeps them from rotting.
 check:
 	cargo fmt --check
-	cargo clippy
+	cargo clippy --all-targets
+	cargo clippy --all-targets --package radicle-artifact --no-default-features
 
 # Draft the changelog section for the upcoming release. Prepends a new
 # [Unreleased] block with the commit list since the last tag via git-cliff,
@@ -64,7 +67,11 @@ build: build-macos build-linux
 build-%:
 	@mkdir -p $(RELEASE_DIR)
 	@echo "Building for $*..."
-	$(BUILD_CMD_$*) --release --package radicle-artifact --package radicle-artifact-node --target $*
+	$(BUILD_CMD_$*) \
+		--release \
+		--package radicle-artifact \
+		--package radicle-artifact-node \
+		--target $*
 	@for b in $(BINARIES); do \
 	    cp $(TARGET_DIR)/$*/release/$$b $(RELEASE_DIR)/$${b}_$(VERSION)_$*; \
 	    echo "✓ Created: $(RELEASE_DIR)/$${b}_$(VERSION)_$*"; \

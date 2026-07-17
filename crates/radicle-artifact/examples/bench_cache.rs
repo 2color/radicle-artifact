@@ -15,6 +15,12 @@
 //! Uses `radicle`'s `test` feature (available to examples via dev-dependencies).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// Without a cache there is nothing to benchmark, so `main` is a stub and the
+// setup helpers go unused. Only relax these lints for that build.
+#![cfg_attr(
+    not(feature = "sqlite"),
+    allow(unused_imports, dead_code, unused_variables)
+)]
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -25,6 +31,7 @@ use radicle::storage::git::Repository;
 use radicle::test;
 use url::Url;
 
+#[cfg(feature = "sqlite")]
 use radicle_artifact::{cache_db_path, Cid, ReleaseId, Releases};
 
 /// Read a `usize` from an environment variable, or fall back to `default`.
@@ -49,6 +56,7 @@ fn commit(repo: &RawRepository, message: &str) -> Oid {
 }
 
 /// Build a valid CIDv1 (raw codec, sha2-256) from a 32-bit seed.
+#[cfg(feature = "sqlite")]
 fn cid_from(seed: u32) -> Cid {
     use cid::multihash::Multihash;
     let mut digest = [0u8; 32];
@@ -91,6 +99,7 @@ fn bench(label: &str, iters: u32, show_cold: bool, mut f: impl FnMut()) -> (Dura
 /// cache-backed run, the [`tempfile::TempDir`] holding its cache). Giving each
 /// op its own cache makes its `cold` a genuine cold-cache warm-up, rather than a
 /// warm read served from a cache a previous op already populated.
+#[cfg(feature = "sqlite")]
 fn run_reads<'r>(
     heading: &str,
     make: impl Fn() -> (Option<tempfile::TempDir>, Releases<'r, Repository>),
@@ -157,6 +166,10 @@ fn run_reads<'r>(
     ]
 }
 
+#[cfg(not(feature = "sqlite"))]
+fn main() {}
+
+#[cfg(feature = "sqlite")]
 fn main() {
     let n_releases = env_usize("BENCH_RELEASES", 80);
     let n_artifacts = env_usize("BENCH_ARTIFACTS", 5);

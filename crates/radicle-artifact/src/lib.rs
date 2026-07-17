@@ -82,12 +82,14 @@ pub use radicle_artifact_core::cid::Cid;
 
 // Resolve the cache database path from a node's COBs directory, without
 // exposing the filename the `cache` module owns.
+#[cfg(feature = "sqlite")]
 pub use cache::db_path as cache_db_path;
 
 pub mod discovery;
 pub mod display;
 pub mod error;
 
+#[cfg(feature = "sqlite")]
 pub(crate) mod cache;
 
 /// Type name of an artifact release.
@@ -614,6 +616,7 @@ pub struct Releases<'a, R> {
     /// populated lazily by reads, not by writes: a write advances the COB's git
     /// tips, so the next read sees the freshness token change and re-materializes.
     /// Best-effort — on any cache error, reads fall back to git.
+    #[cfg(feature = "sqlite")]
     cache: Option<cache::Store>,
 }
 
@@ -627,6 +630,7 @@ where
         Ok(Self {
             repo: repository,
             identity,
+            #[cfg(feature = "sqlite")]
             cache: None,
         })
     }
@@ -637,6 +641,7 @@ where
     /// tips are unchanged, re-materializing only stale objects. The cache is a
     /// best-effort optimization: if it cannot be opened or migrated, a warning
     /// is logged and the store falls back to reading directly from git.
+    #[cfg(feature = "sqlite")]
     pub fn open_cached(
         repository: &'a R,
         path: impl AsRef<std::path::Path>,
@@ -652,6 +657,7 @@ where
     /// Attach an already-open cache, sharing its connection. Used by the
     /// node-wide [`discovery`](crate::discovery) index to reuse one cache across
     /// every repository, and by tests.
+    #[cfg(feature = "sqlite")]
     pub(crate) fn with_cache(mut self, cache: cache::Store) -> Self {
         self.cache = Some(cache);
         self
@@ -699,6 +705,7 @@ where
     /// With a cache, releases are served from SQLite after a cheap freshness
     /// check that re-materializes only the objects whose git tips changed.
     pub fn all(&self) -> Result<Vec<ReleaseEntry>, store::Error> {
+        #[cfg(feature = "sqlite")]
         let items: Vec<ReleaseEntry> = if self.cache.is_some() {
             match self.cached_all() {
                 Ok(list) => list.into_iter().map(Ok).collect(),
@@ -711,11 +718,14 @@ where
         } else {
             self.read_store()?.all()?.collect()
         };
+        #[cfg(not(feature = "sqlite"))]
+        let items: Vec<ReleaseEntry> = self.read_store()?.all()?.collect();
         Ok(items)
     }
 
     /// Get a [`Release`], given its [`ReleaseId`] identifier.
     pub fn get(&self, id: &ReleaseId) -> Result<Option<Release>, store::Error> {
+        #[cfg(feature = "sqlite")]
         if self.cache.is_some() {
             match self.cached_get(id) {
                 Ok(release) => return Ok(release),
@@ -741,6 +751,7 @@ where
     /// union locations across all of them, so callers building a fetch plan
     /// should aggregate across the returned releases.
     pub fn find_by_cid(&self, cid: &Cid) -> Result<Vec<(ReleaseId, Release)>, cob::store::Error> {
+        #[cfg(feature = "sqlite")]
         if self.cache.is_some() {
             match self.cached_find_by_cid(cid) {
                 Ok(out) => return Ok(out),
@@ -771,6 +782,7 @@ where
         &self,
         cid: &Cid,
     ) -> Result<Vec<(ReleaseId, Did, Url)>, cob::store::Error> {
+        #[cfg(feature = "sqlite")]
         if self.cache.is_some() {
             match self.cached_locations_for(cid) {
                 Ok(out) => return Ok(out),
@@ -840,6 +852,7 @@ impl Iterator for FindByCommit<'_> {
 ///
 /// Distinguishes a real git/store error (propagated to the caller) from a soft
 /// cache/refs error (logged, then the caller falls back to the git path).
+#[cfg(feature = "sqlite")]
 enum CacheOpError {
     /// A git/store error; propagate it.
     Store(store::Error),
@@ -849,6 +862,7 @@ enum CacheOpError {
 
 /// Private cache-backed read helpers for [`Releases`]. Each returns
 /// [`CacheOpError`] so the public methods can fall back to git on soft errors.
+#[cfg(feature = "sqlite")]
 impl<'a, R> Releases<'a, R>
 where
     R: ReadRepository + cob::Store<Namespace = NodeId>,
@@ -2970,6 +2984,7 @@ mod test {
     }
 
     /// A migrated in-memory cache for tests.
+    #[cfg(feature = "sqlite")]
     fn memory_cache() -> crate::cache::Store {
         crate::cache::Store::memory()
             .unwrap()
@@ -2977,7 +2992,24 @@ mod test {
             .unwrap()
     }
 
+    /// Open a discovery index over `storage`, cached when the `sqlite` feature
+    /// is enabled. The returned `TempDir` backs the cache file and must outlive
+    /// the index.
+    fn open_index<S>(storage: &S) -> (Option<tempfile::TempDir>, crate::discovery::Index<'_, S>) {
+        #[cfg(feature = "sqlite")]
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let index = crate::discovery::Index::open_cached(storage, tmp.path().join("db"));
+            (Some(tmp), index)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            (None, crate::discovery::Index::open(storage))
+        }
+    }
+
     #[test]
+    #[cfg(feature = "sqlite")]
     fn cache_populated_on_read() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
@@ -3028,6 +3060,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "sqlite")]
     fn cache_reflects_external_change() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
@@ -3070,6 +3103,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "sqlite")]
     fn cache_locations_index_tracks_removals() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
@@ -3141,8 +3175,7 @@ mod test {
             r.add_location(cid, url2.clone(), &node.signer).unwrap();
         }
 
-        let tmp = tempfile::tempdir().unwrap();
-        let index = crate::discovery::Index::open(&node.storage, tmp.path().join("db"));
+        let (_tmp, index) = open_index(&node.storage);
 
         // Locations are aggregated across both repositories.
         let locations = index.locations_by_cid(&cid).unwrap();
@@ -3175,8 +3208,7 @@ mod test {
             *r.id()
         };
 
-        let tmp = tempfile::tempdir().unwrap();
-        let index = crate::discovery::Index::open(&node.storage, tmp.path().join("db"));
+        let (_tmp, index) = open_index(&node.storage);
 
         // A cold query materializes and caches: one location.
         assert_eq!(index.locations_by_cid(&cid).unwrap().len(), 1);
@@ -3196,6 +3228,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "sqlite")]
     fn open_cached_degrades_to_git_when_cache_unavailable() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
@@ -3250,12 +3283,18 @@ mod test {
 
         // An unopenable cache path forces the Index onto the git-materialization path; the
         // cross-repo aggregation must still work without a cache.
-        let index =
-            crate::discovery::Index::open(&node.storage, node.root.join("nope").join("cache.db"));
+        #[cfg(feature = "sqlite")]
+        let index = crate::discovery::Index::open_cached(
+            &node.storage,
+            node.root.join("nope").join("cache.db"),
+        );
+        #[cfg(not(feature = "sqlite"))]
+        let index = crate::discovery::Index::open(&node.storage);
         assert_eq!(index.locations_by_cid(&cid).unwrap().len(), 2);
     }
 
     #[test]
+    #[cfg(feature = "sqlite")]
     fn cache_prunes_releases_absent_from_git() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
@@ -3310,7 +3349,9 @@ mod test {
         // Count is the number of release COBs, from a ref walk. A cache-backed
         // handle agrees, and neither materializes a release to answer.
         assert_eq!(Releases::open(&*repo).unwrap().count().unwrap(), 3);
+        #[cfg(feature = "sqlite")]
         let cached = Releases::open(&*repo).unwrap().with_cache(memory_cache());
+        #[cfg(feature = "sqlite")]
         assert_eq!(cached.count().unwrap(), 3);
 
         // Redacting an artifact rewrites a release's contents but not the set of
@@ -3327,6 +3368,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "sqlite")]
     fn cache_finds_artifact_without_location() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
