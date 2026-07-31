@@ -197,7 +197,7 @@ impl TryFrom<&radicle::identity::Did> for EndpointId {
     type Error = Error;
 
     fn try_from(did: &radicle::identity::Did) -> Result<Self, Self::Error> {
-        let bytes = did.to_byte_array();
+        let bytes = did.as_key().into_inner();
         let inner = iroh_base::EndpointId::from_bytes(&bytes)
             .map_err(|e| Error::Key(format!("invalid iroh public key from DID: {e}")))?;
         Ok(EndpointId(inner))
@@ -219,10 +219,7 @@ pub fn radicle_secret_to_iroh(
         .map_err(|e| Error::Key(format!("failed to read radicle secret key: {e}")))?
         .ok_or_else(|| Error::Key("radicle secret key not found".into()))?;
 
-    let seed = sk.seed();
-    let seed_bytes: &[u8; 32] = &seed;
-
-    Ok(iroh_base::SecretKey::from_bytes(seed_bytes))
+    Ok(iroh_base::SecretKey::from_bytes(sk.as_bytes()))
 }
 
 #[cfg(test)]
@@ -240,7 +237,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let keystore = Keystore::new(&tmp);
         keystore
-            .init("test", None, radicle::crypto::Seed::generate())
+            .init("test", None, radicle::crypto::Seed::new([1u8; 32]))
             .unwrap();
 
         let iroh_sk = radicle_secret_to_iroh(&keystore, None).unwrap();
@@ -248,7 +245,7 @@ mod tests {
         let radicle_pk = keystore.public_key().unwrap().unwrap();
         let iroh_pk = iroh_sk.public();
 
-        assert_eq!(&radicle_pk.to_byte_array(), iroh_pk.as_bytes());
+        assert_eq!(&radicle_pk.into_inner(), iroh_pk.as_bytes());
     }
 
     #[test]
@@ -373,7 +370,7 @@ mod tests {
             .init(
                 "test",
                 Some(Passphrase::new("hunter2".into())),
-                radicle::crypto::Seed::generate(),
+                radicle::crypto::Seed::new([2u8; 32]),
             )
             .unwrap();
 
@@ -384,6 +381,6 @@ mod tests {
         let iroh_sk =
             radicle_secret_to_iroh(&keystore, Some(Passphrase::new("hunter2".into()))).unwrap();
         let radicle_pk = keystore.public_key().unwrap().unwrap();
-        assert_eq!(&radicle_pk.to_byte_array(), iroh_sk.public().as_bytes());
+        assert_eq!(&radicle_pk.into_inner(), iroh_sk.public().as_bytes());
     }
 }

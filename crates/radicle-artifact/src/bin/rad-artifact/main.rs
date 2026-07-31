@@ -8,10 +8,9 @@ use clap::Parser;
 
 use radicle::{
     cob, crypto,
-    crypto::signature::Signer,
     git::Oid,
     identity::Did,
-    node::{device::Device, AliasStore, Handle, Node},
+    node::{AliasStore, Handle, Node},
     prelude::{Profile, ReadRepository, ReadStorage, RepoId, WriteRepository},
     profile,
     storage::git::Repository,
@@ -319,10 +318,10 @@ fn create_release<G>(
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
-    signer: &Device<G>,
+    signer: &G,
 ) -> Result<(ReleaseId, bool), error::CreateRelease>
 where
-    G: Signer<crypto::Signature>,
+    G: crypto::Signer,
 {
     let local = Did::from(*profile.id());
 
@@ -427,10 +426,10 @@ fn register_artifact<G>(
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
-    signer: &Device<G>,
+    signer: &G,
 ) -> Result<(ReleaseId, Cid), error::Register>
 where
-    G: Signer<crypto::Signature>,
+    G: crypto::Signer,
 {
     let delegates = repo_delegates(repo)?;
     let local = Did::from(*profile.id());
@@ -611,10 +610,10 @@ fn location_add<G>(
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
-    signer: &Device<G>,
+    signer: &G,
 ) -> Result<(), error::Locate>
 where
-    G: Signer<crypto::Signature>,
+    G: crypto::Signer,
 {
     let delegates = repo_delegates(repo)?;
     let local = Did::from(*profile.id());
@@ -688,10 +687,10 @@ fn attest_artifact<G>(
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
-    signer: &Device<G>,
+    signer: &G,
 ) -> Result<(), error::Attest>
 where
-    G: Signer<crypto::Signature>,
+    G: crypto::Signer,
 {
     let delegates = repo_delegates(repo)?;
     let local = Did::from(*profile.id());
@@ -751,10 +750,10 @@ fn redact_artifact<G>(
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
-    signer: &Device<G>,
+    signer: &G,
 ) -> Result<(), error::Redact>
 where
-    G: Signer<crypto::Signature>,
+    G: crypto::Signer,
 {
     let delegates = repo_delegates(repo)?;
     let local = Did::from(*profile.id());
@@ -891,10 +890,10 @@ fn metadata_set<G>(
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
-    signer: &Device<G>,
+    signer: &G,
 ) -> Result<(), error::Metadata>
 where
-    G: Signer<crypto::Signature>,
+    G: crypto::Signer,
 {
     let delegates = repo_delegates(repo)?;
     let (id, cid) = resolve_metadata_target(
@@ -940,10 +939,10 @@ fn metadata_unset<G>(
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
-    signer: &Device<G>,
+    signer: &G,
 ) -> Result<(), error::Metadata>
 where
-    G: Signer<crypto::Signature>,
+    G: crypto::Signer,
 {
     let delegates = repo_delegates(repo)?;
     let (id, cid) = resolve_metadata_target(
@@ -979,10 +978,10 @@ fn location_remove<G>(
     releases: &mut Releases<Repository>,
     repo: &Repository,
     profile: &Profile,
-    signer: &Device<G>,
+    signer: &G,
 ) -> Result<(), error::RemoveLocation>
 where
-    G: Signer<crypto::Signature>,
+    G: crypto::Signer,
 {
     let delegates = repo_delegates(repo)?;
     let local = Did::from(*profile.id());
@@ -1988,7 +1987,7 @@ mod prompt {
         // (committer time, tag name, tag object OID, peeled commit OID).
         let mut tag_entries: Vec<(i64, String, Oid, Oid)> = Vec::new();
         for maybe_name in tag_names.iter() {
-            let Some(name) = maybe_name else { continue };
+            let Ok(Some(name)) = maybe_name else { continue };
             let full = format!("refs/tags/{name}");
             let Ok(reference) = raw.find_reference(&full) else {
                 continue;

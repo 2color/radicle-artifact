@@ -255,6 +255,8 @@ impl CommitTitle for Repository {
                 let tag = obj.as_tag()?;
                 let from_tag = tag
                     .message()
+                    .ok()
+                    .flatten()
                     .and_then(|m| m.lines().next())
                     .map(str::trim)
                     .filter(|l| !l.is_empty())
@@ -264,13 +266,13 @@ impl CommitTitle for Repository {
                         .ok()
                         .and_then(|t| t.peel(radicle::git::raw::ObjectType::Commit).ok())
                         .and_then(|c| c.into_commit().ok())
-                        .and_then(|c| c.summary().map(String::from))
+                        .and_then(|c| c.summary().ok().flatten().map(String::from))
                 })
             }
             _ => obj
                 .into_commit()
                 .ok()
-                .and_then(|c| c.summary().map(String::from)),
+                .and_then(|c| c.summary().ok().flatten().map(String::from)),
         }
     }
 }
@@ -296,7 +298,7 @@ impl TagName for Repository {
     fn tag_name(&self, tag_oid: &Oid) -> Option<String> {
         let obj = self.backend.find_object((*tag_oid).into(), None).ok()?;
         let tag = obj.as_tag()?;
-        tag.name().map(String::from)
+        tag.name().ok().map(String::from)
     }
 }
 

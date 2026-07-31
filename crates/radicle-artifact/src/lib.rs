@@ -67,9 +67,7 @@ use indexmap::IndexMap;
 use radicle::cob::store::Cob;
 use radicle::cob::{self, store, EntryId, Evaluate, ObjectId, Op, TypeName};
 use radicle::crypto;
-use radicle::crypto::signature::Signer;
 use radicle::identity::Did;
-use radicle::node::device::Device;
 use radicle::node::NodeId;
 use radicle::prelude::ReadRepository;
 use radicle::storage::{RepositoryError, SignRepository, WriteRepository};
@@ -669,8 +667,10 @@ where
     /// Build a write-capable view of the underlying COB store, bound to `signer`.
     fn write_store<'s, G>(
         &self,
-        signer: &'s Device<G>,
-    ) -> Result<store::Store<'a, Release, R, store::access::WriteAs<'s, Device<G>>>, store::Error>
+        signer: &'s G,
+    ) -> Result<store::Store<'a, Release, R, store::access::WriteAs<'s, G>>, store::Error>
+    where
+        G: crypto::Signer,
     {
         Ok(
             store::Store::open(self.repo, store::access::WriteAs::new(signer))?
@@ -1020,10 +1020,10 @@ where
         &'g mut self,
         oid: Oid,
         tag: Option<Oid>,
-        signer: &Device<G>,
+        signer: &G,
     ) -> Result<ReleaseMut<'a, 'g, R>, error::Create>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
         R: WriteRepository,
     {
         if let Some(tag_oid) = tag {
@@ -1048,7 +1048,7 @@ where
         }
 
         let mut store = self.write_store(signer)?;
-        let (id, release) = store::Transaction::initial::<_, Transaction<R>, _>(
+        let (id, release) = store::Transaction::initial::<Transaction<R>, _>(
             "Create release",
             &mut store,
             |tx, _| {
@@ -1108,10 +1108,10 @@ where
         &mut self,
         cid: Cid,
         name: String,
-        signer: &Device<G>,
+        signer: &G,
     ) -> Result<EntryId, store::Error>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
     {
         self.transaction("Register artifact", signer, |tx| {
             tx.register_artifact(cid, name)
@@ -1128,10 +1128,10 @@ where
         cid: Cid,
         name: String,
         size_bytes: u64,
-        signer: &Device<G>,
+        signer: &G,
     ) -> Result<EntryId, store::Error>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
     {
         self.transaction("Register artifact", signer, |tx| {
             tx.register_artifact(cid, name)?;
@@ -1148,10 +1148,10 @@ where
         &mut self,
         cid: Cid,
         location: Url,
-        signer: &Device<G>,
+        signer: &G,
     ) -> Result<EntryId, store::Error>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
     {
         self.transaction("Add location", signer, |tx| tx.add_location(cid, location))
     }
@@ -1161,10 +1161,10 @@ where
         &mut self,
         cid: Cid,
         location: Url,
-        signer: &Device<G>,
+        signer: &G,
     ) -> Result<EntryId, store::Error>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
     {
         self.transaction("Remove location", signer, |tx| {
             tx.remove_location(cid, location)
@@ -1172,9 +1172,9 @@ where
     }
 
     /// Attest that this user has independently verified an artifact.
-    pub fn attest<G>(&mut self, cid: Cid, signer: &Device<G>) -> Result<EntryId, store::Error>
+    pub fn attest<G>(&mut self, cid: Cid, signer: &G) -> Result<EntryId, store::Error>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
     {
         self.transaction("Attest artifact", signer, |tx| tx.attest(cid))
     }
@@ -1193,10 +1193,10 @@ where
         cid: Cid,
         key: String,
         value: serde_json::Value,
-        signer: &Device<G>,
+        signer: &G,
     ) -> Result<EntryId, error::Metadata>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
     {
         validate_metadata_key(&key)?;
         validate_metadata_value_size(&value)?;
@@ -1213,10 +1213,10 @@ where
         &mut self,
         cid: Cid,
         key: String,
-        signer: &Device<G>,
+        signer: &G,
     ) -> Result<EntryId, store::Error>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
     {
         self.transaction("Remove metadata", signer, |tx| tx.remove_metadata(cid, key))
     }
@@ -1229,10 +1229,10 @@ where
         &mut self,
         cid: Cid,
         reason: String,
-        signer: &Device<G>,
+        signer: &G,
     ) -> Result<EntryId, error::Redact>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
     {
         if self.artifact(&cid).is_none() {
             return Err(error::Redact::NotFound { cid });
@@ -1251,11 +1251,11 @@ where
     fn transaction<G, F>(
         &mut self,
         message: &str,
-        signer: &Device<G>,
+        signer: &G,
         operations: F,
     ) -> Result<EntryId, store::Error>
     where
-        G: Signer<crypto::Signature>,
+        G: crypto::Signer,
         F: FnOnce(&mut Transaction<R>) -> Result<(), store::Error>,
     {
         let mut tx = Transaction::default();
@@ -1406,6 +1406,7 @@ where
 mod test {
     use std::collections::BTreeSet;
 
+    use radicle::crypto::Signer;
     use radicle::git::{raw::Repository, Oid};
     use radicle::identity::Did;
     use radicle::prelude::ReadStorage;
@@ -1413,6 +1414,17 @@ mod test {
     use url::Url;
 
     use crate::{Cid, Releases, METADATA_KEY_SIZE_BYTES};
+
+    /// An additional peer for multi-user tests. `test::setup::Node::default`
+    /// signs with a fixed key, so each peer needs a distinct key of its own
+    /// to be told apart from the node under test.
+    fn peer(id: usize) -> test::setup::Node {
+        test::setup::Node::new(
+            tempfile::tempdir().unwrap(),
+            radicle::crypto::SigningKey::mock(id),
+            &format!("peer-{id}"),
+        )
+    }
 
     /// Create a valid CIDv1 (raw codec, sha2-256) from a distinguishing byte.
     fn test_cid(n: u8) -> Cid {
@@ -1475,7 +1487,7 @@ mod test {
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
 
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
 
         // Alice registers an artifact.
@@ -1622,7 +1634,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -1765,7 +1777,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -1808,8 +1820,8 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: carol, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
+        let carol = peer(2);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -1858,7 +1870,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -1897,7 +1909,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -1945,7 +1957,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -1979,7 +1991,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -2059,7 +2071,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -2086,7 +2098,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -2114,7 +2126,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -2211,7 +2223,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -2262,7 +2274,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -2589,7 +2601,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Initial commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -2703,7 +2715,7 @@ mod test {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
-        let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();

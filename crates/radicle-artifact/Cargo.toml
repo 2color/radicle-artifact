@@ -22,7 +22,7 @@ indexmap = { version = "2.7", features = ["serde"] }
 indicatif = "0.18"
 inquire = { version = "0.9" }
 log = "0.4"
-radicle = { version = "0.24" }
+radicle = { version = "0.25.1" }
 radicle-artifact-client = { version = "0.17.0", path = "../radicle-artifact-client" }
 radicle-artifact-core = { version = "0.17.0", path = "../radicle-artifact-core" }
 serde = { version = "1.0", features = ["derive"] }
@@ -36,5 +36,5 @@ iroh-base = { version = "1.0.0", default-features = false, features = ["key"] }
 tempfile = "3"
 
 [dev-dependencies.radicle]
-version = "0.24"
+version = "0.25.1"
 features = ["test"]
