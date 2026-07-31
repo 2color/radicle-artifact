@@ -1415,15 +1415,12 @@ mod test {
 
     use crate::{Cid, Releases, METADATA_KEY_SIZE_BYTES};
 
-    /// An additional peer for multi-user tests. `test::setup::Node::default`
+    /// An additional signer for multi-user tests. `test::setup::Node::default`
     /// signs with a fixed key, so each peer needs a distinct key of its own
-    /// to be told apart from the node under test.
-    fn peer(id: usize) -> test::setup::Node {
-        test::setup::Node::new(
-            tempfile::tempdir().unwrap(),
-            radicle::crypto::SigningKey::mock(id),
-            &format!("peer-{id}"),
-        )
+    /// to be told apart from the node under test. The tests only ever sign
+    /// with these peers, so a bare key is enough; no storage is needed.
+    fn peer(id: usize) -> radicle::crypto::SigningKey {
+        radicle::crypto::SigningKey::mock(id)
     }
 
     /// Create a valid CIDv1 (raw codec, sha2-256) from a distinguishing byte.
@@ -1505,9 +1502,7 @@ mod test {
 
         // Bob adds a mirror location for the same artifact.
         let bob_url = Url::parse("https://bob.example.com/mirror/linux-amd64.tar.gz").unwrap();
-        release
-            .add_location(cid, bob_url.clone(), &bob.signer)
-            .unwrap();
+        release.add_location(cid, bob_url.clone(), &bob).unwrap();
 
         // Verify the artifact exists with both locations.
         let artifact = release.artifact(&cid).unwrap();
@@ -1516,7 +1511,7 @@ mod test {
             .locations_of(&Did::from(alice.signer.public_key()))
             .is_some_and(|urls| urls.contains(&alice_url)));
         assert!(artifact
-            .locations_of(&Did::from(bob.signer.public_key()))
+            .locations_of(&Did::from(bob.public_key()))
             .is_some_and(|urls| urls.contains(&bob_url)));
 
         // Alice removes her location.
@@ -1529,7 +1524,7 @@ mod test {
             .locations_of(&Did::from(alice.signer.public_key()))
             .is_none());
         assert!(artifact
-            .locations_of(&Did::from(bob.signer.public_key()))
+            .locations_of(&Did::from(bob.public_key()))
             .is_some());
     }
 
@@ -1646,7 +1641,7 @@ mod test {
 
         // Bob tries to rename — should be ignored.
         release
-            .register_artifact(cid, "bobs name".into(), &bob.signer)
+            .register_artifact(cid, "bobs name".into(), &bob)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1789,7 +1784,7 @@ mod test {
 
         let url = Url::parse("https://example.com/file.tar.gz").unwrap();
         // Bob never added a location, so removing should be a no-op.
-        release.remove_location(cid, url, &bob.signer).unwrap();
+        release.remove_location(cid, url, &bob).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert!(artifact.locations().is_empty());
@@ -1833,14 +1828,14 @@ mod test {
 
         // Bob and Carol attest; Alice's self-attestation is a no-op (she's the author).
         release.attest(cid, &alice.signer).unwrap();
-        release.attest(cid, &bob.signer).unwrap();
-        release.attest(cid, &carol.signer).unwrap();
+        release.attest(cid, &bob).unwrap();
+        release.attest(cid, &carol).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.attestations().len(), 2);
         assert!(!artifact.is_attested_by(&Did::from(alice.signer.public_key())));
-        assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
-        assert!(artifact.is_attested_by(&Did::from(carol.signer.public_key())));
+        assert!(artifact.is_attested_by(&Did::from(bob.public_key())));
+        assert!(artifact.is_attested_by(&Did::from(carol.public_key())));
     }
 
     #[test]
@@ -1881,8 +1876,8 @@ mod test {
             .unwrap();
 
         // Attesting twice from the same non-author node should be a no-op.
-        release.attest(cid, &bob.signer).unwrap();
-        release.attest(cid, &bob.signer).unwrap();
+        release.attest(cid, &bob).unwrap();
+        release.attest(cid, &bob).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.attestations().len(), 1);
@@ -1918,12 +1913,12 @@ mod test {
         release
             .register_artifact(cid, "test artifact".into(), &alice.signer)
             .unwrap();
-        release.attest(cid, &bob.signer).unwrap();
+        release.attest(cid, &bob).unwrap();
 
         // Reload and verify attestation is still present.
         release.reload().unwrap();
         let artifact = release.artifact(&cid).unwrap();
-        assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
+        assert!(artifact.is_attested_by(&Did::from(bob.public_key())));
         assert_eq!(artifact.attestations().len(), 1);
     }
 
@@ -1971,7 +1966,7 @@ mod test {
             .redact(cid, "supply chain attack".into(), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "failed reproducibility check".into(), &bob.signer)
+            .redact(cid, "failed reproducibility check".into(), &bob)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
@@ -1981,7 +1976,7 @@ mod test {
             Some("supply chain attack")
         );
         assert_eq!(
-            artifact.redaction_by(&Did::from(bob.signer.public_key())),
+            artifact.redaction_by(&Did::from(bob.public_key())),
             Some("failed reproducibility check")
         );
     }
@@ -2006,13 +2001,13 @@ mod test {
             .redact(cid, "malware detected".into(), &alice.signer)
             .unwrap();
         release
-            .redact(cid, "malware detected".into(), &bob.signer)
+            .redact(cid, "malware detected".into(), &bob)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.redactions().len(), 2);
         assert!(artifact.is_redacted_by(&Did::from(alice.signer.public_key())));
-        assert!(artifact.is_redacted_by(&Did::from(bob.signer.public_key())));
+        assert!(artifact.is_redacted_by(&Did::from(bob.public_key())));
     }
 
     #[test]
@@ -2082,13 +2077,13 @@ mod test {
             .unwrap();
 
         // Attest then redact — redaction should supersede the attestation.
-        release.attest(cid, &bob.signer).unwrap();
+        release.attest(cid, &bob).unwrap();
         release
-            .redact(cid, "source was compromised".into(), &bob.signer)
+            .redact(cid, "source was compromised".into(), &bob)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        let bob_did = Did::from(bob.signer.public_key());
+        let bob_did = Did::from(bob.public_key());
         assert!(!artifact.is_attested_by(&bob_did));
         assert!(artifact.is_redacted_by(&bob_did));
     }
@@ -2110,13 +2105,11 @@ mod test {
 
         // Redact first, then attempt to attest — the attestation should be
         // silently ignored because redactions are permanent and supersede.
-        release
-            .redact(cid, "suspected issue".into(), &bob.signer)
-            .unwrap();
-        release.attest(cid, &bob.signer).unwrap();
+        release.redact(cid, "suspected issue".into(), &bob).unwrap();
+        release.attest(cid, &bob).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
-        let bob_did = Did::from(bob.signer.public_key());
+        let bob_did = Did::from(bob.public_key());
         assert!(!artifact.is_attested_by(&bob_did));
         assert!(artifact.is_redacted_by(&bob_did));
     }
@@ -2138,14 +2131,14 @@ mod test {
 
         // Bob attests; Alice's self-attestation is a no-op (she's the author).
         // Then Alice redacts — Bob's attestation should remain.
-        release.attest(cid, &bob.signer).unwrap();
+        release.attest(cid, &bob).unwrap();
         release
             .redact(cid, "compromised".into(), &alice.signer)
             .unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         assert!(artifact.is_redacted_by(&Did::from(alice.signer.public_key())));
-        assert!(artifact.is_attested_by(&Did::from(bob.signer.public_key())));
+        assert!(artifact.is_attested_by(&Did::from(bob.public_key())));
     }
 
     #[test]
@@ -2242,9 +2235,7 @@ mod test {
         release
             .add_location(cid, iroh_url.clone(), &alice.signer)
             .unwrap();
-        release
-            .add_location(cid, http_url.clone(), &bob.signer)
-            .unwrap();
+        release.add_location(cid, http_url.clone(), &bob).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
 
@@ -2263,7 +2254,7 @@ mod test {
         let http_locations = artifact.locations_by_scheme("http");
         assert_eq!(http_locations.len(), 1);
         assert_eq!(http_locations[0].0, &http_url);
-        assert_eq!(http_locations[0].1, &Did::from(bob.signer.public_key()));
+        assert_eq!(http_locations[0].1, &Did::from(bob.public_key()));
 
         // Filter by unknown scheme returns empty.
         assert!(artifact.locations_by_scheme("ftp").is_empty());
@@ -2289,9 +2280,7 @@ mod test {
         release
             .add_location(cid, iroh_url.clone(), &alice.signer)
             .unwrap();
-        release
-            .add_location(cid, iroh_url.clone(), &bob.signer)
-            .unwrap();
+        release.add_location(cid, iroh_url.clone(), &bob).unwrap();
 
         let artifact = release.artifact(&cid).unwrap();
         let iroh_locations = artifact.locations_by_scheme("radiroh");
@@ -2301,7 +2290,7 @@ mod test {
         let dids: std::collections::BTreeSet<&Did> =
             iroh_locations.iter().map(|(_, did)| *did).collect();
         assert!(dids.contains(&Did::from(alice.signer.public_key())));
-        assert!(dids.contains(&Did::from(bob.signer.public_key())));
+        assert!(dids.contains(&Did::from(bob.public_key())));
 
         // Both entries point to the same URL.
         assert!(iroh_locations.iter().all(|(url, _)| *url == &iroh_url));
@@ -2617,7 +2606,7 @@ mod test {
             )
             .unwrap();
         // Bob attests; alice's self-attestation would be a no-op.
-        release.attest(cid, &bob.signer).unwrap();
+        release.attest(cid, &bob).unwrap();
         let id = *release.id();
         drop(release);
 
@@ -2728,7 +2717,7 @@ mod test {
             .set_metadata(cid, "key".into(), "first".into(), &alice.signer)
             .unwrap();
         release
-            .set_metadata(cid, "key".into(), "second".into(), &bob.signer)
+            .set_metadata(cid, "key".into(), "second".into(), &bob)
             .unwrap();
 
         assert_eq!(

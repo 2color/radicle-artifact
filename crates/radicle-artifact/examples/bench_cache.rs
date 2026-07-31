@@ -162,11 +162,13 @@ fn main() {
     let n_artifacts = env_usize("BENCH_ARTIFACTS", 5);
     let n_locations = env_usize("BENCH_LOCATIONS", 3);
 
-    // Two nodes so locations land under multiple namespaces (multi-tip objects).
+    // Two signers so locations land under multiple namespaces (multi-tip
+    // objects). `NodeWithRepo::default` signs with a fixed key, so bob needs a
+    // distinct key of his own; a second default node would be alice again.
     let test::setup::NodeWithRepo {
         node: alice, repo, ..
     } = test::setup::NodeWithRepo::default();
-    let test::setup::NodeWithRepo { node: bob, .. } = test::setup::NodeWithRepo::default();
+    let bob = radicle::crypto::SigningKey::mock(1);
 
     let mut releases = Releases::open(&*repo).unwrap();
 
@@ -200,7 +202,7 @@ fn main() {
                     if l % 2 == 0 {
                         release.add_location(cid, url, &alice.signer).unwrap();
                     } else {
-                        release.add_location(cid, url, &bob.signer).unwrap();
+                        release.add_location(cid, url, &bob).unwrap();
                     }
                     total_ops += 1;
                 }
