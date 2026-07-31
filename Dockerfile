@@ -13,21 +13,19 @@ ARG BUILD_IMAGE=docker.io/rust:${RUST_VERSION}-alpine${ALPINE_VERSION}
 FROM ${BUILD_IMAGE} AS builder
 WORKDIR /src
 COPY . .
-# perform single-architecture build.
-# TARGETARCH automatically set by buildx.
-ARG TARGETARCH=amd64
-# map Docker arch names (amd64/arm64) to a Rust musl triple
-RUN cargo build \
+ARG TARGETARCH
+# The caches keep the registry and target dir between builds, so a source change
+# does not recompile every dependency. A later RUN cannot see the cached target
+# dir, so the binaries are copied out in the same step.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
+    --mount=type=cache,id=cargo-target-${TARGETARCH},target=/src/target,sharing=locked \
+    cargo build \
         --release \
         --locked \
         --package radicle-artifact \
-        --package radicle-artifact-node \
-        --target "$(echo "${TARGETARCH}" | sed -e s/arm64/aarch64/ -e s/amd64/x86_64/)-unknown-linux-musl"
-RUN mkdir -p /out/ && \
-  find target \(  \
-      -path '*/release/rad-artifact-node' -o \
-      -path '*/release/rad-artifact'  \
-    \) -exec mv -v {} /out/ \;
+        --package radicle-artifact-node && \
+    mkdir -p /out/ && \
+    cp -v target/release/rad-artifact target/release/rad-artifact-node /out/
 
 
 # shared runtime base: unprivileged user, home and working dir
