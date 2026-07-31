@@ -248,6 +248,27 @@ mod tests {
         assert_eq!(&radicle_pk.into_inner(), iroh_pk.as_bytes());
     }
 
+    /// Pins the radicle -> iroh derivation to a known vector.
+    #[test]
+    fn iroh_key_derivation_matches_known_vector() {
+        const SEED: [u8; 32] = [1u8; 32];
+        const EXPECTED_DID: &str = "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX";
+        const EXPECTED_ENDPOINT: &str =
+            "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c";
+
+        let tmp = tempfile::tempdir().unwrap();
+        let keystore = Keystore::new(&tmp);
+        keystore
+            .init("test", None, radicle::crypto::Seed::new(SEED))
+            .unwrap();
+
+        let did = radicle::identity::Did::from(keystore.public_key().unwrap().unwrap());
+        assert_eq!(did.to_string(), EXPECTED_DID);
+
+        let iroh_sk = radicle_secret_to_iroh(&keystore, None).unwrap();
+        assert_eq!(iroh_sk.public().to_string(), EXPECTED_ENDPOINT);
+    }
+
     #[test]
     fn display_is_endpoint_url() {
         let id = fixed_id();
