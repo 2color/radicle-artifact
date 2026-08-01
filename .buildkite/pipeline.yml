@@ -4,7 +4,7 @@
 #
 # The cache lives outside the checkout (Buildkite's git clean would wipe
 # anything inside it) and holds the cargo registry and per-step build output.
-# fmt gates the three compile steps; clippy, test, and doc then run in parallel.
+# fmt gates the compile steps; clippy, test, doc, and image then run in parallel.
 # Each compile step gets its own CARGO_TARGET_DIR to avoid Cargo's file-lock
 # contention; all share CARGO_HOME for the registry (Cargo serialises writes
 # there internally).
@@ -53,6 +53,9 @@ steps:
             - CARGO_TARGET_DIR=/cache/target-test
           volumes:
             - "rad-artifact-cache:/cache"
+
+  - label: ":docker: image"
+    command: docker build .
 
   - label: ":books: doc"
     command: cargo doc --no-deps --all-features
