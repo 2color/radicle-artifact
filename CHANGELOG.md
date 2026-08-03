@@ -7,10 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Cache fix
+This release contians a number of improvements, radicle dependency upgrade, and some fixes.
+
+There's now a Dockerfile in the project defining an image for radicle-artifact and radicle-artifact-node. The sqlite cache is now an optional feature enabled by default.
+
+Thanks to `ck` for their contributions to this release.
+
+### Cache race-condition fix
 
 The artifact cache is now populated lazily on read rather than mirrored on every write. This drops an extra ref walk and rebuild from the write path, and closes a race where a concurrent op could stamp a freshness token newer than the mirrored blob, letting a later read match the token and serve stale data. Reads still revalidate against the COB's git tips and re-materialize any stale entries, so a write advances the tip and the next read picks up the change.
 
+### Added
+
+* `5603ed9` add hint to revision resolution error *<daniel@norman.life>*
+* `995346c` make sqlite an optional default feature [**breaking**] *<daniel@norman.life>*
+* `06652a7` add Dockerfile *<ck>*
+
+### Changed
+
+* `cce01a3` **makefile:** rename target to build *<daniel@norman.life>*
+* `995dd4b` return Vec from Releases::all *<daniel@norman.life>*
+* `98d9f90` **deps:** upgrade radicle to 0.25.1 [**breaking**] *<daniel@norman.life>*
+
+### Fixed
+
+* `3825377` populate artifact cache lazily on read *<daniel@norman.life>*
+* `2c1a338` remove _cid suffix from file name on download *<daniel@norman.life>*
+* `d60a982` restore two namespaces in cache benchmark *<daniel@norman.life>*
+
+### Docs
+
+* `b28582a` fix cargo doc error *<daniel@norman.life>*
+* `b0b2688` update changelog *<daniel@norman.life>*
+
+### Other
+
+* `2c9168f` pin radicle to iroh key derivation vector *<daniel@norman.life>*
+* `90bc5e9` cache cargo deps in Docker build *<daniel@norman.life>*
+* `f4af8d6` run docker build in pipeline *<daniel@norman.life>*
 
 ## [0.17.0] - 2026-07-09
 
