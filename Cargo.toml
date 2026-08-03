@@ -14,6 +14,6 @@ authors = ["Daniel Norman <daniel@norman.life>"]
 license = "MIT OR Apache-2.0"
 # Path is relative to the workspace root; copied into each crate's published tarball.
 readme = "README.md"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2021"
 rust-version = "1.91"

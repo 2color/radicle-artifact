@@ -3846,7 +3846,7 @@ dependencies = [
 
 [[package]]
 name = "radicle-artifact"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "blake3",
  "cid",
@@ -3869,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "radicle-artifact-client"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "cid",
  "radicle",
@@ -3883,7 +3883,7 @@ dependencies = [
 
 [[package]]
 name = "radicle-artifact-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "blake3",
  "cid",
@@ -3903,7 +3903,7 @@ dependencies = [
 
 [[package]]
 name = "radicle-artifact-node"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "blake3",
  "bytes",
