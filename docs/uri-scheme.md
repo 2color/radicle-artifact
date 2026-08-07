@@ -46,15 +46,25 @@ consumer config.
 Every `radiroh://` URL carries an **implicit** dependency on the consumer's
 configured discovery and relay infrastructure. The endpoint id is a public
 key, and discovery must resolve it to network coordinates. This
-implementation ([`crates/radicle-artifact-node/src/iroh.rs`](../crates/radicle-artifact-node/src/iroh.rs)) defaults to the
-public good relay operated by the radicle garden team. 
+implementation
+([`crates/radicle-artifact-node/src/iroh.rs`](../crates/radicle-artifact-node/src/iroh.rs))
+defaults to the public good relay and pkarr services hosted on
+`radicle.garden` and `radicle.network`.
 
-Each is overridable via environment variable:
+Each is overridable via environment variable. Both take a comma-separated
+list, which gives redundancy. The node relays through the fastest of the given
+relays and falls back to the others. It publishes to and resolves from all of
+the given pkarr servers.
 
-| Setting       | Env var            | Default                                 |
-| ------------- | ------------------ | --------------------------------------- |
-| Relay         | `IROH_RELAY_HOSTS` | `eu-1.relay.iroh.radicle.garden`        |
-| pkarr publish | `IROH_PKARR_URL`   | `https://dns.iroh.radicle.garden/pkarr` |
+| Setting                 | Env var           | Default                                                                                                                              |
+| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Relays                  | `IROH_RELAYS`     | `eu-1.relay.iroh.radicle.garden`, `1.eu.relay.iroh.radicle.network`, `1.us.relay.iroh.radicle.network`                                |
+| pkarr publish & resolve | `IROH_PKARR_URLS` | `https://dns.iroh.radicle.garden/pkarr`, `https://1.eu.dns.iroh.radicle.network/pkarr`, `https://1.us.dns.iroh.radicle.network/pkarr` |
+
+A value that lists no entries, such as `" "` or `","`, is an error: the node
+refuses to start rather than run without relays or without discovery. A relay
+entry is a bare host, without a scheme, because each is served over `https://`.
+A pkarr URL is a full URL and must use `https` or `http`.
 
 Point these at your own relay and pkarr/DNS services to resolve the same
 `radiroh://` URLs through different infrastructure. The URL is unchanged,
@@ -63,8 +73,7 @@ configure.
 
 A future optional `?via=` query parameter is **reserved** for cold-start
 hints, that is, cases where the consumer's default discovery can't reach the
-endpoint. It is not specified yet. Specifying it is a follow-up once a second
-discovery service exists.
+endpoint. It is not specified yet.
 
 ## Compatibility
 

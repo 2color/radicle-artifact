@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Redundant iroh relays and pkarr servers
+
+The radicle-artifact-node now defaults to three relays and three pkarr servers. A single relay and a single pkarr server were each a single point of failure: if either went down, peers became unreachable even though the `radiroh://` URLs stayed valid. With three relays, the node will pick the closest relay and fall back to the others, and publish to and resolves from every pkarr endpoint.
+
+Both settings take a comma-separated list, and both environment variables are renamed:
+
+- **`IROH_RELAY_HOSTS`** is now **`IROH_RELAYS`**
+- **`IROH_PKARR_URL`** is now **`IROH_PKARR_URLS`**.
+
 ## [0.18.0] - 2026-08-03
 
 This release contians a number of improvements, radicle dependency upgrade, and some fixes.
