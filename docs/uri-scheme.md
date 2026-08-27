@@ -46,7 +46,7 @@ consumer config.
 Every `radiroh://` URL carries an **implicit** dependency on the consumer's
 configured discovery and relay infrastructure. The endpoint id is a public
 key, and discovery must resolve it to network coordinates. This
-implementation ([`src/share/iroh.rs`](../src/share/iroh.rs)) defaults to the
+implementation ([`crates/radicle-artifact-node/src/iroh.rs`](../crates/radicle-artifact-node/src/iroh.rs)) defaults to the
 public good relay operated by the radicle garden team. 
 
 Each is overridable via environment variable:
