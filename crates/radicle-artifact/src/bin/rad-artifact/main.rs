@@ -67,21 +67,25 @@ fn fallible_main() -> Result<(), RadArtifactError> {
 #[derive(Parser)]
 #[clap(version)]
 struct Args {
-    /// Use this repository. Default is the current working directory.
-    #[clap(short, long)]
-    repository: Option<RepoId>,
+    /// Operate on the given repository (default: cwd)
+    ///
+    /// The repository only has to be in local storage; no working copy is
+    /// needed, so commands run from any directory.
+    #[clap(short, long = "repo", alias = "repository", value_name = "RID")]
+    #[clap(global = true)]
+    repo: Option<RepoId>,
 
     /// Do not announce COB changes to the network after modifications.
     ///
     /// Use `rad sync -a` to announce at a later point.
-    #[clap(long)]
+    #[clap(long, global = true)]
     no_announce: bool,
 
     /// Disable all interactive prompts.
     ///
     /// Commands that would normally prompt (e.g. `fetch` without arguments)
     /// will error instead. Useful for scripts and CI.
-    #[clap(long)]
+    #[clap(long, global = true)]
     no_input: bool,
 
     #[clap(subcommand)]
@@ -90,11 +94,11 @@ struct Args {
 
 impl Args {
     fn repository(&self, profile: &Profile) -> Result<Repository, error::Repository> {
-        open_repo(self.repository, profile)
+        open_repo(self.repo, profile)
     }
 }
 
-/// Open a repository: explicit `--repository <RID>` if given, otherwise
+/// Open a repository: explicit `--repo <RID>` if given, otherwise
 /// the radicle repo found by walking up from the cwd.
 pub(crate) fn open_repo(
     repo_override: Option<RepoId>,
@@ -185,24 +189,20 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         let profile = load_profile()?;
         let Args {
             command,
-            repository,
+            repo,
             no_announce,
             no_input,
             ..
         } = args;
         return match command {
             Command::Node(cmd) => {
-                node::run(cmd, repository, no_announce, no_input, &profile).map_err(Into::into)
+                node::run(cmd, repo, no_announce, no_input, &profile).map_err(Into::into)
             }
-            Command::Seed(cmd) => {
-                run_seed(cmd, repository, no_announce, &profile).map_err(Into::into)
-            }
+            Command::Seed(cmd) => run_seed(cmd, repo, no_announce, &profile).map_err(Into::into),
             Command::Unseed(cmd) => {
-                run_unseed(cmd, repository, no_announce, no_input, &profile).map_err(Into::into)
+                run_unseed(cmd, repo, no_announce, no_input, &profile).map_err(Into::into)
             }
-            Command::Reconcile(cmd) => {
-                reconcile::run(cmd, repository, &profile).map_err(Into::into)
-            }
+            Command::Reconcile(cmd) => reconcile::run(cmd, repo, &profile).map_err(Into::into),
             Command::Locate(cmd) => run_locate(cmd, &profile).map_err(Into::into),
             _ => unreachable!(),
         };
@@ -1215,7 +1215,7 @@ fn list_releases(
 /// Locate a CID across every repository in local storage, printing JSON.
 ///
 /// This is a node-wide query, so it uses `profile.storage` directly rather than
-/// a single repository and ignores `--repository`.
+/// a single repository and ignores `--repo`.
 fn run_locate(cmd: command::Locate, profile: &Profile) -> Result<(), error::Locations> {
     let command::Locate { cid, releases } = cmd;
     #[cfg(feature = "sqlite")]
@@ -2385,8 +2385,8 @@ mod command {
     ///
     /// Prints, as JSON, every discovery location (repository, release,
     /// contributor, URL) that references the CID across all seeded repositories;
-    /// with --releases, prints the releases that contain it instead. Ignores
-    /// --repository.
+    /// with --releases, prints the releases that contain it instead. This
+    /// search is node-wide, so --repo has no effect.
     #[derive(Parser)]
     pub struct Locate {
         /// The content identifier to locate.
@@ -3332,7 +3332,10 @@ mod error {
 
     #[derive(Debug, Error)]
     pub enum Repository {
-        #[error("failed to find Radicle repository for current working directory")]
+        #[error(
+            "failed to find Radicle repository for current working directory; \
+             use --repo <RID> to target a repository in storage"
+        )]
         Cwd(#[source] CwdError),
         #[error("failed to open Radicle repository {rid}")]
         Open {

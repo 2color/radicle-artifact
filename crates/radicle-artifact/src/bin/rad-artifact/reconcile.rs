@@ -42,7 +42,7 @@ use crate::{open_releases, open_repo};
 pub struct Cli {
     /// Reconcile every repository in local storage instead of just
     /// the current one.
-    #[clap(long)]
+    #[clap(long, conflicts_with = "repo")]
     pub all_repos: bool,
     /// Remove our `radiroh://{current_endpoint}` location for this CID,
     /// which the node is no longer seeding. Repeatable.
@@ -64,6 +64,9 @@ pub enum Error {
     /// Most failures route through the node module's error.
     #[error(transparent)]
     Node(#[from] node::Error),
+    /// `--all-repos` was combined with a repository override.
+    #[error("--all-repos cannot be used with --repo")]
+    AllReposWithRepo,
     /// Repository listing failed.
     #[error("failed to list local repositories: {0}")]
     Storage(String),
@@ -217,6 +220,13 @@ struct ReconcileCtx<'a> {
 
 /// Entry point for `rad-artifact reconcile`.
 pub fn run(cli: Cli, repo_override: Option<RepoId>, profile: &Profile) -> Result<(), Error> {
+    // clap resolves `conflicts_with` against the subcommand's own
+    // matches, so a global given before the subcommand escapes it.
+    // Catch `--repo <RID> reconcile --all-repos` here instead.
+    if cli.all_repos && repo_override.is_some() {
+        return Err(Error::AllReposWithRepo);
+    }
+
     // We need the node up to know our current endpoint id and to ask
     // about seeded tags.
     let socket = Client::default_socket(profile.home.path());

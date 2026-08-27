@@ -165,11 +165,19 @@ Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as lo
 
 `<REVISION>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**. It is resolved against Radicle storage, so push it first (`git push rad`, or `git push rad --tags` for an annotated tag).
 
-These global options apply to every command:
+Every command accepts these global options, before or after the subcommand:
 
-- `--repository <RID>` (or `-r`) targets a specific repo (defaults to cwd).
+- `--repo <RID>` (or `-r`) targets a specific repo (defaults to cwd).
 - `--no-announce` skips the network announcement after writes.
 - `--no-input` disables interactive prompts (for scripts and CI).
+
+Commands that do not read or write a repository ignore them: `--repo` has no effect on `cid`, `locate` and `node`, and `--no-announce` has no effect on read-only commands such as `list` and `show`.
+
+`--repo` only needs the repository to be in local storage, so commands work from any directory:
+
+```
+rad-artifact list --repo rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv
+```
 
 ### COB-facing commands
 

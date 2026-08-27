@@ -2,10 +2,9 @@
 //!
 //! Talks to the long-running `rad-artifact-node` daemon over the Unix
 //! control socket. Subcommands that need a repository (list, seed,
-//! unseed) honor the top-level `--repository <RID>` override or fall
-//! back to the cwd's radicle repo. Subcommands that don't (start, stop,
-//! status, logs) skip repo discovery entirely so they work from any
-//! directory.
+//! unseed) honor the global `--repo <RID>` override or fall back to the
+//! cwd's radicle repo. Subcommands that don't (start, stop, status,
+//! logs) skip repo discovery entirely so they work from any directory.
 //!
 //! Pretty-print helpers (`print_status_pretty`, `humanize_uptime`) live
 //! here too — they're node-specific UI. Byte sizes use the shared
