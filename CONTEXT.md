@@ -49,6 +49,10 @@ already in the store).
 Fetch an Artifact into the store, then export the bytes to a file on disk.
 _Avoid_: fetch (that's store-only).
 
+**Verify** (verb):
+Check that a local file's CID matches an Artifact registered in a Release, applying the same delegate and redaction rules as `list`/`show`. Answers "did a delegate publish exactly these bytes?" Local and read-only: it needs the repository in storage, but no seeding node, no network, and no signer. Where `show` hides a redacted Artifact, Verify fails on one — hiding suits browsing, not verification.
+_Avoid_: check, validate; don't conflate with Attest (a claim recorded for others, which rehashes nothing) or with the CID check inside Fetch (transport integrity, not trust).
+
 **Locate** (verb):
 Query, across every repository in local storage, where an Artifact can be found — the node-wide read over Locations, keyed by CID. Returns the discovery Locations by default, or the Releases that contain the CID with `--releases`. Read-only and local: it reads COBs already in storage and never touches the network.
 _Avoid_: find (reserved for the per-repo lookup — one repository, not node-wide); discover (implies network/peer discovery, which Locate never does); search.

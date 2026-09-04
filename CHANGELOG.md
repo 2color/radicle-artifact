@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### `rad-artifact verify <PATH>`
+
+`rad-artifact verify <PATH>` checks a local file against the artifacts registered in the repository's releases. It hashes the file and looks for an artifact with that CID, applying the same delegate and redaction rules as `list`/`show`, and reports which release registered it.
+
+```sh
+$ rad artifact verify radicle-httpd-0.29.0-aarch64-apple-darwin.tar.xz
+
+✓ Verified bafkr4ifoebflaomunwy5jxcmha44wu76ay3ohnhl7lgocr7etotvati5ae
+
+  release     70a585a59c7cef32b6299125ae46bf8eb4127733  (releases/0.29.0)
+  artifact    radicle-httpd-0.29.0-aarch64-apple-darwin.tar.xz
+  author      did:key:z6MktwkohCx8aHZ1QCjVZUiLmX92oPZFxRiFZkbq32Tk5Tkm (2color) delegate
+  attested    0
+```
+
+Redactions fail the check rather than being hidden, which makes `redact` a way to withdraw a published artifact without touching wherever the bytes are hosted. A redaction only counts when it comes from the artifact's own author or a delegate; anyone can redact, so an untrusted redaction must not be able to veto a release.
+
+Exits `0` when verified, `2` when the bytes are not trustworthy, and `1` when the check could not be made at all, so a caller can tell "verified false" from "could not verify".
+
 ### Redundant iroh relays and pkarr servers
 
 The radicle-artifact-node now defaults to three relays and three pkarr servers. A single relay and a single pkarr server were each a single point of failure: if either went down, peers became unreachable even though the `radiroh://` URLs stayed valid. With three relays, the node will pick the closest relay and fall back to the others, and publish to and resolves from every pkarr endpoint.

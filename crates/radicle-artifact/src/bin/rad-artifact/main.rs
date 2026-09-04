@@ -34,6 +34,7 @@ const FETCH_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn main() {
     if let Err(err) = fallible_main() {
+        let code = err.exit_code();
         // Color "ERROR" red when stderr is a terminal and NO_COLOR is not set.
         let use_color = std::io::stderr().is_terminal()
             && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
@@ -47,7 +48,7 @@ fn main() {
             eprintln!("caused by: {underlying}");
             err = underlying.source();
         }
-        std::process::exit(1);
+        std::process::exit(code);
     }
 }
 
@@ -301,6 +302,10 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         Command::List(cmd) => {
             let local = Did::from(*profile.id());
             list_releases(cmd, &releases, &repo, &local, &profile)?;
+        }
+        Command::Verify(cmd) => {
+            let local = Did::from(*profile.id());
+            run_verify(cmd, &releases, &repo, &local, &profile)?;
         }
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
         Command::Download(cmd) => run_download(cmd, args.no_input, &profile, &releases, &repo)?,
@@ -603,11 +608,11 @@ where
 /// Compute a CID by hashing the file or directory at `path`. Mirrors the
 /// dispatch used by `serve` so both commands agree on what CID a given path
 /// produces.
-fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::Register> {
+fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::ComputeCid> {
     if path.is_dir() {
-        share::compute_content_id(path).map_err(error::Register::Io)
+        share::compute_content_id(path).map_err(error::ComputeCid::Io)
     } else {
-        share::compute_blob_cid(path).map_err(error::Register::Protocol)
+        share::compute_blob_cid(path).map_err(error::ComputeCid::Protocol)
     }
 }
 
@@ -1207,6 +1212,155 @@ fn list_releases(
         println!(
             "{}",
             serde_json::to_string_pretty(&releases).map_err(error::List::Json)?
+        );
+    }
+    Ok(())
+}
+
+/// Why a release that registers the CID doesn't count as verification.
+///
+/// Kept so a failed check can report the most useful reason instead of a
+/// flat "not found" — a redaction in particular is something the user
+/// needs to see.
+enum Untrusted {
+    /// Redacted by the artifact's own author or by a delegate.
+    Redacted(std::collections::BTreeMap<Did, String>),
+    /// Registered by someone who is neither a delegate nor the local user.
+    Author(Did),
+}
+
+/// The `--json` payload for a rejection, or `None` when the check could
+/// not be made at all and there is no verdict to report.
+fn verify_failure(cid: Cid, err: &error::Verify) -> Option<display::VerifyFailure> {
+    use std::collections::BTreeMap;
+
+    let (reason, redactions) = match err {
+        error::Verify::NoMatch { .. } => ("noMatch", BTreeMap::new()),
+        error::Verify::Redacted { redactions, .. } => ("redacted", redactions.clone()),
+        error::Verify::UntrustedAuthor { .. } => ("untrustedAuthor", BTreeMap::new()),
+        _ => return None,
+    };
+    Some(display::VerifyFailure::new(
+        cid,
+        reason,
+        err.to_string(),
+        redactions,
+    ))
+}
+
+/// Verify that a local file matches an artifact registered in this
+/// repository, and print what registered it.
+fn run_verify(
+    command::Verify {
+        path,
+        all_authors,
+        pretty,
+        json,
+    }: command::Verify,
+    releases: &Releases<Repository>,
+    repo: &Repository,
+    local: &Did,
+    aliases: &impl AliasStore,
+) -> Result<(), error::Verify> {
+    let delegates: BTreeSet<_> = repo
+        .delegates()
+        .map_err(error::Verify::Delegates)?
+        .into_iter()
+        .collect();
+    let cid = compute_cid_from_path(&path)?;
+
+    // Keyed by the CID we just computed, so the file itself picks the
+    // candidates. A CID legitimately appears in more than one release (the
+    // same build reused across commits, or duplicate release COBs for one
+    // commit), so we report every match rather than choosing between them.
+    let candidates = releases
+        .find_by_cid(&cid)
+        .map_err(|err| error::Verify::Lookup {
+            cid: cid.to_string(),
+            err: Box::new(err),
+        })?;
+
+    let mut matched = Vec::new();
+    let mut untrusted = Vec::new();
+    for (release_id, release) in candidates {
+        if !release_visible(&release, &delegates, local, all_authors) {
+            untrusted.push(Untrusted::Author(*release.creator()));
+            continue;
+        }
+        let artifact = release
+            .artifact(&cid)
+            .expect("find_by_cid only returns releases containing the CID");
+        // Same trust rules as `list`/`show` (see `display::Filters`): a
+        // redaction counts when it comes from the artifact's own author or
+        // from a delegate. Unlike those commands, which quietly hide the
+        // artifact, verification has to fail and say so.
+        let trusted_redactions: std::collections::BTreeMap<Did, String> = artifact
+            .redactions()
+            .iter()
+            .filter(|(did, _)| **did == *artifact.author() || delegates.contains(did))
+            .map(|(did, reason)| (*did, reason.clone()))
+            .collect();
+        if !trusted_redactions.is_empty() {
+            untrusted.push(Untrusted::Redacted(trusted_redactions));
+            continue;
+        }
+        if !all_authors && !delegates.contains(artifact.author()) && artifact.author() != local {
+            untrusted.push(Untrusted::Author(*artifact.author()));
+            continue;
+        }
+        matched.push(display::VerifyMatch::new(
+            release_id,
+            &release,
+            artifact,
+            aliases,
+            repo,
+            delegates.contains(artifact.author()),
+        ));
+    }
+
+    if matched.is_empty() {
+        // Rank the reasons: a redaction is a deliberate act by a trusted
+        // party, so it outranks "a stranger registered it", which in turn
+        // outranks "nothing registered these bytes".
+        let redacted = untrusted.iter().find_map(|reason| match reason {
+            Untrusted::Redacted(redactions) => Some(redactions.clone()),
+            Untrusted::Author(_) => None,
+        });
+        let err = match (redacted, untrusted.first()) {
+            (Some(redactions), _) => error::Verify::Redacted {
+                cid: cid.to_string(),
+                redactions,
+            },
+            (None, Some(Untrusted::Author(author))) => error::Verify::UntrustedAuthor {
+                cid: cid.to_string(),
+                author: *author,
+            },
+            _ => error::Verify::NoMatch {
+                cid: cid.to_string(),
+                rid: repo.id,
+            },
+        };
+        // A caller that asked for JSON gets the verdict as data, not just
+        // an exit code. Only a verdict is emitted: a failure that could not
+        // answer the question prints the error alone.
+        if !use_pretty(pretty, json) {
+            if let Some(failure) = verify_failure(cid, &err) {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&failure).map_err(error::Verify::Json)?
+                );
+            }
+        }
+        return Err(err);
+    }
+
+    let receipt = display::VerifyReceipt::new(cid, matched);
+    if use_pretty(pretty, json) {
+        print!("{}", receipt.pretty(pretty_style(false)));
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&receipt).map_err(error::Verify::Json)?
         );
     }
     Ok(())
@@ -2304,6 +2458,8 @@ enum RadArtifactError {
     #[error(transparent)]
     List(#[from] error::List),
     #[error(transparent)]
+    Verify(#[from] error::Verify),
+    #[error(transparent)]
     Locations(#[from] error::Locations),
     #[error(transparent)]
     Register(#[from] error::Register),
@@ -2333,6 +2489,19 @@ enum RadArtifactError {
     Reconcile(#[from] reconcile::Error),
 }
 
+impl RadArtifactError {
+    /// Process exit code. Failing to run a command is `1`; only `verify`
+    /// distinguishes a negative answer (`2`) from being unable to answer,
+    /// because a caller acting on the result — an installer, or CI — has to
+    /// tell "verified false" from "could not verify".
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Verify(err) => err.exit_code(),
+            _ => 1,
+        }
+    }
+}
+
 mod command {
     use clap::Parser;
     use url::Url;
@@ -2354,6 +2523,8 @@ mod command {
         Metadata(Metadata),
         Show(Show),
         List(List),
+        /// Check a local file against the artifacts registered in this repository.
+        Verify(Verify),
         /// Locate a content identifier across every repository in local storage.
         Locate(Locate),
         /// Compute the BLAKE3 CID of a file or directory
@@ -3068,6 +3239,51 @@ Examples:
         #[clap(long)]
         pub empty: bool,
     }
+
+    /// Check a local file against the artifacts registered in this
+    /// repository's releases.
+    ///
+    /// Hashes `<PATH>` and looks for an artifact with that CID in any
+    /// release. Verification succeeds when a repository delegate (or you)
+    /// registered these exact bytes and nobody trusted has redacted them.
+    ///
+    /// Reads only local storage: no daemon, no network, and no signer. The
+    /// repository must already be replicated locally.
+    ///
+    /// Exits 0 when verified, 2 when the bytes are not trustworthy, and 1
+    /// when the check could not be made at all.
+    #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Verify a downloaded release binary:
+    $ rad-artifact verify ./rad-artifact_0.18.0_aarch64-apple-darwin
+
+  Verify against a repository you are not currently in:
+    $ rad-artifact --repository rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv verify ./my-binary
+
+  Accept artifacts registered by users who are not delegates:
+    $ rad-artifact verify ./my-binary --all-authors
+
+  Machine-readable result:
+    $ rad-artifact verify ./my-binary --json")]
+    pub struct Verify {
+        /// Path to the file or directory to check.
+        pub path: std::path::PathBuf,
+        /// Also accept artifacts registered by users who are not
+        /// repository delegates.
+        #[clap(long)]
+        pub all_authors: bool,
+        /// Format output in a human-readable way.
+        ///
+        /// This is the default when stdout is a terminal.
+        #[clap(long)]
+        pub pretty: bool,
+        /// Force JSON output.
+        ///
+        /// This is the default when stdout is not a terminal (e.g. piped).
+        #[clap(long, conflicts_with = "pretty")]
+        pub json: bool,
+    }
 }
 
 mod error {
@@ -3094,6 +3310,67 @@ mod error {
         Delegates(#[source] RepositoryError),
         #[error("failed to list releases, could not serialize to JSON")]
         Json(#[source] serde_json::Error),
+    }
+
+    /// Hashing a path into a CID. Shared by `register` and `verify` so both
+    /// report the same failure for the same path.
+    #[derive(Debug, Error)]
+    pub enum ComputeCid {
+        #[error("failed to compute CID from path")]
+        Io(#[source] std::io::Error),
+        #[error(transparent)]
+        Protocol(radicle_artifact_core::Error),
+    }
+
+    /// A `Cid` is ~100 bytes, which pushes any enum holding one past
+    /// clippy's `result_large_err` limit. These errors only ever format the
+    /// CID, so they keep its canonical string form instead.
+    #[derive(Debug, Error)]
+    pub enum Verify {
+        #[error(transparent)]
+        ComputeCid(#[from] ComputeCid),
+        #[error("failed to look up CID {cid}")]
+        Lookup {
+            cid: String,
+            #[source]
+            err: Box<cob::store::Error>,
+        },
+        #[error("failed to get repository delegates")]
+        Delegates(#[source] RepositoryError),
+        #[error("no artifact with CID {cid} is registered in any release of {rid}")]
+        NoMatch { cid: String, rid: RepoId },
+        #[error(
+            "artifact {cid} has been redacted by a trusted party:\n{}",
+            display_redactions(redactions)
+        )]
+        Redacted {
+            cid: String,
+            redactions: std::collections::BTreeMap<Did, String>,
+        },
+        #[error("artifact {cid} is only registered by {author}, who is not a repository delegate\n  hint: pass --all-authors to accept it anyway")]
+        UntrustedAuthor { cid: String, author: Did },
+        #[error("failed to serialize verify output to JSON")]
+        Json(#[source] serde_json::Error),
+    }
+
+    impl Verify {
+        /// `2` when the check ran and the bytes are not trustworthy, `1` when
+        /// the check could not be made at all. Callers such as an installer
+        /// need to tell "verified false" from "could not verify".
+        pub fn exit_code(&self) -> i32 {
+            match self {
+                Self::NoMatch { .. } | Self::Redacted { .. } | Self::UntrustedAuthor { .. } => 2,
+                Self::ComputeCid(_) | Self::Lookup { .. } | Self::Delegates(_) | Self::Json(_) => 1,
+            }
+        }
+    }
+
+    fn display_redactions(redactions: &std::collections::BTreeMap<Did, String>) -> String {
+        redactions
+            .iter()
+            .map(|(did, reason)| format!("  {did}: {reason}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[derive(Debug, Error)]
@@ -3154,10 +3431,10 @@ mod error {
             #[source]
             err: cob::store::Error,
         },
-        #[error("failed to compute CID from path")]
-        Io(#[source] std::io::Error),
         #[error(transparent)]
-        Protocol(radicle_artifact_core::Error),
+        ComputeCid(#[from] ComputeCid),
+        #[error("failed to read size from path")]
+        Io(#[source] std::io::Error),
         #[error("failed to serialize register output to JSON")]
         Json(#[source] serde_json::Error),
     }

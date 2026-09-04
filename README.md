@@ -67,8 +67,9 @@ radicle-artifact = { git = "https://radicle.norman.life/z4VYyJ9KuwMNkXGQnmKuGPGK
 3. **Register:** Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. This is signed discovery metadata in the COB, synced over the Radicle protocol, not the bytes.
 4. **Seed:** Upload artifacts to an HTTP server and add the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
 5. **Download:** Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`.
-6. **Attest:** Other delegates check out the release version, build the artifacts independently and attest the CIDs match.
-7. **Redact:** If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason.
+6. **Verify:** Check a file you downloaded or rebuilt against the COB with `rad-artifact verify <PATH>`. It hashes the file and looks for an artifact with that CID, honouring the same delegate and redaction rules as `list`/`show`. Reads local storage only: no daemon, no network, no signer.
+7. **Attest:** Other delegates check out the release version, build the artifacts independently, `verify` the CIDs match, and attest. Note that `attest` records a signed claim and rehashes nothing itself, so run `verify` first.
+8. **Redact:** If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason. A redaction by a delegate makes `verify` fail, so it withdraws a published artifact without touching wherever the bytes are hosted.
 
 > **Note:** A release is bound to a revision in your **Radicle storage**, not your working copy. Release operations resolve `<REVISION>` against Radicle storage, so the commit (or annotated tag) must already be there before you can register against it. Push it first with `git push rad` (and `git push rad --tags` for an annotated tag). If the revision is missing, the command fails to resolve it.
 
@@ -193,6 +194,7 @@ rad-artifact metadata unset --revision <REVISION> --cid <CID> <KEY>             
 rad-artifact show <REVISION> [--pretty] [--all-authors]          # show release
 rad-artifact list [--pretty] [--all-authors]                     # list releases (default: delegate- or local-authored)
 rad-artifact cid <PATH>                                          # compute BLAKE3 CID
+rad-artifact verify <PATH> [--all-authors]                       # check a local file against the registered artifacts
 rad-artifact fetch [<REVISION> --cid <CID>]                      # fetch artifact into the store (interactive without args)
 rad-artifact download [<REVISION> --cid <CID>] [-o <PATH>]       # download artifact to disk (interactive without args)
 ```

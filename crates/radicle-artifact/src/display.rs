@@ -952,6 +952,154 @@ impl RegisterReceipt {
     }
 }
 
+/// `verify --json` payload: the CID computed from the local file, and every
+/// release that registers it.
+///
+/// `matches` is always non-empty — a failed verification exits non-zero
+/// instead of emitting a receipt. See `docs/adr/0001-json-casing.md`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyReceipt {
+    cid: Cid,
+    /// Always `true`, so one field answers the question for this payload
+    /// and for [`VerifyFailure`] alike.
+    verified: bool,
+    matches: Vec<VerifyMatch>,
+}
+
+impl VerifyReceipt {
+    /// Build the `verify` payload from the computed CID and its matches.
+    pub fn new(cid: Cid, matches: Vec<VerifyMatch>) -> Self {
+        Self {
+            cid,
+            verified: true,
+            matches,
+        }
+    }
+
+    /// Pretty print what registered the verified bytes, one labeled field
+    /// per line to match `show`'s artifact blocks.
+    pub fn pretty(&self, style: Style) -> String {
+        let mut s = String::new();
+        push_line(
+            &mut s,
+            format!("{} {}", style.green("✓ Verified"), self.cid),
+        );
+        let label = |k: &str| pad_right(&style.dim(k), 12);
+        for m in self.matches.iter() {
+            s.push('\n');
+            let release = match &m.tag_name {
+                Some(tag) => format!("{}  ({tag})", m.release_id),
+                None => m.release_id.to_string(),
+            };
+            push_line(&mut s, format!("  {}{release}", label("release")));
+            push_line(&mut s, format!("  {}{}", label("artifact"), m.name));
+            let mut author = match &m.author_alias {
+                Some(alias) => format!("{} ({alias})", m.author),
+                None => m.author.to_string(),
+            };
+            if m.delegate {
+                author.push_str(&format!(" {}", style.dim("delegate")));
+            }
+            push_line(&mut s, format!("  {}{author}", label("author")));
+            push_line(
+                &mut s,
+                format!("  {}{}", label("attested"), m.attestations.len()),
+            );
+        }
+        s
+    }
+}
+
+/// `verify --json` payload for a negative verdict: the bytes were checked
+/// and are not trustworthy.
+///
+/// Printed beside the non-zero exit, so a caller that asked for JSON gets
+/// the reason as data rather than only a status code. A failure that could
+/// not answer the question at all emits no payload — there is no verdict.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyFailure {
+    cid: Cid,
+    /// Always `false`. See [`VerifyReceipt::verified`].
+    verified: bool,
+    /// A stable token: `noMatch`, `redacted` or `untrustedAuthor`.
+    reason: &'static str,
+    /// The same sentence that goes to stderr.
+    message: String,
+    /// Who withdrew the artifact, and why, when `reason` is `redacted`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    redactions: BTreeMap<Did, String>,
+}
+
+impl VerifyFailure {
+    /// Build the payload from the computed CID and the rejection.
+    pub fn new(
+        cid: Cid,
+        reason: &'static str,
+        message: String,
+        redactions: BTreeMap<Did, String>,
+    ) -> Self {
+        Self {
+            cid,
+            verified: false,
+            reason,
+            message,
+            redactions,
+        }
+    }
+}
+
+/// One release that registers the verified CID.
+///
+/// The same CID can appear in several releases, so `verify` reports each
+/// one rather than choosing between them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyMatch {
+    release_id: ReleaseId,
+    oid: Oid,
+    /// Annotated tag name (e.g. `releases/1.0.0`), when the release records
+    /// a tag and the tag object is present locally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag_name: Option<String>,
+    name: String,
+    author: Did,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author_alias: Option<String>,
+    /// Whether the artifact's author is a repository delegate. When false,
+    /// the match was accepted because the author is the local user or
+    /// because `--all-authors` was passed.
+    delegate: bool,
+    /// DIDs that recorded an attestation for this artifact.
+    attestations: Vec<Did>,
+}
+
+impl VerifyMatch {
+    /// Build a match from a release and the artifact within it carrying the
+    /// verified CID. `delegate` says whether that artifact's author is a
+    /// repository delegate.
+    pub fn new(
+        release_id: ReleaseId,
+        release: &crate::Release,
+        artifact: &crate::Artifact,
+        aliases: &impl AliasStore,
+        tag_names: &impl TagName,
+        delegate: bool,
+    ) -> Self {
+        Self {
+            release_id,
+            oid: *release.oid(),
+            tag_name: release.tag().and_then(|oid| tag_names.tag_name(oid)),
+            name: artifact.name().to_owned(),
+            author: *artifact.author(),
+            author_alias: resolve(artifact.author(), aliases),
+            delegate,
+            attestations: artifact.attestations().iter().copied().collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
