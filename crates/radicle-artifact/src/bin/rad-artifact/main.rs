@@ -1222,11 +1222,85 @@ fn list_releases(
 /// Kept so a failed check can report the most useful reason instead of a
 /// flat "not found" — a redaction in particular is something the user
 /// needs to see.
+#[derive(Debug, PartialEq, Eq)]
 enum Untrusted {
     /// Redacted by the artifact's own author or by a delegate.
     Redacted(std::collections::BTreeMap<Did, String>),
     /// Registered by someone who is neither a delegate nor the local user.
     Author(Did),
+}
+
+/// The trust inputs `verify` reads from one release that registers the CID
+/// being checked. Extracted from the COB so the rules below can be tested
+/// without a repository.
+struct Candidate {
+    /// DID that created the release COB.
+    release_creator: Did,
+    /// DID that registered the artifact within that release.
+    artifact_author: Did,
+    /// Every DID that has redacted the artifact, with its stated reason.
+    redactions: std::collections::BTreeMap<Did, String>,
+}
+
+/// Apply the trust rules `list`/`show` already use (see `display::Filters`)
+/// to a single candidate: the release and the artifact must both be
+/// authored by a delegate or by us, and no trusted party may have redacted
+/// the artifact.
+fn classify(
+    candidate: &Candidate,
+    delegates: &BTreeSet<Did>,
+    local: &Did,
+    all_authors: bool,
+) -> Result<(), Untrusted> {
+    let trusted = |did: &Did| all_authors || delegates.contains(did) || did == local;
+
+    if !trusted(&candidate.release_creator) {
+        return Err(Untrusted::Author(candidate.release_creator));
+    }
+    // A redaction counts when it comes from the artifact's own author or
+    // from a delegate; one from a passing stranger must not block the
+    // check, or anyone on the network could veto a release. `--all-authors`
+    // deliberately does not widen this — it opens up who may *register* an
+    // artifact, not who may withdraw one.
+    let redactions: std::collections::BTreeMap<Did, String> = candidate
+        .redactions
+        .iter()
+        .filter(|(did, _)| **did == candidate.artifact_author || delegates.contains(did))
+        .map(|(did, reason)| (*did, reason.clone()))
+        .collect();
+    if !redactions.is_empty() {
+        return Err(Untrusted::Redacted(redactions));
+    }
+    if !trusted(&candidate.artifact_author) {
+        return Err(Untrusted::Author(candidate.artifact_author));
+    }
+    Ok(())
+}
+
+/// Pick which failure to report when no candidate verified.
+///
+/// A redaction is a deliberate act by a trusted party, so it outranks "a
+/// stranger registered it", which in turn outranks "nothing registered
+/// these bytes".
+fn rejection(untrusted: &[Untrusted], cid: &Cid, rid: RepoId) -> error::Verify {
+    for reason in untrusted {
+        if let Untrusted::Redacted(redactions) = reason {
+            return error::Verify::Redacted {
+                cid: cid.to_string(),
+                redactions: redactions.clone(),
+            };
+        }
+    }
+    if let Some(Untrusted::Author(author)) = untrusted.first() {
+        return error::Verify::UntrustedAuthor {
+            cid: cid.to_string(),
+            author: *author,
+        };
+    }
+    error::Verify::NoMatch {
+        cid: cid.to_string(),
+        rid,
+    }
 }
 
 /// The `--json` payload for a rejection, or `None` when the check could
@@ -1283,63 +1357,29 @@ fn run_verify(
     let mut matched = Vec::new();
     let mut untrusted = Vec::new();
     for (release_id, release) in candidates {
-        if !release_visible(&release, &delegates, local, all_authors) {
-            untrusted.push(Untrusted::Author(*release.creator()));
-            continue;
-        }
         let artifact = release
             .artifact(&cid)
             .expect("find_by_cid only returns releases containing the CID");
-        // Same trust rules as `list`/`show` (see `display::Filters`): a
-        // redaction counts when it comes from the artifact's own author or
-        // from a delegate. Unlike those commands, which quietly hide the
-        // artifact, verification has to fail and say so.
-        let trusted_redactions: std::collections::BTreeMap<Did, String> = artifact
-            .redactions()
-            .iter()
-            .filter(|(did, _)| **did == *artifact.author() || delegates.contains(did))
-            .map(|(did, reason)| (*did, reason.clone()))
-            .collect();
-        if !trusted_redactions.is_empty() {
-            untrusted.push(Untrusted::Redacted(trusted_redactions));
-            continue;
+        let candidate = Candidate {
+            release_creator: *release.creator(),
+            artifact_author: *artifact.author(),
+            redactions: artifact.redactions().clone(),
+        };
+        match classify(&candidate, &delegates, local, all_authors) {
+            Ok(()) => matched.push(display::VerifyMatch::new(
+                release_id,
+                &release,
+                artifact,
+                aliases,
+                repo,
+                delegates.contains(artifact.author()),
+            )),
+            Err(reason) => untrusted.push(reason),
         }
-        if !all_authors && !delegates.contains(artifact.author()) && artifact.author() != local {
-            untrusted.push(Untrusted::Author(*artifact.author()));
-            continue;
-        }
-        matched.push(display::VerifyMatch::new(
-            release_id,
-            &release,
-            artifact,
-            aliases,
-            repo,
-            delegates.contains(artifact.author()),
-        ));
     }
 
     if matched.is_empty() {
-        // Rank the reasons: a redaction is a deliberate act by a trusted
-        // party, so it outranks "a stranger registered it", which in turn
-        // outranks "nothing registered these bytes".
-        let redacted = untrusted.iter().find_map(|reason| match reason {
-            Untrusted::Redacted(redactions) => Some(redactions.clone()),
-            Untrusted::Author(_) => None,
-        });
-        let err = match (redacted, untrusted.first()) {
-            (Some(redactions), _) => error::Verify::Redacted {
-                cid: cid.to_string(),
-                redactions,
-            },
-            (None, Some(Untrusted::Author(author))) => error::Verify::UntrustedAuthor {
-                cid: cid.to_string(),
-                author: *author,
-            },
-            _ => error::Verify::NoMatch {
-                cid: cid.to_string(),
-                rid: repo.id,
-            },
-        };
+        let err = rejection(&untrusted, &cid, repo.id);
         // A caller that asked for JSON gets the verdict as data, not just
         // an exit code. Only a verdict is emitted: a failure that could not
         // answer the question prints the error alone.
@@ -3657,5 +3697,229 @@ mod error {
         Protocol(radicle_artifact_core::Error),
         #[error("I/O error")]
         Io(#[source] std::io::Error),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use radicle::crypto::PublicKey;
+    use radicle::identity::Did;
+    use radicle_artifact_core::cid::{blake3_hash_to_cid, ArtifactKind};
+
+    use super::{classify, error, rejection, verify_failure, Candidate, Cid, Untrusted};
+
+    /// Distinct DIDs keyed by a single byte, so a test can name its
+    /// participants. Never used to verify a signature, so the bytes don't
+    /// have to be a valid curve point.
+    fn did(n: u8) -> Did {
+        Did::from(PublicKey::from_bytes([n; 32]))
+    }
+
+    /// Production-faithful CID: BLAKE3 multihash, raw codec.
+    fn cid() -> Cid {
+        blake3_hash_to_cid(blake3::hash(b"artifact"), ArtifactKind::Blob)
+    }
+
+    const DELEGATE: u8 = 1;
+    const OTHER_DELEGATE: u8 = 2;
+    const LOCAL: u8 = 3;
+    const STRANGER: u8 = 4;
+
+    fn delegates() -> BTreeSet<Did> {
+        BTreeSet::from([did(DELEGATE), did(OTHER_DELEGATE)])
+    }
+
+    /// A candidate a delegate created and registered, with no redactions.
+    fn trusted_candidate() -> Candidate {
+        Candidate {
+            release_creator: did(DELEGATE),
+            artifact_author: did(DELEGATE),
+            redactions: BTreeMap::new(),
+        }
+    }
+
+    fn check(candidate: &Candidate, all_authors: bool) -> Result<(), Untrusted> {
+        classify(candidate, &delegates(), &did(LOCAL), all_authors)
+    }
+
+    #[test]
+    fn delegate_registered_artifact_verifies() {
+        assert_eq!(check(&trusted_candidate(), false), Ok(()));
+    }
+
+    #[test]
+    fn stranger_authored_artifact_is_rejected() {
+        let candidate = Candidate {
+            artifact_author: did(STRANGER),
+            ..trusted_candidate()
+        };
+        assert_eq!(
+            check(&candidate, false),
+            Err(Untrusted::Author(did(STRANGER)))
+        );
+        // `--all-authors` is exactly the opt-in for this case.
+        assert_eq!(check(&candidate, true), Ok(()));
+    }
+
+    #[test]
+    fn stranger_created_release_is_rejected() {
+        let candidate = Candidate {
+            release_creator: did(STRANGER),
+            ..trusted_candidate()
+        };
+        assert_eq!(
+            check(&candidate, false),
+            Err(Untrusted::Author(did(STRANGER)))
+        );
+        assert_eq!(check(&candidate, true), Ok(()));
+    }
+
+    #[test]
+    fn own_artifact_verifies_without_all_authors() {
+        // The local user is not a delegate here, but must still be able to
+        // verify what they registered themselves.
+        let candidate = Candidate {
+            release_creator: did(LOCAL),
+            artifact_author: did(LOCAL),
+            redactions: BTreeMap::new(),
+        };
+        assert_eq!(check(&candidate, false), Ok(()));
+    }
+
+    #[test]
+    fn delegate_redaction_is_rejected() {
+        let candidate = Candidate {
+            redactions: BTreeMap::from([(did(OTHER_DELEGATE), "compromised".to_owned())]),
+            ..trusted_candidate()
+        };
+        let err = check(&candidate, false).unwrap_err();
+        assert_eq!(
+            err,
+            Untrusted::Redacted(BTreeMap::from([(
+                did(OTHER_DELEGATE),
+                "compromised".to_owned()
+            )]))
+        );
+        // A redaction is a withdrawal by a trusted party; --all-authors
+        // widens who may register an artifact, not who may withdraw one.
+        assert!(check(&candidate, true).is_err());
+    }
+
+    #[test]
+    fn self_redaction_is_rejected() {
+        let candidate = Candidate {
+            redactions: BTreeMap::from([(did(DELEGATE), "bad build".to_owned())]),
+            ..trusted_candidate()
+        };
+        assert!(matches!(
+            check(&candidate, false),
+            Err(Untrusted::Redacted(_))
+        ));
+    }
+
+    #[test]
+    fn stranger_redaction_does_not_block() {
+        // Redacting is open to anyone on the network, so honouring an
+        // untrusted redaction would let any peer veto a release.
+        let candidate = Candidate {
+            redactions: BTreeMap::from([(did(STRANGER), "trust me".to_owned())]),
+            ..trusted_candidate()
+        };
+        assert_eq!(check(&candidate, false), Ok(()));
+    }
+
+    #[test]
+    fn only_trusted_redactions_are_reported() {
+        let candidate = Candidate {
+            redactions: BTreeMap::from([
+                (did(STRANGER), "noise".to_owned()),
+                (did(OTHER_DELEGATE), "real reason".to_owned()),
+            ]),
+            ..trusted_candidate()
+        };
+        let Err(Untrusted::Redacted(reported)) = check(&candidate, false) else {
+            panic!("expected a redaction");
+        };
+        assert_eq!(
+            reported,
+            BTreeMap::from([(did(OTHER_DELEGATE), "real reason".to_owned())])
+        );
+    }
+
+    #[test]
+    fn redaction_outranks_untrusted_author() {
+        let rid = radicle::prelude::RepoId::from_urn("rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv").unwrap();
+        let redactions = BTreeMap::from([(did(DELEGATE), "compromised".to_owned())]);
+        let reasons = [
+            Untrusted::Author(did(STRANGER)),
+            Untrusted::Redacted(redactions),
+        ];
+        // The stranger comes first, but the redaction is what the user
+        // needs to see.
+        assert_eq!(rejection(&reasons, &cid(), rid).exit_code(), 2);
+        assert!(matches!(
+            rejection(&reasons, &cid(), rid),
+            error::Verify::Redacted { .. }
+        ));
+    }
+
+    #[test]
+    fn no_candidates_reports_no_match() {
+        let rid = radicle::prelude::RepoId::from_urn("rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv").unwrap();
+        assert!(matches!(
+            rejection(&[], &cid(), rid),
+            error::Verify::NoMatch { .. }
+        ));
+    }
+
+    #[test]
+    fn negative_answers_exit_2_and_failures_exit_1() {
+        let rid = radicle::prelude::RepoId::from_urn("rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv").unwrap();
+        // A caller acting on the result has to tell "verified false" from
+        // "could not verify".
+        assert_eq!(rejection(&[], &cid(), rid).exit_code(), 2);
+        assert_eq!(
+            rejection(&[Untrusted::Author(did(STRANGER))], &cid(), rid).exit_code(),
+            2
+        );
+        assert_eq!(
+            error::Verify::Delegates(radicle::storage::RepositoryError::Doc(
+                radicle::identity::doc::DocError::Missing
+            ))
+            .exit_code(),
+            1
+        );
+    }
+
+    /// `--json` has to answer with data, not only an exit code — but only
+    /// when there is a verdict to report.
+    #[test]
+    fn a_verdict_gets_a_json_payload_and_a_failure_does_not() {
+        let rid = radicle::prelude::RepoId::from_urn("rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv").unwrap();
+        let verdict = verify_failure(cid(), &rejection(&[], &cid(), rid)).unwrap();
+        let json = serde_json::to_value(&verdict).unwrap();
+        assert_eq!(json["verified"], serde_json::json!(false));
+        assert_eq!(json["reason"], serde_json::json!("noMatch"));
+
+        let redacted = rejection(
+            &[Untrusted::Redacted(BTreeMap::from([(
+                did(DELEGATE),
+                "compromised".to_owned(),
+            )]))],
+            &cid(),
+            rid,
+        );
+        let json = serde_json::to_value(verify_failure(cid(), &redacted).unwrap()).unwrap();
+        assert_eq!(json["reason"], serde_json::json!("redacted"));
+        assert_eq!(json["redactions"][did(DELEGATE).to_string()], "compromised");
+
+        // "Could not verify" is not a verdict, so it carries no payload.
+        let failed = error::Verify::Delegates(radicle::storage::RepositoryError::Doc(
+            radicle::identity::doc::DocError::Missing,
+        ));
+        assert!(verify_failure(cid(), &failed).is_none());
     }
 }
