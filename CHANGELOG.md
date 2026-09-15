@@ -16,6 +16,20 @@ Both settings take a comma-separated list, and both environment variables are re
 - **`IROH_RELAY_HOSTS`** is now **`IROH_RELAYS`**
 - **`IROH_PKARR_URL`** is now **`IROH_PKARR_URLS`**.
 
+### `-r, --repo <RID>` on every command
+
+Every `rad-artifact` command now accepts `-r, --repo <RID>`, along with `--no-announce` and `--no-input`, before or after the subcommand. These options were documented as global, but they parsed only before the subcommand and appeared only in the root help, so it was hard to discover how to run artifact commands outside a checkout. Each subcommand's help now lists them.
+
+`--repository` is renamed to `--repo`, matching the `rad` CLI. The old name stays as a hidden alias, so existing scripts keep working.
+
+The repository only has to be in local storage — no working copy is needed — so commands run from any directory:
+
+```sh
+$ rad-artifact list --repo rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv
+```
+
+When the current directory is not a Radicle repository, the error now points at `--repo`. Commands that do not read or write a repository ignore it: `--repo` has no effect on `cid`, `locate` and `node`. `reconcile` rejects `--all-repos` combined with `--repo`.
+
 ## [0.18.0] - 2026-08-03
 
 This release contians a number of improvements, radicle dependency upgrade, and some fixes.
