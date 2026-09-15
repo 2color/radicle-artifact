@@ -1,0 +1,15 @@
+# Config for `cargo audit` (see `make audit`).
+#
+# Only add an entry here when the advisory cannot be fixed by a lockfile
+# update and we have established it does not apply. Record why, so the
+# next reader can re-check the reasoning instead of trusting the list.
+
+[advisories]
+ignore = [
+    # Marvin attack: timing sidechannel in RSA private-key operations.
+    # No fixed release exists. Pulled in transitively by
+    # radicle-crypto -> ssh-key, which compiles RSA key support by default.
+    # Radicle identities are Ed25519 and this workspace performs no RSA
+    # private-key operations, so the vulnerable code path is never entered.
+    "RUSTSEC-2023-0071",
+]
