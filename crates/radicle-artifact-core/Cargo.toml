@@ -17,7 +17,7 @@ dunce = "1"
 # `key` gives EndpointId/SecretKey with pure-crypto deps only — no
 # tokio/quinn/networking. iroh re-exports these same types, so the node
 # crate needs no conversion at the iroh boundary.
-iroh-base = { version = "1.0.0", default-features = false, features = ["key"] }
+iroh-base = { version = "1.2.0", default-features = false, features = ["key"] }
 multibase = "0.9"
 multihash = "0.19"
 postcard = { version = "1", features = ["use-std"] }
