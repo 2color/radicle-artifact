@@ -1,4 +1,4 @@
-.PHONY: changelog build build-macos build-linux check-macos-host upload register-artifacts check-bins clean clean-all check help
+.PHONY: changelog audit build build-macos build-linux check-macos-host upload register-artifacts check-bins clean clean-all check help
 
 # Version from the workspace (all crates version in lockstep)
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "radicle-artifact") | .version')
@@ -31,6 +31,7 @@ BASE_URL    := https://files.radicle.dev/releases/radicle-artifact
 help:
 	@echo "Available targets:"
 	@echo "  make check            - Build, fmt, and clippy (with and without sqlite)"
+	@echo "  make audit            - Scan Cargo.lock for RustSec advisories"
 	@echo "  make changelog        - Prepend commit list since last tag to CHANGELOG.md under [Unreleased]"
 	@echo "  make build            - Build all architectures (macOS + Linux)"
 	@echo "  make build-macos      - Build native macOS architectures (run on macOS)"
@@ -46,6 +47,15 @@ check:
 	cargo fmt --check
 	cargo clippy --all-targets
 	cargo clippy --all-targets --package radicle-artifact --no-default-features
+
+# Scan the lockfile against the RustSec advisory DB. Fails on vulnerabilities;
+# unmaintained and yanked crates only warn, because they are almost always
+# transitive and we cannot fix them on our own schedule. Documented
+# exceptions live in .cargo/audit.toml.
+audit:
+	@command -v cargo-audit >/dev/null 2>&1 || \
+	    (echo "cargo-audit not found. Install with: cargo install cargo-audit" && exit 1)
+	cargo audit
 
 # Draft the changelog section for the upcoming release. Prepends a new
 # [Unreleased] block with the commit list since the last tag via git-cliff,

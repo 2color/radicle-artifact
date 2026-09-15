@@ -54,6 +54,16 @@ steps:
           volumes:
             - "rad-artifact-cache:/cache"
 
+  - label: ":lock: audit"
+    # Fails the build on RustSec vulnerabilities. Unmaintained and yanked
+    # crates only warn: they are transitive and would red-build the pipeline
+    # on an upstream schedule. Exceptions are documented in .cargo/audit.toml.
+    command:
+      - cargo install cargo-audit --locked
+      - cargo audit
+    plugins:
+      - *docker
+
   - label: ":docker: image"
     command: docker build .
 
