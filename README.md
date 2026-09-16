@@ -40,15 +40,18 @@ For a more elaborate comparison to Git LFS, git-annex, and Git's upcoming Large 
 
 Install a prebuilt binary:
 
-```
+```sh
 curl -sSf https://files.radicle.dev/releases/radicle-artifact/install | sh
 ```
 
+The installer also links `rad-art` to `rad-artifact`, so you can use the short name, or `rad art <command>` as a `rad` subcommand.
+
 Or build from source via crates.io:
 
-```
+```sh
 cargo install radicle-artifact        # the rad-artifact CLI (COB operations)
 cargo install radicle-artifact-node   # the seeding daemon (optional, for iroh seeding)
+ln -s rad-artifact ~/.cargo/bin/rad-art   # optional: the rad-art / rad art alias
 ```
 
 Or depend on the cargo crate straight from the Radicle git remote:

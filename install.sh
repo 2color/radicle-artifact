@@ -181,7 +181,16 @@ if [ "$NEED_INSTALL" = true ]; then
   fi
 fi
 
+# ── 3. rad-art alias ─────────────────────────────────────────────────
+# Short name for the CLI. `rad` dispatches unknown subcommands to `rad-<name>`
+# on PATH, so this symlink also makes `rad art ...` work. Created outside the
+# install block so an existing up-to-date install picks it up too.
+if [ -x "$INSTALL_DIR/rad-artifact" ] && [ ! -e "$INSTALL_DIR/rad-art" ]; then
+  ln -s rad-artifact "$INSTALL_DIR/rad-art"
+  info "Linked rad-art → rad-artifact"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────
 printf '\n\033[1;32m✓ Ready.\033[0m\n'
-info "Run 'rad-artifact --help' to get started, or see https://radicle.network/nodes/iris.radicle.network/rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv"
+info "Run 'rad-artifact --help' (or 'rad art --help') to get started, or see https://radicle.network/nodes/iris.radicle.network/rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv"
 printf '\n'
