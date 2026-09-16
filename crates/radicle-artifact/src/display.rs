@@ -925,6 +925,7 @@ impl CreateReceipt {
 #[serde(rename_all = "camelCase")]
 pub struct RegisterReceipt {
     cid: Cid,
+    name: String,
     release_id: ReleaseId,
     oid: Oid,
     metadata: BTreeMap<String, serde_json::Value>,
@@ -932,8 +933,9 @@ pub struct RegisterReceipt {
 
 impl RegisterReceipt {
     /// Build the `register --json` payload; `size` is the byte hint recorded
-    /// on the artifact, or `None` when registering by `--cid`.
-    pub fn new(cid: Cid, release_id: ReleaseId, oid: Oid, size: Option<u64>) -> Self {
+    /// on the artifact, or `None` when registering by `--cid`. `name` tells
+    /// the lines apart when one `register` writes several artifacts.
+    pub fn new(cid: Cid, name: String, release_id: ReleaseId, oid: Oid, size: Option<u64>) -> Self {
         let mut metadata = BTreeMap::new();
         if let Some(bytes) = size {
             // Keyed by the stored COB metadata key so the output field
@@ -945,6 +947,7 @@ impl RegisterReceipt {
         }
         Self {
             cid,
+            name,
             release_id,
             oid,
             metadata,
@@ -1131,11 +1134,13 @@ mod tests {
     fn register_receipt_nests_size_under_metadata() {
         let (cid, oid) = (test_cid(), test_oid());
         let release_id = ReleaseId::from(oid);
-        let out = RegisterReceipt::new(cid, release_id, oid, Some(1048576));
+        let out =
+            RegisterReceipt::new(cid, "my-binary".to_string(), release_id, oid, Some(1048576));
         assert_eq!(
             serde_json::to_value(&out).unwrap(),
             serde_json::json!({
                 "cid": cid.to_string(),
+                "name": "my-binary",
                 "releaseId": release_id.to_string(),
                 "oid": oid.to_string(),
                 // camelCase system metadata key, nested under `metadata`.
@@ -1148,11 +1153,12 @@ mod tests {
     fn register_receipt_emits_empty_metadata_when_no_size() {
         let (cid, oid) = (test_cid(), test_oid());
         let release_id = ReleaseId::from(oid);
-        let out = RegisterReceipt::new(cid, release_id, oid, None);
+        let out = RegisterReceipt::new(cid, "my-binary".to_string(), release_id, oid, None);
         assert_eq!(
             serde_json::to_value(&out).unwrap(),
             serde_json::json!({
                 "cid": cid.to_string(),
+                "name": "my-binary",
                 "releaseId": release_id.to_string(),
                 "oid": oid.to_string(),
                 // Always present so the shape is stable, empty when no size.

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Register a folder as separate artifacts
+
+`rad-artifact register <DIR>` used to have one behaviour: hash the whole tree into a single collection CID and write one artifact. That is right when the folder is the artifact, and wrong when the folder is only where several artifacts sit, e.g. the binaries from a build.
+
+Pass `--each` or `--collection`. `--each` registers each file **directly inside** the folder as its own artifact, named by its file name; it does not recurse, and it reports what it passed over: the subdirectories, and anything that is not a regular file. **Each file gets its own CID**, so peers can fetch, verify, and attest one file without the rest.
+
 ### `rad-artifact verify <PATH>`
 
 `rad-artifact verify <PATH>` checks a local file against the artifacts registered in the repository's releases. It hashes the file and looks for an artifact with that CID, applying the same delegate and redaction rules as `list`/`show`, and reports which release registered it.

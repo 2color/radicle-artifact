@@ -143,6 +143,8 @@ radicle-artifact supports two artifact types: blobs and collections, both encode
 
 Blobs are the common case: one binary, archive, or model file. [Collections](https://docs.iroh.computer/protocols/blobs#collections) derive a hash from a collection of files, i.e. directory, and are useful when the collection represents a single artifact, e.g. static frontend builds.
 
+A folder can register either way. `rad-artifact register <DIR>` asks which you want: one collection artifact for the whole tree, or one blob artifact for each file directly inside the folder (`--each`, which does not recurse). Register each file when the folder only holds artifacts that stand alone, e.g. the binaries from a build — peers can then fetch, verify, and attest one binary without the rest.
+
 Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as locations and resolved by external tools, but the CLI itself only fetches HTTP and iroh.
 
 ## Actions
@@ -184,6 +186,7 @@ rad-artifact list --repo rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv
 
 ```
 rad-artifact register <PATH> [--revision <REVISION>] [-n <NAME>] # register artifact (creates release if needed; records a sizeBytes hint, skip with --no-size)
+rad-artifact register <DIR> [--each|--collection]                # a folder asks which; --no-input or -n makes one collection
 rad-artifact register --cid <CID> --revision <REVISION> -n <NAME>  # register a precomputed CID without local bytes
 rad-artifact location add --revision <REVISION> --cid <CID> <URL>    # add discovery URL
 rad-artifact location remove --revision <REVISION> --cid <CID> <URL> # remove discovery URL

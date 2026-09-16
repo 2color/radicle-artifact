@@ -226,27 +226,34 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             }
         }
         Command::Register(cmd) => {
-            // Capture the seed source before `cmd` is consumed; clap
-            // guarantees a `<PATH>` is present whenever --seed is set
-            // (--seed conflicts with --cid, and the source group is
-            // required).
+            // Capture --seed before `cmd` is consumed; clap guarantees a
+            // `<PATH>` is present whenever it is set (--seed conflicts with
+            // --cid, and the source group is required).
             let seed = cmd.seed;
-            let seed_path = cmd.path.clone();
             let signer = profile.signer().map_err(error::Signer)?;
-            let (release_id, cid) =
-                register_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
+            let Registered {
+                release_id,
+                artifacts,
+            } = register_artifact(cmd, args.no_input, &mut releases, &repo, &profile, &signer)?;
             if seed {
-                let path = seed_path.expect("clap requires <PATH> with --seed");
-                node::seed_to_release(
-                    &path,
-                    cid,
-                    release_id,
-                    false,
-                    false,
-                    repo.id,
-                    &mut releases,
-                    &profile,
-                )?;
+                // Each artifact is seeded from its own file. A --each CID
+                // carries the raw codec, so the node imports a single blob.
+                for artifact in &artifacts {
+                    let path = artifact
+                        .path
+                        .as_deref()
+                        .expect("clap requires <PATH> with --seed");
+                    node::seed_to_release(
+                        path,
+                        artifact.cid,
+                        release_id,
+                        false,
+                        false,
+                        repo.id,
+                        &mut releases,
+                        &profile,
+                    )?;
+                }
             }
             if !args.no_announce {
                 announce(&profile, repo.id)?;
@@ -426,8 +433,31 @@ where
     Ok((id, reused))
 }
 
-/// Register the artifact and return the release it landed in plus its CID,
-/// so the caller can reuse the CID for `--seed` and announce once.
+/// One artifact waiting to go into the release COB.
+struct Pending {
+    cid: Cid,
+    name: String,
+    /// The `sizeBytes` hint to record, or `None` with --no-size or --cid.
+    size: Option<u64>,
+    /// Local file the bytes came from, or `None` when registering by --cid.
+    path: Option<std::path::PathBuf>,
+}
+
+/// What `register` wrote: the release it landed in, and every artifact it put
+/// there, so the caller can seed each one and announce once.
+struct Registered {
+    release_id: ReleaseId,
+    artifacts: Vec<Pending>,
+}
+
+/// Where a registration gets its CID.
+enum Source<'a> {
+    Path(&'a std::path::Path),
+    Cid(Cid),
+}
+
+/// Register one or more artifacts and return the release they landed in,
+/// so the caller can reuse the CIDs for `--seed` and announce once.
 fn register_artifact<G>(
     command::Register {
         path,
@@ -438,6 +468,8 @@ fn register_artifact<G>(
         seed,
         json,
         no_size,
+        collection,
+        each,
         all_authors,
     }: command::Register,
     no_input: bool,
@@ -445,18 +477,16 @@ fn register_artifact<G>(
     repo: &Repository,
     profile: &Profile,
     signer: &G,
-) -> Result<(ReleaseId, Cid), error::Register>
+) -> Result<Registered, error::Register>
 where
     G: crypto::Signer,
 {
-    let delegates = repo_delegates(repo)?;
-    let local = Did::from(*profile.id());
-    let aliases = profile;
+    let interactive = !no_input && std::io::stdin().is_terminal();
     // ArgGroup guarantees exactly one of path/cid, but surface a usage
     // error rather than panic if clap ever changes its mind.
-    let cid = match (path.as_deref(), cid) {
-        (Some(path), None) => compute_cid_from_path(path)?,
-        (None, Some(cid)) => cid,
+    let source = match (path.as_deref(), cid) {
+        (Some(path), None) => Source::Path(path),
+        (None, Some(cid)) => Source::Cid(cid),
         (Some(_), Some(_)) => {
             return Err(error::Register::Usage(
                 "cannot pass --cid together with a path; the CID is computed from the contents"
@@ -470,25 +500,265 @@ where
         }
     };
 
-    // Record a size hint when registering from a local path; --cid alone has
-    // no local bytes to measure, so it skips silently.
-    let size = match (no_size, path.as_deref()) {
-        (false, Some(p)) => Some(share::compute_size_from_path(p).map_err(error::Register::Io)?),
-        _ => None,
+    let plan = match source {
+        Source::Path(p) => {
+            registration_plan(p.is_dir(), collection, each, name.is_some(), interactive)
+                .map_err(error::Register::Usage)?
+        }
+        // --cid has no local bytes to split.
+        Source::Cid(_) => Plan::Blob,
     };
 
-    let name = match name {
-        Some(n) => n,
-        None => {
-            let default = path
-                .as_deref()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str());
-            prompt::prompt_name(no_input, default).map_err(error::Register::Usage)?
+    // What --each passed over, reported once with the summary so nothing is
+    // dropped silently.
+    let mut skipped = Skipped::default();
+    let pending: Vec<Pending> = match plan {
+        Plan::Blob | Plan::Collection => vec![single_pending(&source, name, no_size, no_input)?],
+        Plan::Ask | Plan::Each => {
+            let Source::Path(dir) = source else {
+                unreachable!("only a path can plan as a directory")
+            };
+            let (members, passed_over) = top_level_members(dir).map_err(error::Register::Io)?;
+            let mode = match plan {
+                Plan::Each => DirMode::Each,
+                // Nothing to choose between when the top level holds no
+                // files: keep the long-standing collection behaviour.
+                _ if members.is_empty() => DirMode::Collection,
+                _ => {
+                    let tree = share::canonical_walk(dir).map_err(error::Register::Io)?;
+                    let bytes = share::compute_size_from_path(dir).map_err(error::Register::Io)?;
+                    let labels = dir_mode_labels(tree.len(), bytes, members.len());
+                    prompt::pick_dir_mode(dir, labels).map_err(error::Register::Usage)?
+                }
+            };
+            match mode {
+                DirMode::Collection => vec![single_pending(&source, name, no_size, no_input)?],
+                DirMode::Each => {
+                    if members.is_empty() {
+                        return Err(error::Register::Usage(format!(
+                            "no files directly inside {}; register the whole tree with --collection",
+                            dir.display()
+                        )));
+                    }
+                    skipped = passed_over;
+                    members
+                        .into_iter()
+                        .map(|m| {
+                            Ok(Pending {
+                                cid: share::compute_blob_cid(&m.path)
+                                    .map_err(error::ComputeCid::Protocol)?,
+                                name: m.name,
+                                size: (!no_size).then_some(m.bytes),
+                                path: Some(m.path),
+                            })
+                        })
+                        .collect::<Result<_, error::Register>>()?
+                }
+            }
         }
     };
 
-    let (mut release, oid) = match release.as_deref() {
+    let (release_id, oid) = resolve_register_target(
+        release.as_deref(),
+        revision.as_deref(),
+        all_authors,
+        no_input,
+        releases,
+        repo,
+        profile,
+        signer,
+    )?;
+    // One open release for every write: each `register_artifact*` call opens
+    // its own signed transaction, so N artifacts are N COB entries.
+    let mut release = releases
+        .get_mut(&release_id)
+        .map_err(|err| error::Register::Store {
+            id: release_id,
+            err,
+        })?;
+    for p in &pending {
+        match p.size {
+            Some(bytes) => {
+                release.register_artifact_with_size(p.cid, p.name.clone(), bytes, signer)
+            }
+            None => release.register_artifact(p.cid, p.name.clone(), signer),
+        }
+        .map_err(|err| error::Register::Store {
+            id: release_id,
+            err,
+        })?;
+    }
+    drop(release);
+
+    // Machine-readable output: one JSON object per artifact, one per line, so
+    // a single registration is byte-for-byte what it always was and a folder
+    // stays readable with the same `jq` expression. Any --seed progress still
+    // goes to stderr, keeping stdout clean.
+    if json {
+        for p in &pending {
+            let out = display::RegisterReceipt::new(p.cid, p.name.clone(), release_id, oid, p.size);
+            println!(
+                "{}",
+                serde_json::to_string(&out).map_err(error::Register::Json)?
+            );
+        }
+        return Ok(Registered {
+            release_id,
+            artifacts: pending,
+        });
+    }
+
+    let short_oid = &oid.to_string()[..7];
+    let short_id = &release_id.to_string()[..7];
+    if let [only] = pending.as_slice() {
+        // Report the recorded size hint so the user knows the extra metadata
+        // entry was written.
+        let name = &only.name;
+        match only.size {
+            Some(bytes) => eprintln!(
+                "Registered artifact '{name}' ({}) in release {short_id} (commit {short_oid})",
+                display::human_bytes(bytes)
+            ),
+            None => {
+                eprintln!("Registered artifact '{name}' in release {short_id} (commit {short_oid})")
+            }
+        }
+    } else {
+        // Every CID is on its own row: it is what a follow-up `attest`,
+        // `redact`, or `location add` needs, and the single-artifact hint
+        // below cannot carry more than one.
+        for row in each_rows(&pending) {
+            eprintln!("{row}");
+        }
+        let n = pending.len();
+        let total: Option<u64> = pending.iter().map(|p| p.size).sum();
+        match total {
+            Some(bytes) => eprintln!(
+                "Registered {n} artifacts ({}) in release {short_id} (commit {short_oid})",
+                display::human_bytes(bytes)
+            ),
+            None => {
+                eprintln!("Registered {n} artifacts in release {short_id} (commit {short_oid})")
+            }
+        }
+    }
+    // Outside the count: one registered file can still sit beside a dozen
+    // subdirectories, and dropping those silently is the thing to avoid.
+    for note in skipped.notes() {
+        eprintln!("{note}");
+    }
+    // Skip the discovery hints when --seed is set: the caller is about to
+    // seed and add a location, so they'd be noise.
+    if !seed && std::io::stderr().is_terminal() {
+        if let [only] = pending.as_slice() {
+            eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {} <url>` to add a download location", only.cid);
+            if let Some(p) = only.path.as_deref() {
+                eprintln!(
+                    "      or `rad-artifact seed {}` to seed it yourself via the local node",
+                    p.display()
+                );
+            }
+        } else {
+            eprintln!(
+                "Hint: re-run with --seed to serve these artifacts from your local node, or add a location per CID with `rad-artifact location add`"
+            );
+        }
+    }
+    // Bare CIDs on stdout for scripting (`cid=$(rad-artifact register …)`),
+    // one per line. Suppressed in a TTY, where the summary already prints
+    // them, to avoid redundant lone-CID lines.
+    if !std::io::stdout().is_terminal() {
+        for p in &pending {
+            println!("{}", p.cid);
+        }
+    }
+    Ok(Registered {
+        release_id,
+        artifacts: pending,
+    })
+}
+
+/// The single-artifact case: one CID from `<PATH>` or --cid, with the name
+/// prompted when it was not given.
+fn single_pending(
+    source: &Source,
+    name: Option<String>,
+    no_size: bool,
+    no_input: bool,
+) -> Result<Pending, error::Register> {
+    let path = match source {
+        Source::Path(p) => Some(*p),
+        Source::Cid(_) => None,
+    };
+    let cid = match source {
+        Source::Path(p) => compute_cid_from_path(p)?,
+        Source::Cid(cid) => *cid,
+    };
+    // Record a size hint when registering from a local path; --cid alone has
+    // no local bytes to measure, so it skips silently.
+    let size = match (no_size, path) {
+        (false, Some(p)) => Some(share::compute_size_from_path(p).map_err(error::Register::Io)?),
+        _ => None,
+    };
+    let name = match name {
+        Some(n) => n,
+        None => {
+            let default = path.and_then(|p| p.file_name()).and_then(|n| n.to_str());
+            prompt::prompt_name(no_input, default).map_err(error::Register::Usage)?
+        }
+    };
+    Ok(Pending {
+        cid,
+        name,
+        size,
+        path: path.map(std::path::Path::to_path_buf),
+    })
+}
+
+/// One `name  cid  size` row per artifact, names padded so the CIDs line up.
+/// The size is dropped when no hint was recorded (--no-size).
+fn each_rows(artifacts: &[Pending]) -> Vec<String> {
+    let width = artifacts
+        .iter()
+        .map(|a| a.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    artifacts
+        .iter()
+        .map(|a| {
+            let name = format!("{:width$}", a.name);
+            match a.size {
+                Some(bytes) => format!("  {name}  {}  {}", a.cid, display::human_bytes(bytes)),
+                None => format!("  {name}  {}", a.cid),
+            }
+        })
+        .collect()
+}
+
+/// Resolve --release / --revision / the commit prompt to the release that
+/// artifacts land in, creating it when needed.
+///
+/// Returns ids rather than the open release, so the caller can open it once
+/// and reuse that handle for every artifact it writes.
+#[allow(clippy::too_many_arguments)]
+fn resolve_register_target<G>(
+    release: Option<&str>,
+    revision: Option<&str>,
+    all_authors: bool,
+    no_input: bool,
+    releases: &mut Releases<Repository>,
+    repo: &Repository,
+    profile: &Profile,
+    signer: &G,
+) -> Result<(ReleaseId, Oid), error::Register>
+where
+    G: crypto::Signer,
+{
+    let delegates = repo_delegates(repo)?;
+    let local = Did::from(*profile.id());
+    let aliases = profile;
+
+    match release {
         Some(s) => {
             let release_id = parse_release_id(s, repo)?;
             let release = releases.get_mut(&release_id).map_err(|err| match err {
@@ -496,10 +766,10 @@ where
                 err => error::Register::Find(error::Find::LookupId { release_id, err }),
             })?;
             let oid = *release.oid();
-            (release, oid)
+            Ok((release_id, oid))
         }
         None => {
-            let resolved = match revision.as_deref() {
+            let resolved = match revision {
                 Some(rev) => resolve_ref(rev, repo)?,
                 None => {
                     prompt::pick_commit_or_tag(no_input, repo).map_err(error::Register::Usage)?
@@ -548,61 +818,9 @@ where
                         .map_err(|err| error::Register::Create { oid, err })?,
                 }
             };
-            (release, oid)
-        }
-    };
-    let id = *release.id();
-    match size {
-        Some(bytes) => release
-            .register_artifact_with_size(cid, name.clone(), bytes, signer)
-            .map_err(|err| error::Register::Store { id, err })?,
-        None => release
-            .register_artifact(cid, name.clone(), signer)
-            .map_err(|err| error::Register::Store { id, err })?,
-    };
-    // Machine-readable output: emit only the JSON object on stdout so the
-    // release id and CID are capturable without scraping stderr. Any
-    // --seed progress still goes to stderr, keeping stdout a clean object.
-    if json {
-        let out = display::RegisterReceipt::new(cid, id, oid, size);
-        println!(
-            "{}",
-            serde_json::to_string(&out).map_err(error::Register::Json)?
-        );
-        return Ok((id, cid));
-    }
-
-    let short_oid = &oid.to_string()[..7];
-    let short_id = &id.to_string()[..7];
-    // Report the recorded size hint so the user knows the extra metadata entry
-    // was written.
-    match size {
-        Some(bytes) => eprintln!(
-            "Registered artifact '{name}' ({}) in release {short_id} (commit {short_oid})",
-            display::human_bytes(bytes)
-        ),
-        None => {
-            eprintln!("Registered artifact '{name}' in release {short_id} (commit {short_oid})")
+            Ok((*release.id(), oid))
         }
     }
-    // Skip the discovery hints when --seed is set: the caller is about to
-    // seed and add a location, so they'd be noise.
-    if !seed && std::io::stderr().is_terminal() {
-        eprintln!("Hint: use `rad-artifact location add --release {short_id} --cid {cid} <url>` to add a download location");
-        if let Some(p) = path.as_deref() {
-            eprintln!(
-                "      or `rad-artifact seed {}` to seed it yourself via the local node",
-                p.display()
-            );
-        }
-    }
-    // Bare CID on stdout for scripting (`cid=$(rad-artifact register …)`).
-    // Suppressed in a TTY, where the hint above already prints it, to avoid a
-    // redundant lone-CID line.
-    if !std::io::stdout().is_terminal() {
-        println!("{cid}");
-    }
-    Ok((id, cid))
 }
 
 /// Compute a CID by hashing the file or directory at `path`. Mirrors the
@@ -613,6 +831,158 @@ fn compute_cid_from_path(path: &std::path::Path) -> Result<Cid, error::ComputeCi
         share::compute_content_id(path).map_err(error::ComputeCid::Io)
     } else {
         share::compute_blob_cid(path).map_err(error::ComputeCid::Protocol)
+    }
+}
+
+/// What a `<PATH>` registers as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Plan {
+    /// A single file: one blob CID.
+    Blob,
+    /// A directory: one collection CID over the whole tree.
+    Collection,
+    /// A directory: one blob CID for each file directly inside it.
+    Each,
+    /// A directory, and the user has to choose.
+    Ask,
+}
+
+/// The answer to [`Plan::Ask`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirMode {
+    Collection,
+    Each,
+}
+
+/// Decide what a local `<PATH>` registers as, without touching the terminal.
+///
+/// `interactive` is false with --no-input or when stdin is not a terminal; a
+/// directory then stays one collection, which is what `register <DIR>` has
+/// always done, so existing scripts keep their behaviour. A supplied
+/// -n/--name also means one artifact, so it skips the question.
+fn registration_plan(
+    is_dir: bool,
+    collection: bool,
+    each: bool,
+    named: bool,
+    interactive: bool,
+) -> Result<Plan, String> {
+    match (is_dir, collection, each) {
+        (false, false, false) => Ok(Plan::Blob),
+        (false, _, _) => {
+            Err("--collection and --each apply to a directory; <PATH> is a file".into())
+        }
+        (true, _, true) => Ok(Plan::Each),
+        (true, true, _) => Ok(Plan::Collection),
+        (true, false, false) if interactive && !named => Ok(Plan::Ask),
+        (true, false, false) => Ok(Plan::Collection),
+    }
+}
+
+/// A file directly inside a directory: the name it registers under, where to
+/// read it, and its length.
+struct Member {
+    name: String,
+    path: std::path::PathBuf,
+    bytes: u64,
+}
+
+/// What `--each` passed over in a directory. Reported with the summary,
+/// because an entry that is neither registered nor mentioned looks like an
+/// entry that was never there.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Skipped {
+    /// Subdirectories: --each does not recurse.
+    dirs: usize,
+    /// Entries --each cannot register: anything that is not a regular
+    /// file, or whose name is not UTF-8.
+    other: usize,
+}
+
+impl Skipped {
+    /// One note per reason, in the order a reader meets them. Empty when
+    /// the directory held nothing but registrable files.
+    fn notes(&self) -> Vec<String> {
+        let mut notes = Vec::new();
+        if self.dirs > 0 {
+            let n = self.dirs;
+            let suffix = if n == 1 { "y" } else { "ies" };
+            notes.push(format!(
+                "Note: skipped {n} subdirector{suffix}; --each does not recurse"
+            ));
+        }
+        if self.other > 0 {
+            let n = self.other;
+            let suffix = if n == 1 { "y" } else { "ies" };
+            notes.push(format!(
+                "Note: skipped {n} entr{suffix}: not a regular file, or the name is not UTF-8"
+            ));
+        }
+        notes
+    }
+}
+
+/// Files directly inside `dir`, sorted by name, plus what was passed over.
+///
+/// Unlike [`share::canonical_walk`], which recurses and is what the
+/// collection CID covers, this reads one directory level. That is why the
+/// names cannot collide: a single level cannot hold two entries with the
+/// same name. Symlinks and anything that is not a regular file are skipped,
+/// matching what the collection walk counts as a file.
+fn top_level_members(dir: &std::path::Path) -> Result<(Vec<Member>, Skipped), std::io::Error> {
+    let mut members = Vec::new();
+    let mut skipped = Skipped::default();
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        // `file_type` does not follow symlinks, so a link is never mistaken
+        // for the file or directory it points at.
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            skipped.dirs += 1;
+            continue;
+        }
+        if !kind.is_file() {
+            skipped.other += 1;
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            skipped.other += 1;
+            continue;
+        };
+        members.push(Member {
+            name,
+            path: entry.path(),
+            bytes: entry.metadata()?.len(),
+        });
+    }
+
+    members.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok((members, skipped))
+}
+
+/// The two options the directory question offers, in order. The counts differ
+/// because a collection covers the whole tree and --each covers one level.
+fn dir_mode_labels(tree_files: usize, tree_bytes: u64, top_level: usize) -> [String; 2] {
+    [
+        format!(
+            "one collection artifact ({tree_files} file{}, {})",
+            plural(tree_files),
+            display::human_bytes(tree_bytes)
+        ),
+        format!(
+            "{top_level} separate artifact{} (top-level files only)",
+            plural(top_level)
+        ),
+    ]
+}
+
+/// Plural suffix for a count, so the prompts and summaries read correctly.
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
     }
 }
 
@@ -2157,6 +2527,27 @@ mod prompt {
             .map_err(|e| format!("prompt cancelled: {e}"))
     }
 
+    /// Ask whether a directory registers as one collection artifact or as
+    /// one artifact for each file directly inside it.
+    ///
+    /// Unlike the other prompts here this takes no `no_input`: the question
+    /// has a back-compatible default, so `registration_plan` settles it and
+    /// this is only reached on a terminal.
+    pub fn pick_dir_mode(
+        dir: &std::path::Path,
+        labels: [String; 2],
+    ) -> Result<super::DirMode, String> {
+        let question = format!("Register {} as:", dir.display());
+        let selection = inquire::Select::new(&question, labels.to_vec())
+            .raw_prompt()
+            .map_err(|e| format!("selection cancelled: {e}"))?;
+        Ok(if selection.index == 0 {
+            super::DirMode::Collection
+        } else {
+            super::DirMode::Each
+        })
+    }
+
     /// Prompt for an artifact name at the terminal.
     ///
     /// `default` is presented as a pre-filled value when provided (typically
@@ -2861,9 +3252,16 @@ Examples:
     /// use --no-input in scripts to fail instead of hanging on a prompt).
     /// Use --release to target an existing release directly by its id
     /// (skipping all commit/tag resolution).
+    ///
+    /// A directory can register in two ways: as one collection artifact
+    /// for the whole tree (--collection), or as one artifact for each
+    /// file directly inside it (--each, which does not recurse). With
+    /// neither flag, the CLI asks. With --no-input, or with -n/--name,
+    /// a directory registers as one collection.
     #[derive(Parser)]
     #[clap(
         group = clap::ArgGroup::new("source").required(true).args(["path", "cid"]),
+        group = clap::ArgGroup::new("dir_mode").args(["collection", "each"]),
         after_long_help = "\
 Examples:
   Interactive: compute CID from a file, pick commit/tag, prompt for name:
@@ -2879,7 +3277,10 @@ Examples:
     $ rad-artifact register ./my-binary --release <release-id> --name \"my-binary v1.0\"
 
   Register a precomputed CID without local bytes:
-    $ rad-artifact register --cid baf...abc --revision v1.0 --name \"my-binary v1.0\""
+    $ rad-artifact register --cid baf...abc --revision v1.0 --name \"my-binary v1.0\"
+
+  Register every binary in a build directory as its own artifact:
+    $ rad-artifact register ./target/release --each --revision v1.0"
     )]
     pub struct Register {
         /// Path to the local file or directory to register.
@@ -2910,12 +3311,24 @@ Examples:
         /// local `<PATH>` and a running node; conflicts with --cid.
         #[clap(long, conflicts_with = "cid")]
         pub seed: bool,
-        /// Emit `{cid, releaseId, oid, metadata}` as JSON on stdout instead of
-        /// the human-readable summary, so scripts can capture the release id and
-        /// CID without scraping stderr. `metadata` carries the `sizeBytes` hint
-        /// when recorded, and is empty otherwise.
+        /// Emit `{cid, name, releaseId, oid, metadata}` as JSON on stdout
+        /// instead of the human-readable summary, so scripts can capture the
+        /// release id and CID without scraping stderr. `metadata` carries the
+        /// `sizeBytes` hint when recorded, and is empty otherwise. One object
+        /// per line, so --each emits one line per registered file.
         #[clap(long)]
         pub json: bool,
+        /// Register a directory as one collection artifact: a single CID
+        /// covering the whole tree. This is what a directory does by
+        /// default, so the flag only skips the question.
+        #[clap(long, conflicts_with = "cid")]
+        pub collection: bool,
+        /// Register each file directly inside a directory as its own
+        /// artifact, named by its file name. Does not recurse into
+        /// subdirectories. Conflicts with -n/--name, because each
+        /// artifact takes its own name.
+        #[clap(long, conflicts_with_all = ["cid", "name"])]
+        pub each: bool,
         /// Skip recording the `sizeBytes` metadata hint. By default,
         /// registering from a local `<PATH>` records the artifact's byte
         /// size; with --cid (no local bytes) no size is recorded regardless.
@@ -3709,7 +4122,10 @@ mod tests {
     use radicle::identity::Did;
     use radicle_artifact_core::cid::{blake3_hash_to_cid, ArtifactKind};
 
-    use super::{classify, error, rejection, verify_failure, Candidate, Cid, Untrusted};
+    use super::{
+        classify, dir_mode_labels, each_rows, error, registration_plan, rejection,
+        top_level_members, verify_failure, Candidate, Cid, Pending, Plan, Skipped, Untrusted,
+    };
 
     /// Distinct DIDs keyed by a single byte, so a test can name its
     /// participants. Never used to verify a signature, so the bytes don't
@@ -3921,5 +4337,165 @@ mod tests {
             radicle::identity::doc::DocError::Missing,
         ));
         assert!(verify_failure(cid(), &failed).is_none());
+    }
+
+    // -- `register <DIR>` planning --
+
+    /// `registration_plan` with the terminal available, which is the only
+    /// state where the directory question can be asked.
+    fn plan(is_dir: bool, collection: bool, each: bool, named: bool) -> Result<Plan, String> {
+        registration_plan(is_dir, collection, each, named, true)
+    }
+
+    #[test]
+    fn file_registers_as_one_blob() {
+        assert_eq!(plan(false, false, false, false), Ok(Plan::Blob));
+    }
+
+    #[test]
+    fn directory_prompts_in_a_terminal() {
+        assert_eq!(plan(true, false, false, false), Ok(Plan::Ask));
+    }
+
+    /// The contract with every script written before --each existed: with
+    /// --no-input, or with a piped stdin, a directory is still one collection.
+    #[test]
+    fn no_input_directory_stays_a_collection() {
+        assert_eq!(
+            registration_plan(true, false, false, false, false),
+            Ok(Plan::Collection)
+        );
+    }
+
+    /// One name means one artifact, so there is nothing to ask.
+    #[test]
+    fn named_directory_skips_the_question() {
+        assert_eq!(plan(true, false, false, true), Ok(Plan::Collection));
+    }
+
+    #[test]
+    fn flags_override_the_question() {
+        assert_eq!(plan(true, false, true, false), Ok(Plan::Each));
+        assert_eq!(plan(true, true, false, false), Ok(Plan::Collection));
+    }
+
+    #[test]
+    fn directory_flags_are_rejected_for_a_file() {
+        assert!(plan(false, true, false, false).is_err());
+        assert!(plan(false, false, true, false).is_err());
+    }
+
+    #[test]
+    fn dir_mode_labels_use_the_singular_for_one_file() {
+        let [collection, each] = dir_mode_labels(1, 1024, 1);
+        assert_eq!(collection, "one collection artifact (1 file, 1.0 KiB)");
+        assert_eq!(each, "1 separate artifact (top-level files only)");
+    }
+
+    /// The two counts differ on purpose: a collection covers the whole tree,
+    /// --each covers one level.
+    #[test]
+    fn dir_mode_labels_count_the_tree_and_the_top_level_apart() {
+        let [collection, each] = dir_mode_labels(5, 1024, 3);
+        assert_eq!(collection, "one collection artifact (5 files, 1.0 KiB)");
+        assert_eq!(each, "3 separate artifacts (top-level files only)");
+    }
+
+    // -- `--each` summary rows --
+
+    fn pending(name: &str, size: Option<u64>) -> Pending {
+        Pending {
+            cid: cid(),
+            name: name.to_string(),
+            size,
+            path: None,
+        }
+    }
+
+    #[test]
+    fn each_rows_align_cids() {
+        let rows = each_rows(&[
+            pending("a.bin", Some(1024)),
+            pending("longer.bin", Some(2048)),
+        ]);
+        let full = cid().to_string();
+        assert_eq!(rows[0], format!("  a.bin       {full}  1.0 KiB"));
+        assert_eq!(rows[1], format!("  longer.bin  {full}  2.0 KiB"));
+    }
+
+    #[test]
+    fn each_rows_omit_missing_sizes() {
+        let rows = each_rows(&[pending("a.bin", None)]);
+        assert_eq!(rows[0], format!("  a.bin  {}", cid()));
+    }
+
+    // -- top-level directory walk --
+
+    /// A directory holding `files` at the top level and `dirs` empty
+    /// subdirectories.
+    fn dir_with(files: &[&str], dirs: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        for name in files {
+            std::fs::write(dir.path().join(name), b"data").unwrap();
+        }
+        for name in dirs {
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn top_level_members_skip_subdirectories() {
+        let dir = dir_with(&["a.bin"], &["sub", "other"]);
+        let (members, skipped) = top_level_members(dir.path()).unwrap();
+
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, "a.bin");
+        assert_eq!(members[0].bytes, 4);
+        assert_eq!(skipped.dirs, 2);
+    }
+
+    #[test]
+    fn top_level_members_are_sorted_by_name() {
+        let dir = dir_with(&["c.bin", "a.bin", "b.bin"], &[]);
+        let (members, _) = top_level_members(dir.path()).unwrap();
+
+        let names: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["a.bin", "b.bin", "c.bin"]);
+    }
+
+    /// A tree whose files all sit in subdirectories has nothing for --each to
+    /// register; the caller turns this into a collection or a usage error.
+    #[test]
+    fn top_level_members_is_empty_for_a_nested_only_directory() {
+        let dir = dir_with(&[], &["sub"]);
+        std::fs::write(dir.path().join("sub/deep.bin"), b"data").unwrap();
+        let (members, skipped) = top_level_members(dir.path()).unwrap();
+
+        assert!(members.is_empty());
+        assert_eq!(skipped.dirs, 1);
+    }
+
+    /// A symlink is not a regular file, so --each cannot register it. It
+    /// still has to be counted, or it disappears without a word.
+    #[cfg(unix)]
+    #[test]
+    fn top_level_members_count_what_they_cannot_register() {
+        let dir = dir_with(&["a.bin"], &[]);
+        std::os::unix::fs::symlink(dir.path().join("a.bin"), dir.path().join("link.bin")).unwrap();
+        let (members, skipped) = top_level_members(dir.path()).unwrap();
+
+        assert_eq!(members.len(), 1);
+        assert_eq!(skipped.other, 1);
+    }
+
+    #[test]
+    fn skipped_notes_one_per_reason() {
+        assert!(Skipped::default().notes().is_empty());
+
+        let notes = Skipped { dirs: 1, other: 2 }.notes();
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].contains("1 subdirectory"), "{}", notes[0]);
+        assert!(notes[1].contains("2 entries"), "{}", notes[1]);
     }
 }
