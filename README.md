@@ -174,7 +174,7 @@ Every command accepts these global options, before or after the subcommand:
 - `--no-announce` skips the network announcement after writes.
 - `--no-input` disables interactive prompts (for scripts and CI).
 
-Commands that do not read or write a repository ignore them: `--repo` has no effect on `cid`, `locate` and `node`, and `--no-announce` has no effect on read-only commands such as `list` and `show`.
+Commands that do not read or write a repository ignore them: `--repo` has no effect on `cid`, `locate`, `node` and `watch`, and `--no-announce` has no effect on read-only commands such as `list` and `show`.
 
 `--repo` only needs the repository to be in local storage, so commands work from any directory:
 
@@ -216,6 +216,12 @@ rad-artifact node logs [--follow] [-n <LINES>]                   # tail <home>/a
 
 `rad-artifact seed` and `rad-artifact unseed` are top-level aliases for `rad-artifact node seed` / `node unseed`.
 
+### Watching
+
+```
+rad-artifact watch [RID...] [--budget <SIZE>] [--sweep <SECS>] [--dry-run]  # seed trusted artifacts as peers publish them
+```
+
 ### Reconciling
 
 ```
@@ -242,6 +248,31 @@ Log verbosity is controlled via `RUST_LOG`, which covers both this crate and iro
 The node never writes COB ops — every signed location write (`add_location`, `remove_location`) happens client-side. The daemon's identity (the iroh endpoint id) currently derives from the same Ed25519 secret as your Radicle DID, so `RAD_PASSPHRASE` is required on start when the keystore is encrypted (or the parent CLI will prompt).
 
 `rad-artifact reconcile` compares the node's seeded set to the COB locations under your DID. It auto-adds missing `radiroh://{endpoint_id}` URLs for artifacts you're seeding, and flags drift in the other direction (URLs we left behind, stale endpoint ids) without auto-removing — pass `--remove-orphaned <CID>` or `--remove-orphaned-self` explicitly when you want it gone. It also reports **dangling tags** — CIDs the node is seeding that no release references at all (so no location can anchor to them); reclaim them with `rad-artifact unseed --cid <CID>`.
+
+## Watching for new artifacts
+
+`rad-artifact seed` seeds one artifact you name. `rad-artifact watch` keeps seeding whatever your trusted peers publish, so you can run a mirror: a machine that holds a copy of every artifact a repository's delegates release, and keeps the bytes reachable when the original seeder goes away.
+
+```
+$ rad-artifact watch --budget 50G
+Watching for trusted artifacts (budget 50.0 GiB)
+Now seeding bafkr4ig6iu...wvva; added location to release 3f2a91c
+```
+
+It runs until you interrupt it, so supervise it with launchd or systemd. It needs both nodes up: the Radicle node for the COBs and the event stream, and the artifact node for the bytes.
+
+Two things decide what it seeds:
+
+- **Which repositories** — every repository your Radicle node seeds (`rad seed <RID>`). Name one or more RIDs to narrow it to those. A named repository your node does not seed is an error, because its COBs would never arrive.
+- **Which artifacts** — the same trust rules as `verify`: an artifact registered by a delegate (or by you) in a release a delegate created, and redacted by nobody who counts. Everything else is ignored.
+
+It notices new artifacts two ways. The Radicle node's event stream reports which repositories' refs moved, so an artifact registered by a peer is picked up within seconds of the COB arriving. A full sweep every `--sweep` seconds (15 minutes by default) covers anything that landed while either process was down.
+
+For each artifact it fetches the bytes through your artifact node, tags them as seeded, then adds your `radiroh://` location to the release with a signed COB write and announces it — the same steps as `rad-artifact fetch --seed` followed by a location add.
+
+`--budget <SIZE>` caps the total the node seeds, e.g. `50G`. Once the store reaches it, the watcher reports what it is holding back and stops fetching. Without a budget it seeds everything it trusts, which on a busy repository is a lot; `--dry-run` reports what it would seed and fetches nothing.
+
+The watcher only ever adds. If a delegate redacts an artifact you already seed, drop it with `rad-artifact unseed --cid <CID>`.
 
 ### `radiroh://` location format
 

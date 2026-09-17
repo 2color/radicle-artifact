@@ -88,6 +88,8 @@ pub use cache::db_path as cache_db_path;
 pub mod discovery;
 pub mod display;
 pub mod error;
+pub mod trust;
+pub mod watch;
 
 #[cfg(feature = "sqlite")]
 pub(crate) mod cache;

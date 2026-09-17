@@ -15,6 +15,7 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
+use radicle_artifact::trust::{classify, Candidate, Untrusted};
 use radicle_artifact::*;
 use radicle_artifact_client::{sync::Client, DownloadArgs, FetchArgs};
 use radicle_artifact_core::cid as share;
@@ -24,13 +25,14 @@ use url::Url;
 
 mod node;
 mod reconcile;
+mod watch;
 
 const TIMEOUT: Duration = Duration::from_millis(5000);
 
 /// Per-frame idle bound for a streaming fetch. Larger than the node's own
 /// download idle timeout so the node's "no progress" error reaches us
 /// before this client-side cap fires.
-const FETCH_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+pub(crate) const FETCH_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn main() {
     if let Err(err) = fallible_main() {
@@ -142,7 +144,7 @@ pub(crate) fn open_releases<'a>(
     Releases::open(repo).map_err(|err| error::Releases { rid: repo.id, err })
 }
 
-fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> {
+pub(crate) fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> {
     Ok(repo
         .delegates()
         .map_err(error::Delegates)?
@@ -186,6 +188,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             | Command::Unseed(_)
             | Command::Reconcile(_)
             | Command::Locate(_)
+            | Command::Watch(_)
     ) {
         let profile = load_profile()?;
         let Args {
@@ -205,6 +208,7 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             }
             Command::Reconcile(cmd) => reconcile::run(cmd, repo, &profile).map_err(Into::into),
             Command::Locate(cmd) => run_locate(cmd, &profile).map_err(Into::into),
+            Command::Watch(cmd) => watch::run(cmd, no_announce, &profile).map_err(Into::into),
             _ => unreachable!(),
         };
     }
@@ -317,7 +321,11 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
         Command::Fetch(cmd) => run_fetch(cmd, args.no_input, &profile, &releases, &repo)?,
         Command::Download(cmd) => run_download(cmd, args.no_input, &profile, &releases, &repo)?,
         // handled above
-        Command::Locate(_) | Command::Seed(_) | Command::Unseed(_) | Command::Reconcile(_) => {
+        Command::Locate(_)
+        | Command::Seed(_)
+        | Command::Unseed(_)
+        | Command::Reconcile(_)
+        | Command::Watch(_) => {
             unreachable!()
         }
     }
@@ -1587,66 +1595,6 @@ fn list_releases(
     Ok(())
 }
 
-/// Why a release that registers the CID doesn't count as verification.
-///
-/// Kept so a failed check can report the most useful reason instead of a
-/// flat "not found" — a redaction in particular is something the user
-/// needs to see.
-#[derive(Debug, PartialEq, Eq)]
-enum Untrusted {
-    /// Redacted by the artifact's own author or by a delegate.
-    Redacted(std::collections::BTreeMap<Did, String>),
-    /// Registered by someone who is neither a delegate nor the local user.
-    Author(Did),
-}
-
-/// The trust inputs `verify` reads from one release that registers the CID
-/// being checked. Extracted from the COB so the rules below can be tested
-/// without a repository.
-struct Candidate {
-    /// DID that created the release COB.
-    release_creator: Did,
-    /// DID that registered the artifact within that release.
-    artifact_author: Did,
-    /// Every DID that has redacted the artifact, with its stated reason.
-    redactions: std::collections::BTreeMap<Did, String>,
-}
-
-/// Apply the trust rules `list`/`show` already use (see `display::Filters`)
-/// to a single candidate: the release and the artifact must both be
-/// authored by a delegate or by us, and no trusted party may have redacted
-/// the artifact.
-fn classify(
-    candidate: &Candidate,
-    delegates: &BTreeSet<Did>,
-    local: &Did,
-    all_authors: bool,
-) -> Result<(), Untrusted> {
-    let trusted = |did: &Did| all_authors || delegates.contains(did) || did == local;
-
-    if !trusted(&candidate.release_creator) {
-        return Err(Untrusted::Author(candidate.release_creator));
-    }
-    // A redaction counts when it comes from the artifact's own author or
-    // from a delegate; one from a passing stranger must not block the
-    // check, or anyone on the network could veto a release. `--all-authors`
-    // deliberately does not widen this — it opens up who may *register* an
-    // artifact, not who may withdraw one.
-    let redactions: std::collections::BTreeMap<Did, String> = candidate
-        .redactions
-        .iter()
-        .filter(|(did, _)| **did == candidate.artifact_author || delegates.contains(did))
-        .map(|(did, reason)| (*did, reason.clone()))
-        .collect();
-    if !redactions.is_empty() {
-        return Err(Untrusted::Redacted(redactions));
-    }
-    if !trusted(&candidate.artifact_author) {
-        return Err(Untrusted::Author(candidate.artifact_author));
-    }
-    Ok(())
-}
-
 /// Pick which failure to report when no candidate verified.
 ///
 /// A redaction is a deliberate act by a trusted party, so it outranks "a
@@ -1730,12 +1678,12 @@ fn run_verify(
         let artifact = release
             .artifact(&cid)
             .expect("find_by_cid only returns releases containing the CID");
-        let candidate = Candidate {
-            release_creator: *release.creator(),
-            artifact_author: *artifact.author(),
-            redactions: artifact.redactions().clone(),
-        };
-        match classify(&candidate, &delegates, local, all_authors) {
+        match classify(
+            &Candidate::new(&release, artifact),
+            &delegates,
+            local,
+            all_authors,
+        ) {
             Ok(()) => matched.push(display::VerifyMatch::new(
                 release_id,
                 &release,
@@ -1973,7 +1921,7 @@ fn apply_progress(p: &FetchProgress, pb: &indicatif::ProgressBar) {
 
 /// On `--seed`, the node now serves the bytes; add a discoverable
 /// location with a signed COB write (the node writes no COBs itself).
-fn add_seed_location(
+pub(crate) fn add_seed_location(
     endpoint_id: EndpointId,
     cid: Cid,
     primary_id: ReleaseId,
@@ -2209,7 +2157,7 @@ fn run_unseed(
 /// on resolved endpoint id regardless of how many releases or DIDs contributed
 /// them. URLs whose iroh host fails to parse are skipped with a warning on
 /// stderr so that one bad entry doesn't sink an otherwise-fetchable artifact.
-fn artifact_locations<'a>(
+pub(crate) fn artifact_locations<'a>(
     artifacts: impl IntoIterator<Item = &'a Artifact>,
 ) -> Result<Vec<FetchLocation>, RadArtifactError> {
     let mut seen_urls: BTreeSet<&url::Url> = BTreeSet::new();
@@ -2918,6 +2866,8 @@ enum RadArtifactError {
     Node(#[from] node::Error),
     #[error(transparent)]
     Reconcile(#[from] reconcile::Error),
+    #[error(transparent)]
+    Watch(#[from] watch::Error),
 }
 
 impl RadArtifactError {
@@ -2981,6 +2931,15 @@ mod command {
         Reconcile(crate::reconcile::Cli),
         /// Control the local rad-artifact seeder node.
         Node(crate::node::Cli),
+        /// Seed trusted artifacts automatically as peers publish them.
+        ///
+        /// Runs until interrupted. Reacts to the radicle node's event
+        /// stream, and sweeps every watched repository periodically so
+        /// artifacts that landed while it was down are picked up too. An
+        /// artifact is seeded when it passes the same trust rules as
+        /// `verify`: registered by a delegate (or by you) in a release a
+        /// delegate created, and redacted by nobody who counts.
+        Watch(crate::watch::Cli),
     }
 
     /// Locate a content identifier across every repository in local storage.
@@ -4116,15 +4075,15 @@ mod error {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     use radicle::crypto::PublicKey;
     use radicle::identity::Did;
     use radicle_artifact_core::cid::{blake3_hash_to_cid, ArtifactKind};
 
     use super::{
-        classify, dir_mode_labels, each_rows, error, registration_plan, rejection,
-        top_level_members, verify_failure, Candidate, Cid, Pending, Plan, Skipped, Untrusted,
+        dir_mode_labels, each_rows, error, registration_plan, rejection, top_level_members,
+        verify_failure, Cid, Pending, Plan, Skipped, Untrusted,
     };
 
     /// Distinct DIDs keyed by a single byte, so a test can name its
@@ -4140,130 +4099,7 @@ mod tests {
     }
 
     const DELEGATE: u8 = 1;
-    const OTHER_DELEGATE: u8 = 2;
-    const LOCAL: u8 = 3;
     const STRANGER: u8 = 4;
-
-    fn delegates() -> BTreeSet<Did> {
-        BTreeSet::from([did(DELEGATE), did(OTHER_DELEGATE)])
-    }
-
-    /// A candidate a delegate created and registered, with no redactions.
-    fn trusted_candidate() -> Candidate {
-        Candidate {
-            release_creator: did(DELEGATE),
-            artifact_author: did(DELEGATE),
-            redactions: BTreeMap::new(),
-        }
-    }
-
-    fn check(candidate: &Candidate, all_authors: bool) -> Result<(), Untrusted> {
-        classify(candidate, &delegates(), &did(LOCAL), all_authors)
-    }
-
-    #[test]
-    fn delegate_registered_artifact_verifies() {
-        assert_eq!(check(&trusted_candidate(), false), Ok(()));
-    }
-
-    #[test]
-    fn stranger_authored_artifact_is_rejected() {
-        let candidate = Candidate {
-            artifact_author: did(STRANGER),
-            ..trusted_candidate()
-        };
-        assert_eq!(
-            check(&candidate, false),
-            Err(Untrusted::Author(did(STRANGER)))
-        );
-        // `--all-authors` is exactly the opt-in for this case.
-        assert_eq!(check(&candidate, true), Ok(()));
-    }
-
-    #[test]
-    fn stranger_created_release_is_rejected() {
-        let candidate = Candidate {
-            release_creator: did(STRANGER),
-            ..trusted_candidate()
-        };
-        assert_eq!(
-            check(&candidate, false),
-            Err(Untrusted::Author(did(STRANGER)))
-        );
-        assert_eq!(check(&candidate, true), Ok(()));
-    }
-
-    #[test]
-    fn own_artifact_verifies_without_all_authors() {
-        // The local user is not a delegate here, but must still be able to
-        // verify what they registered themselves.
-        let candidate = Candidate {
-            release_creator: did(LOCAL),
-            artifact_author: did(LOCAL),
-            redactions: BTreeMap::new(),
-        };
-        assert_eq!(check(&candidate, false), Ok(()));
-    }
-
-    #[test]
-    fn delegate_redaction_is_rejected() {
-        let candidate = Candidate {
-            redactions: BTreeMap::from([(did(OTHER_DELEGATE), "compromised".to_owned())]),
-            ..trusted_candidate()
-        };
-        let err = check(&candidate, false).unwrap_err();
-        assert_eq!(
-            err,
-            Untrusted::Redacted(BTreeMap::from([(
-                did(OTHER_DELEGATE),
-                "compromised".to_owned()
-            )]))
-        );
-        // A redaction is a withdrawal by a trusted party; --all-authors
-        // widens who may register an artifact, not who may withdraw one.
-        assert!(check(&candidate, true).is_err());
-    }
-
-    #[test]
-    fn self_redaction_is_rejected() {
-        let candidate = Candidate {
-            redactions: BTreeMap::from([(did(DELEGATE), "bad build".to_owned())]),
-            ..trusted_candidate()
-        };
-        assert!(matches!(
-            check(&candidate, false),
-            Err(Untrusted::Redacted(_))
-        ));
-    }
-
-    #[test]
-    fn stranger_redaction_does_not_block() {
-        // Redacting is open to anyone on the network, so honouring an
-        // untrusted redaction would let any peer veto a release.
-        let candidate = Candidate {
-            redactions: BTreeMap::from([(did(STRANGER), "trust me".to_owned())]),
-            ..trusted_candidate()
-        };
-        assert_eq!(check(&candidate, false), Ok(()));
-    }
-
-    #[test]
-    fn only_trusted_redactions_are_reported() {
-        let candidate = Candidate {
-            redactions: BTreeMap::from([
-                (did(STRANGER), "noise".to_owned()),
-                (did(OTHER_DELEGATE), "real reason".to_owned()),
-            ]),
-            ..trusted_candidate()
-        };
-        let Err(Untrusted::Redacted(reported)) = check(&candidate, false) else {
-            panic!("expected a redaction");
-        };
-        assert_eq!(
-            reported,
-            BTreeMap::from([(did(OTHER_DELEGATE), "real reason".to_owned())])
-        );
-    }
 
     #[test]
     fn redaction_outranks_untrusted_author() {

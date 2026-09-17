@@ -53,6 +53,15 @@ _Avoid_: fetch (that's store-only).
 Check that a local file's CID matches an Artifact registered in a Release, applying the same delegate and redaction rules as `list`/`show`. Answers "did a delegate publish exactly these bytes?" Local and read-only: it needs the repository in storage, but no seeding node, no network, and no signer. Where `show` hides a redacted Artifact, Verify fails on one — hiding suits browsing, not verification.
 _Avoid_: check, validate; don't conflate with Attest (a claim recorded for others, which rehashes nothing) or with the CID check inside Fetch (transport integrity, not trust).
 
+**Watch** (verb):
+Run a process that Seeds every trusted Artifact as peers publish it —
+the only place in this project where network discovery happens, which is
+why Locate must not borrow the word. Scoped to the repositories the
+radicle node seeds, and to Artifacts that pass Verify's trust rules. It
+composes Fetch and Add: `rad-artifact watch`.
+_Avoid_: mirror, follow, sync (Sync is the radicle round-trip below);
+don't use "watch" for a one-shot read such as `list`.
+
 **Locate** (verb):
 Query, across every repository in local storage, where an Artifact can be found — the node-wide read over Locations, keyed by CID. Returns the discovery Locations by default, or the Releases that contain the CID with `--releases`. Read-only and local: it reads COBs already in storage and never touches the network.
 _Avoid_: find (reserved for the per-repo lookup — one repository, not node-wide); discover (implies network/peer discovery, which Locate never does); search.
@@ -103,6 +112,7 @@ _Avoid_: stale location (a Stale Endpoint is the distinct case where the URL is 
 - An **Artifact** has zero or more **Locations**, grouped by contributor **DID**
 - **Locate** answers, for a **CID**, every **Location** (and every **Release** that holds it) across all repositories in local storage
 - A **Seeded Tag** should correspond to an **Artifact** in some **Release**; when it doesn't, it is a **Dangling Tag**
+- **Watching** repeats **Fetch** + **Seed** + **Add** for every trusted **Artifact** a peer publishes, so a node mirrors a repository without being told each **CID**
 - **Seeding** and **Adding** a Location are the two halves of making an artifact available over iroh: a node seeds the bytes and adds the `radiroh://` **Location** so peers can discover it; the two drift apart as **Dangling Tags** (seeded, no Location) and **Orphaned Locations** (Location added, no longer seeded)
 
 [COB]: https://radicle.dev/guides/protocol#collaborative-objects

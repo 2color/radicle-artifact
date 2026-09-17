@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Seed trusted artifacts automatically with `rad-artifact watch`
+
+Seeding used to be one artifact at a time: you named a path, the node took the bytes. `rad-artifact watch` keeps seeding whatever your trusted peers publish, so a machine can mirror a repository's releases and help increase the redundancy of artifacts.
+
+This is a great way to give back and supports projects you care about.
+
+```sh
+$ rad-artifact watch --budget 50G
+Watching for trusted artifacts (budget 50.0 GiB)
+Now seeding bafkr4ig6iu...wvva; added location to release 3f2a91c
+```
+
+It watches every repository your Radicle node seeds and can be narrowed with the `--repo`:
+
+```sh
+rad artifact watch --repo rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv
+```
+
+Trusted artifacts are ones registered by a delegate (or you) in a release a delegate created that haven't been redacted by a delegate (or their author). The trust rules are the same as `verify` and `list` have been moved a library of its own `radicle_artifact::trust` to reduce duplication.
+
+New artifacts arrive two ways. The Radicle node's event stream says which repositories' refs moved, so a peer's registration is picked up within seconds of the COB landing; a full sweep every `--sweep` seconds (15 minutes by default) catches whatever appeared while either process was down.
+
+`--budget <SIZE>` caps the total the node seeds, e.g. `50G`; `--dry-run` reports what it would seed and fetches nothing. The command runs until interrupted, so supervise it with launchd or systemd, and keep both the Radicle node and the artifact node up.
+
 ### Register a folder as separate artifacts
 
 `rad-artifact register <DIR>` used to have one behaviour: hash the whole tree into a single collection CID and write one artifact. That is right when the folder is the artifact, and wrong when the folder is only where several artifacts sit, e.g. the binaries from a build.
