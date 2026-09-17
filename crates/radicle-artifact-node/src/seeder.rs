@@ -291,6 +291,16 @@ pub async fn import_collection(
     Ok((hash, root_tag))
 }
 
+/// The store-level value a CID's tag points at: a raw blob or a hash
+/// sequence, per the CID's kind. Shared by the tag writer and the
+/// completeness check so both describe the same content.
+fn tag_value(cid: &Cid, hash: Hash) -> Result<HashAndFormat, Error> {
+    Ok(match cid_utils::artifact_kind(cid)? {
+        ArtifactKind::Blob => HashAndFormat::raw(hash),
+        ArtifactKind::Collection => HashAndFormat::hash_seq(hash),
+    })
+}
+
 /// Mark a `(rid, release, cid)` triple as actively seeded.
 ///
 /// Sets the `seeded/{rid}/{release}/{cid}` tag pointing at `hash` with the
@@ -303,11 +313,7 @@ pub async fn tag_seeded(
     cid: &Cid,
     hash: Hash,
 ) -> Result<(), Error> {
-    let kind = cid_utils::artifact_kind(cid)?;
-    let value = match kind {
-        ArtifactKind::Blob => HashAndFormat::raw(hash),
-        ArtifactKind::Collection => HashAndFormat::hash_seq(hash),
-    };
+    let value = tag_value(cid, hash)?;
     store
         .tags()
         .set(seeded_tag(rid, release, cid), value)
@@ -520,6 +526,17 @@ pub async fn artifact_size_for(store: &Store, cid: &Cid, hash: Hash) -> u64 {
             Err(_) => 0,
         },
     }
+}
+
+/// Whether the store holds every byte of an already-resolved `(cid, hash)`.
+///
+/// This is a metadata check: it trusts the bitfield written when the bytes
+/// landed (bao-verified at that point) and never re-reads the files, so
+/// on-disk corruption still reports complete.
+pub async fn artifact_is_complete(store: &Store, cid: &Cid, hash: Hash) -> Option<bool> {
+    let value = tag_value(cid, hash).ok()?;
+    let info = store.remote().local(value).await.ok()?;
+    Some(info.is_complete())
 }
 
 async fn blob_size(store: &Store, hash: Hash) -> u64 {

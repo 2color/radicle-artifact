@@ -324,6 +324,13 @@ pub struct SeededEntry {
     /// Logical artifact size in bytes. Best-effort — zero if the iroh
     /// status call temporarily fails.
     pub bytes: u64,
+    /// Whether the store actually holds every byte. A seeded tag records
+    /// intent, so it can outlive the bytes it points at (a wiped store, a
+    /// restored backup); this reports what is on disk. `None` means the
+    /// lookup failed, or the node predates the field — treat it as
+    /// unknown, never as missing.
+    #[serde(default)]
+    pub complete: Option<bool>,
 }
 
 /// Result of [`Command::Has`].
@@ -678,10 +685,14 @@ mod tests {
             json!({"rid": SAMPLE_RID, "cid": cid.to_string(), "wasRemoved": false})
         );
 
-        let entry = SeededEntry { cid, bytes: 1024 };
+        let entry = SeededEntry {
+            cid,
+            bytes: 1024,
+            complete: Some(true),
+        };
         assert_eq!(
             serde_json::to_value(&entry).unwrap(),
-            json!({"cid": cid.to_string(), "bytes": 1024})
+            json!({"cid": cid.to_string(), "bytes": 1024, "complete": true})
         );
     }
 

@@ -877,7 +877,14 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
     let mut out = Vec::with_capacity(cids.len());
     for (cid, hash) in cids {
         let bytes = seeder::artifact_size_for(store, &cid, hash).await;
-        out.push(SeededEntry { cid, bytes });
+        // The tag says we mean to seed this; ask the store whether the
+        // bytes are still there to back it up.
+        let complete = seeder::artifact_is_complete(store, &cid, hash).await;
+        out.push(SeededEntry {
+            cid,
+            bytes,
+            complete,
+        });
     }
     ok_json(out)
 }

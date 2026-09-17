@@ -31,6 +31,8 @@ New artifacts arrive two ways. The Radicle node's event stream says which reposi
 
 `--budget <SIZE>` caps the total the node seeds, e.g. `50G`; `--dry-run` reports what it would seed and fetches nothing. The command runs until interrupted, so supervise it with launchd or systemd, and keep both the Radicle node and the artifact node up.
 
+Because `watch` seeds unattended, you rarely see the bytes arrive. `rad-artifact node list` now reports whether the store holds each artifact, not only that a tag says the node seeds it. A tag records the intent to seed and can outlive the bytes it names, for example after you wipe the store or restore it from a backup. The listing marks a row the store cannot back up, so one command tells you whether the machine can serve what it advertises.
+
 ### Register a folder as separate artifacts
 
 `rad-artifact register <DIR>` used to have one behaviour: hash the whole tree into a single collection CID and write one artifact. That is right when the folder is the artifact, and wrong when the folder is only where several artifacts sit, e.g. the binaries from a build.

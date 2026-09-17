@@ -312,10 +312,32 @@ fn list(cmd: ListArgs, repo_override: Option<RepoId>, profile: &Profile) -> Resu
         return Ok(());
     }
     println!("🌱 Seeding {} artifact(s) for {rid}:", entries.len());
-    for entry in entries {
-        println!("  {} ({})", entry.cid, human_bytes(entry.bytes));
+    for entry in &entries {
+        println!("  {}", seeded_line(entry));
     }
     Ok(())
+}
+
+/// Render one `node list` row.
+///
+/// A tag only records the intent to seed, so a row whose bytes the store
+/// can't back up is annotated.
+fn seeded_line(entry: &SeededEntry) -> String {
+    match entry.complete {
+        Some(true) => format!("{} ({})", entry.cid, human_bytes(entry.bytes)),
+        Some(false) => format!(
+            "{} ⚠ incomplete — only {} in the store",
+            entry.cid,
+            human_bytes(entry.bytes)
+        ),
+        // Unknown, not missing: an older node omits the field, and a
+        // momentary store error reads the same way.
+        None => format!(
+            "{} ({}) ⚠ completeness unknown",
+            entry.cid,
+            human_bytes(entry.bytes)
+        ),
+    }
 }
 
 fn seed(
@@ -735,5 +757,55 @@ fn humanize_uptime(started_at_unix: i64) -> String {
         format!("{}h {}m ago", secs / 3600, (secs % 3600) / 60)
     } else {
         format!("{}d ago", secs / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cid() -> Cid {
+        share::blake3_hash_to_cid(
+            blake3::hash(b"seeded-line-sample"),
+            share::ArtifactKind::Blob,
+        )
+    }
+
+    #[test]
+    fn complete_row_is_unadorned() {
+        let entry = SeededEntry {
+            cid: cid(),
+            bytes: 2048,
+            complete: Some(true),
+        };
+        assert_eq!(seeded_line(&entry), format!("{} (2.0 KiB)", cid()));
+    }
+
+    #[test]
+    fn incomplete_row_reports_what_is_there() {
+        let entry = SeededEntry {
+            cid: cid(),
+            bytes: 1024,
+            complete: Some(false),
+        };
+        assert_eq!(
+            seeded_line(&entry),
+            format!("{} ⚠ incomplete — only 1.0 KiB in the store", cid())
+        );
+    }
+
+    /// A node that predates the field, or a store hiccup, must not read as
+    /// "bytes missing".
+    #[test]
+    fn unknown_row_says_unknown() {
+        let entry = SeededEntry {
+            cid: cid(),
+            bytes: 1024,
+            complete: None,
+        };
+        assert_eq!(
+            seeded_line(&entry),
+            format!("{} (1.0 KiB) ⚠ completeness unknown", cid())
+        );
     }
 }
