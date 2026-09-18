@@ -81,6 +81,31 @@ $ rad-artifact list --repo rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv
 
 When the current directory is not a Radicle repository, the error now points at `--repo`. Commands that do not read or write a repository ignore it: `--repo` has no effect on `cid`, `locate` and `node`. `reconcile` rejects `--all-repos` combined with `--repo`.
 
+### Added
+
+* `c54850b` **cli:** accept -r, --repo <RID> on every command *<daniel@norman.life>*
+* `0128b58` **node:** add relay and pkarr redundancy [**breaking**] *<daniel@norman.life>*
+* `2e9cdee` **cli:** add verify command *<daniel@norman.life>*
+* `91614a9` **cli:** register folder files individually *<daniel@norman.life>*
+* `5f47cc8` **cli:** add `watch` command for auto-seeding *<daniel@norman.life>*
+* `ed399f3` **node:** report seeded byte completeness *<daniel@norman.life>*
+* `fbe1e00` add rad art alias *<daniel@norman.life>*
+
+### Changed
+
+* `829395d` **deps:** upgrade iroh *<daniel@norman.life>*
+* `66ff279` (deps): upgrade deps *<daniel@norman.life>*
+
+### Docs
+
+* `f9b7cb1` fix link *<daniel@norman.life>*
+* `482409a` update changelog *<daniel@norman.life>*
+
+### Other
+
+* `ecc898c` run cargo-audit *<daniel@norman.life>*
+* `0393c31` **cli:** cover verify trust rules *<daniel@norman.life>*
+
 ## [0.18.0] - 2026-08-03
 
 This release contians a number of improvements, radicle dependency upgrade, and some fixes.
