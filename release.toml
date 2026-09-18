@@ -1,6 +1,6 @@
 allow-branch = [
     "main",
-    "!HEAD",
+    "HEAD",
 ]
 sign-commit = true
 sign-tag = true
