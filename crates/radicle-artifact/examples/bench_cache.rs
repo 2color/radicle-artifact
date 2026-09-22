@@ -112,10 +112,17 @@ fn run_reads<'r>(
     vec![
         {
             let (_keep, releases) = make();
-            let (mean, cold) = bench("count", 10, show_cold, || {
-                black_box(releases.count().unwrap());
+            let (mean, cold) = bench("count_refs", 10, show_cold, || {
+                black_box(releases.count_refs().unwrap());
             });
-            ("count", mean, cold)
+            ("count_refs", mean, cold)
+        },
+        {
+            let (_keep, releases) = make();
+            let (mean, cold) = bench("counts", 10, show_cold, || {
+                black_box(releases.counts().unwrap());
+            });
+            ("counts", mean, cold)
         },
         {
             let (_keep, releases) = make();

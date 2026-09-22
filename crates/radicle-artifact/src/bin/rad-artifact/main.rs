@@ -11,7 +11,7 @@ use radicle::{
     git::Oid,
     identity::Did,
     node::{AliasStore, Handle, Node},
-    prelude::{Profile, ReadRepository, ReadStorage, RepoId, WriteRepository},
+    prelude::{Profile, ReadStorage, RepoId, WriteRepository},
     profile,
     storage::git::Repository,
 };
@@ -142,14 +142,6 @@ pub(crate) fn open_releases<'a>(
 ) -> Result<Releases<'a, Repository>, error::Releases> {
     log::debug!(target: "artifact", "built without the sqlite feature: artifact cache disabled");
     Releases::open(repo).map_err(|err| error::Releases { rid: repo.id, err })
-}
-
-pub(crate) fn repo_delegates(repo: &Repository) -> Result<BTreeSet<Did>, error::Delegates> {
-    Ok(repo
-        .delegates()
-        .map_err(error::Delegates)?
-        .into_iter()
-        .collect())
 }
 
 /// Visibility rule for a release: by default show delegate-authored or
@@ -306,14 +298,21 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
             }
         }
         Command::Show(cmd) => {
-            let delegates = repo_delegates(&repo)?;
             let local = Did::from(*profile.id());
-            show_release(cmd, &releases, &repo, &delegates, &local, &profile)?;
+            show_release(
+                cmd,
+                &releases,
+                &repo,
+                releases.delegates(),
+                &local,
+                &profile,
+            )?;
         }
         Command::List(cmd) => {
             let local = Did::from(*profile.id());
             list_releases(cmd, &releases, &repo, &local, &profile)?;
         }
+        Command::Stats(cmd) => run_stats(cmd, &releases)?,
         Command::Verify(cmd) => {
             let local = Did::from(*profile.id());
             run_verify(cmd, &releases, &repo, &local, &profile)?;
@@ -762,7 +761,7 @@ fn resolve_register_target<G>(
 where
     G: crypto::Signer,
 {
-    let delegates = repo_delegates(repo)?;
+    let delegates = releases.delegates().clone();
     let local = Did::from(*profile.id());
     let aliases = profile;
 
@@ -1011,7 +1010,7 @@ fn location_add<G>(
 where
     G: crypto::Signer,
 {
-    let delegates = repo_delegates(repo)?;
+    let delegates = releases.delegates().clone();
     let local = Did::from(*profile.id());
     let release_arg = release.as_deref();
     let revision_arg = revision.as_deref();
@@ -1088,7 +1087,7 @@ fn attest_artifact<G>(
 where
     G: crypto::Signer,
 {
-    let delegates = repo_delegates(repo)?;
+    let delegates = releases.delegates().clone();
     let local = Did::from(*profile.id());
     let release = release.as_deref();
     let revision = revision.as_deref();
@@ -1151,7 +1150,7 @@ fn redact_artifact<G>(
 where
     G: crypto::Signer,
 {
-    let delegates = repo_delegates(repo)?;
+    let delegates = releases.delegates().clone();
     let local = Did::from(*profile.id());
     let release = release.as_deref();
     let revision = revision.as_deref();
@@ -1291,7 +1290,7 @@ fn metadata_set<G>(
 where
     G: crypto::Signer,
 {
-    let delegates = repo_delegates(repo)?;
+    let delegates = releases.delegates().clone();
     let (id, cid) = resolve_metadata_target(
         release.as_deref(),
         revision.as_deref(),
@@ -1340,7 +1339,7 @@ fn metadata_unset<G>(
 where
     G: crypto::Signer,
 {
-    let delegates = repo_delegates(repo)?;
+    let delegates = releases.delegates().clone();
     let (id, cid) = resolve_metadata_target(
         release.as_deref(),
         revision.as_deref(),
@@ -1379,7 +1378,7 @@ fn location_remove<G>(
 where
     G: crypto::Signer,
 {
-    let delegates = repo_delegates(repo)?;
+    let delegates = releases.delegates().clone();
     let local = Did::from(*profile.id());
     let release_arg = release.as_deref();
     let revision_arg = revision.as_deref();
@@ -1556,13 +1555,9 @@ fn list_releases(
     local: &Did,
     aliases: &impl AliasStore,
 ) -> Result<(), error::List> {
-    // Delegates drive both the redaction and author filters, so always
-    // fetch them; the flags below bypass each filter independently.
-    let delegates: BTreeSet<_> = repo
-        .delegates()
-        .map_err(error::List::Delegates)?
-        .into_iter()
-        .collect();
+    // Delegates drive both the redaction and author filters; the flags
+    // below bypass each filter independently.
+    let delegates = releases.delegates();
     let iter = releases
         .all()
         .map_err(error::List::All)?
@@ -1576,9 +1571,9 @@ fn list_releases(
                 None
             }
         })
-        .filter(|(_, release)| release_visible(release, &delegates, local, all_authors));
+        .filter(|(_, release)| release_visible(release, delegates, local, all_authors));
     let filters = display::Filters {
-        delegates: &delegates,
+        delegates,
         redacted,
         all_authors,
         local: Some(local),
@@ -1590,6 +1585,27 @@ fn list_releases(
         println!(
             "{}",
             serde_json::to_string_pretty(&releases).map_err(error::List::Json)?
+        );
+    }
+    Ok(())
+}
+
+/// Report repository-wide figures.
+///
+/// The delegate set is resolved here and handed to `counts`, so the
+/// figures use the same trust view as `list` in the same working copy.
+fn run_stats(
+    command::Stats { pretty, json }: command::Stats,
+    releases: &Releases<Repository>,
+) -> Result<(), error::Stats> {
+    let counts = releases.counts().map_err(error::Stats::Counts)?;
+    let stats = display::Stats::new(&counts);
+    if use_pretty(pretty, json) {
+        print!("{}", stats.pretty(pretty_style(false)));
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&stats).map_err(error::Stats::Json)?
         );
     }
     Ok(())
@@ -1654,11 +1670,7 @@ fn run_verify(
     local: &Did,
     aliases: &impl AliasStore,
 ) -> Result<(), error::Verify> {
-    let delegates: BTreeSet<_> = repo
-        .delegates()
-        .map_err(error::Verify::Delegates)?
-        .into_iter()
-        .collect();
+    let delegates = releases.delegates();
     let cid = compute_cid_from_path(&path)?;
 
     // Keyed by the CID we just computed, so the file itself picks the
@@ -1680,7 +1692,7 @@ fn run_verify(
             .expect("find_by_cid only returns releases containing the CID");
         match classify(
             &Candidate::new(&release, artifact),
-            &delegates,
+            delegates,
             local,
             all_authors,
         ) {
@@ -2837,6 +2849,8 @@ enum RadArtifactError {
     #[error(transparent)]
     List(#[from] error::List),
     #[error(transparent)]
+    Stats(#[from] error::Stats),
+    #[error(transparent)]
     Verify(#[from] error::Verify),
     #[error(transparent)]
     Locations(#[from] error::Locations),
@@ -2858,8 +2872,6 @@ enum RadArtifactError {
     Find(#[from] error::Find),
     #[error(transparent)]
     Resolve(#[from] error::Resolve),
-    #[error(transparent)]
-    Delegates(#[from] error::Delegates),
     #[error(transparent)]
     Share(#[from] error::Share),
     #[error(transparent)]
@@ -2904,6 +2916,7 @@ mod command {
         Metadata(Metadata),
         Show(Show),
         List(List),
+        Stats(Stats),
         /// Check a local file against the artifacts registered in this repository.
         Verify(Verify),
         /// Locate a content identifier across every repository in local storage.
@@ -3652,6 +3665,39 @@ Examples:
         pub empty: bool,
     }
 
+    /// Report repository-wide artifact statistics.
+    ///
+    /// Today it reports release counts, split by whether a repository
+    /// delegate created the release and whether it still has an artifact
+    /// to show. A release is hidden when every artifact in it has been
+    /// redacted by a trusted party, or when it has no artifacts at all.
+    ///
+    /// Unlike a ref walk, this materializes every release, so it is
+    /// served from the cache where one is available.
+    ///
+    /// Further figures will be added as fields, so a script reading the
+    /// JSON keeps working.
+    #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Show the counts for the current repository:
+    $ rad-artifact stats
+
+  Machine-readable figures:
+    $ rad-artifact stats --json")]
+    pub struct Stats {
+        /// Format output in a human-readable way.
+        ///
+        /// This is the default when stdout is a terminal.
+        #[clap(long)]
+        pub pretty: bool,
+        /// Force JSON output.
+        ///
+        /// This is the default when stdout is not a terminal (e.g. piped).
+        #[clap(long, conflicts_with = "pretty")]
+        pub json: bool,
+    }
+
     /// Check a local file against the artifacts registered in this
     /// repository's releases.
     ///
@@ -3718,9 +3764,15 @@ mod error {
     pub enum List {
         #[error("failed to list releases")]
         All(#[source] cob::store::Error),
-        #[error("failed to get repository delegates")]
-        Delegates(#[source] RepositoryError),
         #[error("failed to list releases, could not serialize to JSON")]
+        Json(#[source] serde_json::Error),
+    }
+
+    #[derive(Debug, Error)]
+    pub enum Stats {
+        #[error("failed to count releases")]
+        Counts(#[source] cob::store::Error),
+        #[error("failed to report stats, could not serialize to JSON")]
         Json(#[source] serde_json::Error),
     }
 
@@ -3747,8 +3799,6 @@ mod error {
             #[source]
             err: Box<cob::store::Error>,
         },
-        #[error("failed to get repository delegates")]
-        Delegates(#[source] RepositoryError),
         #[error("no artifact with CID {cid} is registered in any release of {rid}")]
         NoMatch { cid: String, rid: RepoId },
         #[error(
@@ -3772,7 +3822,7 @@ mod error {
         pub fn exit_code(&self) -> i32 {
             match self {
                 Self::NoMatch { .. } | Self::Redacted { .. } | Self::UntrustedAuthor { .. } => 2,
-                Self::ComputeCid(_) | Self::Lookup { .. } | Self::Delegates(_) | Self::Json(_) => 1,
+                Self::ComputeCid(_) | Self::Lookup { .. } | Self::Json(_) => 1,
             }
         }
     }
@@ -3824,8 +3874,6 @@ mod error {
         Resolve(#[from] Resolve),
         #[error(transparent)]
         Find(#[from] Find),
-        #[error(transparent)]
-        Delegates(#[from] Delegates),
         #[error("commit {oid} has {} existing release(s) that need disambiguation; pass --release <id> to pick one (candidates: {})", candidates.len(), display_ids(candidates))]
         NeedsDisambiguation {
             oid: Oid,
@@ -3866,8 +3914,6 @@ mod error {
         ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
-        #[error(transparent)]
-        Delegates(#[from] Delegates),
         #[error("failed to add location to release {id}")]
         Store {
             id: ReleaseId,
@@ -3884,8 +3930,6 @@ mod error {
         ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
-        #[error(transparent)]
-        Delegates(#[from] Delegates),
         #[error("failed to attest artifact in release {id}")]
         Store {
             id: ReleaseId,
@@ -3902,8 +3946,6 @@ mod error {
         ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
-        #[error(transparent)]
-        Delegates(#[from] Delegates),
         #[error("failed to redact artifact in release {id}")]
         Artifact {
             id: ReleaseId,
@@ -3926,8 +3968,6 @@ mod error {
         ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
-        #[error(transparent)]
-        Delegates(#[from] Delegates),
         #[error("artifact {cid} not found in release {id}")]
         UnknownCid { id: ReleaseId, cid: Cid },
         #[error("not authorized to manage metadata on artifact {cid}: only the artifact author ({artifact_author}) or a repository delegate may. local DID is {local}")]
@@ -3959,8 +3999,6 @@ mod error {
         ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
-        #[error(transparent)]
-        Delegates(#[from] Delegates),
         #[error("failed to remove location from release {id}")]
         Store {
             id: ReleaseId,
@@ -4014,10 +4052,6 @@ mod error {
         #[source]
         pub err: radicle::git::raw::Error,
     }
-
-    #[derive(Debug, Error)]
-    #[error("failed to get repository delegates")]
-    pub struct Delegates(#[source] pub RepositoryError);
 
     #[derive(Debug, Error)]
     pub enum Repository {
@@ -4138,10 +4172,8 @@ mod tests {
             2
         );
         assert_eq!(
-            error::Verify::Delegates(radicle::storage::RepositoryError::Doc(
-                radicle::identity::doc::DocError::Missing
-            ))
-            .exit_code(),
+            error::Verify::from(error::ComputeCid::Io(std::io::Error::other("unreadable")))
+                .exit_code(),
             1
         );
     }
@@ -4169,9 +4201,8 @@ mod tests {
         assert_eq!(json["redactions"][did(DELEGATE).to_string()], "compromised");
 
         // "Could not verify" is not a verdict, so it carries no payload.
-        let failed = error::Verify::Delegates(radicle::storage::RepositoryError::Doc(
-            radicle::identity::doc::DocError::Missing,
-        ));
+        let failed =
+            error::Verify::from(error::ComputeCid::Io(std::io::Error::other("unreadable")));
         assert!(verify_failure(cid(), &failed).is_none());
     }
 

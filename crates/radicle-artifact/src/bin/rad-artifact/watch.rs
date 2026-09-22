@@ -33,8 +33,7 @@ use radicle_artifact_core::protocol::FetchLocation;
 use thiserror::Error;
 
 use crate::{
-    add_seed_location, announce, artifact_locations, node, open_releases, repo_delegates,
-    FETCH_IDLE_TIMEOUT,
+    add_seed_location, announce, artifact_locations, node, open_releases, FETCH_IDLE_TIMEOUT,
 };
 
 /// How long to wait before re-subscribing after the Radicle node's event
@@ -327,19 +326,19 @@ fn process_repo(rid: RepoId, ctx: &Ctx<'_>, profile: &Profile) -> Result<(), Err
             rid,
             err: e.to_string(),
         })?;
-    let delegates = repo_delegates(&repo).map_err(|e| Error::Usage(e.to_string()))?;
 
     // Snapshot the releases so the store borrow ends before we write
     // Locations back into it.
-    let releases: Vec<(ReleaseId, Release)> = {
+    let (delegates, releases): (_, Vec<(ReleaseId, Release)>) = {
         let store = open_releases(&repo, profile).map_err(|e| Error::Usage(e.to_string()))?;
-        store
+        let releases = store
             .all()
             .map_err(|e| Error::Usage(e.to_string()))?
             .into_iter()
             .filter_map(Result::ok)
             .map(|(oid, release)| (ReleaseId::from(oid), release))
-            .collect()
+            .collect();
+        (store.delegates().clone(), releases)
     };
 
     // One question for the whole repo rather than one per CID.

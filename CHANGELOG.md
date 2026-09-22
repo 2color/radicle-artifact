@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Bucketed release counts
+
+A new `Releases::counts` function returns the release counts bucketed by creator trust (whether it was created by a deledgate) and artifact redaction.
+
+Note that unlike the `count_refs` (previously `count`), `counts` materializes the COBs from action, and can be expensive on a cold cache (see the [benchmarks](./docs/cache-benchmarks.md) for actual numbers). This initial cost is paid off in any subsequent release iteration which would be served from a warm cache.
+
+The following table is a helpful guide for how releases are bucketed.
+
+| Release                                                          | `count()` bucket  |
+| ---------------------------------------------------------------- | ----------------- |
+| delegate creator, delegate artifact                              | `delegate`        |
+| delegate creator, only non-delegate artifacts                    | `delegate`        |
+| non-delegate creator, delegate artifact                          | `other`           |
+| non-delegate creator, only non-delegate artifacts                | `other`           |
+| delegate creator, every artifact redacted by a trusted party     | `delegate_hidden` |
+| delegate creator, no artifacts (empty release)                   | `delegate_hidden` |
+| non-delegate creator, every artifact redacted by a trusted party | `other_hidden`    |
+| non-delegate creator, no artifacts (empty release)               | `other_hidden`    |
+
+This is in line with Radicle Artifact's trust model: releases and artifact are associated with a user, and trust stems from the repository's delegates.
+
+### `rad-artifact stats`
+
+`rad-artifact stats` reports repository-wide figures. Today that is release counts, split by the buckets described in the table above.
+
+```sh
+$ rad-artifact stats
+releases 11
+  visible      11
+  by delegate  10 visible, 0 hidden
+  by others    1 visible, 0 hidden
+```
+
+`--json` gives the same figures nested under a `releases` key, so later subjects arrive as sibling keys and a script reading it keeps working.
+
+### ⚠️ Breaking changes
+
+`Releases::count` was renamed to `Releases::count_refs` to better reflect that a ref walk counts COBs that may no longer materialize, which `counts` drops. 
+
+If you need release counts, it's generally best to use the new `counts` function
+
 ## [0.19.0] - 2026-09-18
 
 ### Seed trusted artifacts automatically with `rad-artifact watch`

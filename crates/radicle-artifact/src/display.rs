@@ -10,7 +10,7 @@ use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repositor
 use serde::Serialize;
 use url::Url;
 
-use crate::{Cid, ReleaseId};
+use crate::{Cid, ReleaseCounts, ReleaseId};
 use radicle_artifact_core::keys::EndpointId;
 use radicle_artifact_core::protocol::FetchProgress;
 
@@ -490,14 +490,8 @@ impl Release {
             .filter(|(_cid, artifact)| {
                 // Redaction filter: hide artifacts redacted by a trusted
                 // party (the author itself or any repository delegate).
-                if !filters.redacted {
-                    let hidden = artifact
-                        .redactions()
-                        .keys()
-                        .any(|did| *did == *artifact.author() || filters.delegates.contains(did));
-                    if hidden {
-                        return false;
-                    }
+                if !filters.redacted && artifact.is_redacted_by_trusted(filters.delegates) {
+                    return false;
                 }
                 // Author filter: hide artifacts added by users who are not
                 // repository delegates. Delegates are the curated source of
@@ -955,6 +949,72 @@ impl RegisterReceipt {
     }
 }
 
+/// `stats --json` payload: repository-wide figures.
+///
+/// One field per subject, so reporting artifacts or locations later adds a
+/// field rather than reshaping the payload. Today only releases are counted.
+/// See `docs/adr/0001-json-casing.md`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stats {
+    releases: ReleaseStats,
+}
+
+impl Stats {
+    /// Build the payload from a repository's release counts.
+    pub fn new(counts: &ReleaseCounts) -> Self {
+        Self {
+            releases: ReleaseStats {
+                total: counts.total(),
+                visible: counts.visible(),
+                delegate: counts.delegate,
+                delegate_hidden: counts.delegate_hidden,
+                other: counts.other,
+                other_hidden: counts.other_hidden,
+            },
+        }
+    }
+
+    /// Pretty print the figures, one subject per block.
+    pub fn pretty(&self, style: Style) -> String {
+        let r = &self.releases;
+        let mut s = String::new();
+        push_line(&mut s, format!("{} {}", style.bold("releases"), r.total));
+        let rows = vec![
+            vec![style.dim("visible"), r.visible.to_string()],
+            vec![
+                style.dim("by delegate"),
+                format!("{} visible, {} hidden", r.delegate, r.delegate_hidden),
+            ],
+            vec![
+                style.dim("by others"),
+                format!("{} visible, {} hidden", r.other, r.other_hidden),
+            ],
+        ];
+        s.push_str(&format_table(&rows, 2));
+        s
+    }
+}
+
+/// The release figures within [`Stats`]: the four buckets of
+/// [`ReleaseCounts`], plus the two sums it derives so a reader never has to
+/// add fields.
+///
+/// "Visible" means the release has an artifact no trusted party redacted,
+/// from any author, so `visible` is the row count of
+/// `rad-artifact list --all-authors`. "Hidden" includes a release with no
+/// artifacts at all.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseStats {
+    total: usize,
+    visible: usize,
+    delegate: usize,
+    delegate_hidden: usize,
+    other: usize,
+    other_hidden: usize,
+}
+
 /// `verify --json` payload: the CID computed from the local file, and every
 /// release that registers it.
 ///
@@ -1117,6 +1177,47 @@ mod tests {
 
     fn test_oid() -> Oid {
         Oid::from_str("0123456789abcdef0123456789abcdef01234567").unwrap()
+    }
+
+    #[test]
+    fn stats_nests_release_figures_in_camelcase() {
+        let counts = ReleaseCounts {
+            delegate: 3,
+            delegate_hidden: 1,
+            other: 2,
+            other_hidden: 4,
+        };
+        let out = Stats::new(&counts);
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!({
+                // Nested under a subject, so later figures add a sibling
+                // key rather than reshaping the payload.
+                "releases": {
+                    "total": 10,
+                    "visible": 5,
+                    "delegate": 3,
+                    "delegateHidden": 1,
+                    "other": 2,
+                    "otherHidden": 4,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn stats_pretty_reports_each_bucket() {
+        let counts = ReleaseCounts {
+            delegate: 3,
+            delegate_hidden: 1,
+            other: 2,
+            other_hidden: 4,
+        };
+        let out = Stats::new(&counts).pretty(Style::plain(false));
+        assert_eq!(
+            out,
+            "releases 10\n  visible      5\n  by delegate  3 visible, 1 hidden\n  by others    2 visible, 4 hidden\n"
+        );
     }
 
     #[test]

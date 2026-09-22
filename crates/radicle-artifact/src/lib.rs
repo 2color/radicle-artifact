@@ -278,6 +278,19 @@ impl Artifact {
         !self.redactions.is_empty()
     }
 
+    /// Check whether this artifact is redacted by a party the repository trusts
+    /// for it: its own author, or a repository delegate.
+    ///
+    /// This is the redaction that hides an artifact from default views. A third
+    /// party's redaction is recorded and readable (see [`Self::redactions`]) but
+    /// carries no authority. The delegate set is not part of the COB, so callers
+    /// pass it in — see [`Releases::delegates`].
+    pub fn is_redacted_by_trusted(&self, delegates: &BTreeSet<Did>) -> bool {
+        self.redactions
+            .keys()
+            .any(|did| *did == self.author || delegates.contains(did))
+    }
+
     /// Get all metadata entries.
     pub fn metadata(&self) -> &BTreeMap<String, serde_json::Value> {
         &self.metadata
@@ -461,6 +474,21 @@ impl Release {
         self.artifacts.get(cid)
     }
 
+    /// Check whether any artifact in this release survives the trusted-redaction
+    /// filter — see [`Artifact::is_redacted_by_trusted`]. The artifact's author
+    /// may be anyone.
+    ///
+    /// This is the rule `rad-artifact list --all-authors` applies. The default
+    /// view also hides artifacts whose author is not a delegate, so a release
+    /// can be true here and still render empty there.
+    ///
+    /// False for a release with no artifacts.
+    pub fn has_unredacted_artifacts(&self, delegates: &BTreeSet<Did>) -> bool {
+        self.artifacts
+            .values()
+            .any(|a| !a.is_redacted_by_trusted(delegates))
+    }
+
     /// Apply an action to the release state.
     fn action(&mut self, user: Did, action: Action) {
         match action {
@@ -597,14 +625,51 @@ impl<R: ReadRepository> Evaluate<R> for Release {
 /// while materializing that COB object.
 pub type ReleaseEntry = Result<(ObjectId, Release), store::Error>;
 
+/// Release counts bucketed by creator trust and artifact redaction.
+///
+/// "Delegate" means the release's [creator][Release::creator] is in
+/// [`Releases::delegates`]; "hidden" means no artifact survives the
+/// trusted-redaction filter [`Release::has_unredacted_artifacts`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReleaseCounts {
+    /// Created by a delegate, with at least one artifact that no trusted party
+    /// redacted, from any author.
+    pub delegate: usize,
+    /// Created by a delegate, with every artifact redacted by a trusted party,
+    /// or no artifacts.
+    pub delegate_hidden: usize,
+    /// Created by a non-delegate, with at least one artifact that no trusted
+    /// party redacted, from any author.
+    pub other: usize,
+    /// Created by a non-delegate, with every artifact redacted by a trusted
+    /// party, or no artifacts.
+    pub other_hidden: usize,
+}
+
+impl ReleaseCounts {
+    /// Total across every bucket.
+    pub fn total(&self) -> usize {
+        self.delegate + self.delegate_hidden + self.other + self.other_hidden
+    }
+
+    /// Releases with at least one unredacted artifact, from any creator: the
+    /// row count of `rad-artifact list --all-authors`.
+    pub fn visible(&self) -> usize {
+        self.delegate + self.other
+    }
+}
+
 /// The storage for all [`Release`] items.
 ///
 /// To get a handle for [`Releases`] use [`Releases::open`].
 ///
 /// The read-only operations for [`Releases`] are:
 ///
-///   - [`Releases::count`]
+///   - [`Releases::count_refs`]
+///   - [`Releases::counts`]
 ///   - [`Releases::get`]
+///   - [`Releases::all`]
 ///
 /// The write operations for [`Releases`] are:
 ///
@@ -613,6 +678,8 @@ pub type ReleaseEntry = Result<(ObjectId, Release), store::Error>;
 pub struct Releases<'a, R> {
     repo: &'a R,
     identity: Oid,
+    /// Delegate set of the identity document at `identity`.
+    delegates: BTreeSet<Did>,
     /// Optional SQLite cache. When present, reads are served from it after a
     /// cheap freshness check that re-materializes stale entries. It is
     /// populated lazily by reads, not by writes: a write advances the COB's git
@@ -628,10 +695,12 @@ where
 {
     /// Open a releases store.
     pub fn open(repository: &'a R) -> Result<Self, RepositoryError> {
-        let identity = repository.identity_head()?;
+        // Pin the identity head and read its delegates from the same document.
+        let doc = repository.identity_doc()?;
         Ok(Self {
             repo: repository,
-            identity,
+            identity: doc.commit,
+            delegates: doc.delegates().iter().copied().collect(),
             #[cfg(feature = "sqlite")]
             cache: None,
         })
@@ -692,7 +761,9 @@ where
     /// it materializes no release, so it is O(refs) and ignores the cache. Note
     /// this counts ref-backed objects: one that no longer materializes (e.g. a
     /// fully-redacted COB) is still counted here but excluded by [`Self::all`].
-    pub fn count(&self) -> Result<usize, store::Error> {
+    /// For counts bucketed by creator trust and redaction, see [`Self::counts`],
+    /// which materializes.
+    pub fn count_refs(&self) -> Result<usize, store::Error> {
         // Mirror how `cob::list` surfaces a `types()` failure, minus the fold.
         self.repo
             .types(&TYPENAME)
@@ -700,6 +771,37 @@ where
             .map_err(|err| {
                 store::Error::Retrieve(cob::error::Retrieve::Refs { err: Box::new(err) })
             })
+    }
+
+    /// The delegate set of the identity document pinned at [`Self::open`].
+    pub fn delegates(&self) -> &BTreeSet<Did> {
+        &self.delegates
+    }
+
+    /// Count releases, bucketed by creator trust and artifact redaction.
+    ///
+    /// Trust comes from [`Self::delegates`].
+    ///
+    /// Unlike [`Self::count_refs`], this materializes every release — through
+    /// [`Self::all`], so it is cache-backed. Objects that fail to materialize are
+    /// skipped, matching `all()` and `cob::list`. A cached read and an uncached
+    /// read can therefore disagree once an object stops materializing: the cache
+    /// keeps serving the last good copy, while the git path drops it.
+    pub fn counts(&self) -> Result<ReleaseCounts, store::Error> {
+        let delegates = &self.delegates;
+        Ok(self.all()?.into_iter().filter_map(|entry| entry.ok()).fold(
+            ReleaseCounts::default(),
+            |mut counts, (_, release)| {
+                let by_delegate = delegates.contains(release.creator());
+                match (by_delegate, release.has_unredacted_artifacts(delegates)) {
+                    (true, true) => counts.delegate += 1,
+                    (true, false) => counts.delegate_hidden += 1,
+                    (false, true) => counts.other += 1,
+                    (false, false) => counts.other_hidden += 1,
+                }
+                counts
+            },
+        ))
     }
 
     /// Iterate over every [`Release`] in the store.
@@ -1429,7 +1531,7 @@ mod test {
     use radicle::test;
     use url::Url;
 
-    use crate::{Cid, Releases, METADATA_KEY_SIZE_BYTES};
+    use crate::{Cid, ReleaseCounts, Releases, METADATA_KEY_SIZE_BYTES};
 
     /// An additional signer for multi-user tests. `test::setup::Node::default`
     /// signs with a fixed key, so each peer needs a distinct key of its own
@@ -3054,7 +3156,7 @@ mod test {
         assert_eq!(locations[0].2, url);
 
         // Public cache-backed lookups agree.
-        assert_eq!(releases.count().unwrap(), 1);
+        assert_eq!(releases.count_refs().unwrap(), 1);
         assert_eq!(releases.find_by_cid(&cid).unwrap().len(), 1);
         let via_releases = releases.locations_for(&cid).unwrap();
         assert_eq!(via_releases.len(), 1);
@@ -3350,11 +3452,11 @@ mod test {
 
         // Count is the number of release COBs, from a ref walk. A cache-backed
         // handle agrees, and neither materializes a release to answer.
-        assert_eq!(Releases::open(&*repo).unwrap().count().unwrap(), 3);
+        assert_eq!(Releases::open(&*repo).unwrap().count_refs().unwrap(), 3);
         #[cfg(feature = "sqlite")]
         let cached = Releases::open(&*repo).unwrap().with_cache(memory_cache());
         #[cfg(feature = "sqlite")]
-        assert_eq!(cached.count().unwrap(), 3);
+        assert_eq!(cached.count_refs().unwrap(), 3);
 
         // Redacting an artifact rewrites a release's contents but not the set of
         // COBs, so the count is unchanged.
@@ -3366,7 +3468,197 @@ mod test {
                 .redact(cid, "oops".into(), &alice.signer)
                 .unwrap();
         }
-        assert_eq!(Releases::open(&*repo).unwrap().count().unwrap(), 3);
+        assert_eq!(Releases::open(&*repo).unwrap().count_refs().unwrap(), 3);
+    }
+
+    #[test]
+    fn counts_buckets_by_creator_trust_and_visibility() {
+        let test::setup::Network {
+            alice, bob, rid, ..
+        } = test::setup::Network::default();
+        let repo = alice.storage.repository(rid).unwrap();
+        let bob_did = Did::from(bob.signer.public_key());
+
+        let mut releases = Releases::open(&repo).unwrap();
+
+        // The fixture must leave bob outside the delegate set, or the
+        // non-delegate buckets stay empty and the test proves half its claim.
+        assert!(!releases.delegates().contains(&bob_did));
+
+        // Delegate creator, delegate artifact, unredacted.
+        {
+            let oid = commit(&repo.backend, "alice visible");
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
+            r.register_artifact(test_cid(1), "bin".into(), &alice.signer)
+                .unwrap();
+        }
+        // Delegate creator, delegate artifact redacted by its own author.
+        {
+            let oid = commit(&repo.backend, "alice hidden");
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
+            r.register_artifact(test_cid(2), "bin".into(), &alice.signer)
+                .unwrap();
+            r.redact(test_cid(2), "bad build".into(), &alice.signer)
+                .unwrap();
+        }
+        // Non-delegate creator, but a delegate registered the artifact, so
+        // the release still has something a reader would see.
+        {
+            let oid = commit(&repo.backend, "bob visible");
+            let mut r = releases.create(oid, None, &bob.signer).unwrap();
+            r.register_artifact(test_cid(3), "bin".into(), &alice.signer)
+                .unwrap();
+        }
+        // Non-delegate creator, non-delegate artifact, unredacted: still
+        // counts as visible.
+        {
+            let oid = commit(&repo.backend, "bob own artifact");
+            let mut r = releases.create(oid, None, &bob.signer).unwrap();
+            r.register_artifact(test_cid(4), "bin".into(), &bob.signer)
+                .unwrap();
+        }
+        // Non-delegate creator, artifact redacted by a delegate.
+        {
+            let oid = commit(&repo.backend, "bob hidden");
+            let mut r = releases.create(oid, None, &bob.signer).unwrap();
+            r.register_artifact(test_cid(5), "bin".into(), &bob.signer)
+                .unwrap();
+            r.redact(test_cid(5), "unverified".into(), &alice.signer)
+                .unwrap();
+        }
+
+        let counts = releases.counts().unwrap();
+        assert_eq!(
+            counts,
+            ReleaseCounts {
+                delegate: 1,
+                delegate_hidden: 1,
+                other: 2,
+                other_hidden: 1,
+            }
+        );
+        assert_eq!(counts.total(), 5);
+        assert_eq!(counts.visible(), 3);
+        assert_eq!(releases.count_refs().unwrap(), 5);
+    }
+
+    /// A delegate-created release whose only artifact came from a
+    /// non-delegate still counts as visible, as `list --all-authors` shows it.
+    #[test]
+    fn non_delegate_artifact_keeps_a_delegate_release_visible() {
+        let test::setup::Network {
+            alice, bob, rid, ..
+        } = test::setup::Network::default();
+        let repo = alice.storage.repository(rid).unwrap();
+        let delegates = BTreeSet::from([Did::from(alice.signer.public_key())]);
+        let mut releases = Releases::open(&repo).unwrap();
+
+        let oid = commit(&repo.backend, "alice creates, bob registers");
+        {
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
+            r.register_artifact(test_cid(1), "bin".into(), &bob.signer)
+                .unwrap();
+            assert!(r.has_unredacted_artifacts(&delegates));
+        }
+
+        assert_eq!(
+            releases.counts().unwrap(),
+            ReleaseCounts {
+                delegate: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn empty_release_counts_as_hidden() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let delegates = BTreeSet::from([Did::from(alice.signer.public_key())]);
+        let oid = commit(&repo.backend, "no artifacts");
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        // A release with no artifacts has nothing to show, so it folds into
+        // the same bucket as a fully-redacted one.
+        let release = releases.create(oid, None, &alice.signer).unwrap();
+        assert!(!release.has_unredacted_artifacts(&delegates));
+        drop(release);
+
+        assert_eq!(
+            releases.counts().unwrap(),
+            ReleaseCounts {
+                delegate_hidden: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn is_redacted_by_trusted_ignores_third_party_redactions() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let mallory = peer(1);
+        let delegates = BTreeSet::from([Did::from(alice.signer.public_key())]);
+        let oid = commit(&repo.backend, "Test Commit");
+        let cid = test_cid(1);
+        let mut releases = Releases::open(&*repo).unwrap();
+
+        {
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
+            r.register_artifact(cid, "bin".into(), &alice.signer)
+                .unwrap();
+            // Mallory is neither the artifact's author nor a delegate, so the
+            // redaction is recorded but carries no authority.
+            r.redact(cid, "not my call".into(), &mallory).unwrap();
+
+            let artifact = r.artifact(&cid).unwrap();
+            assert!(artifact.is_redacted());
+            assert!(!artifact.is_redacted_by_trusted(&delegates));
+            assert!(r.has_unredacted_artifacts(&delegates));
+        }
+
+        assert_eq!(
+            releases.counts().unwrap(),
+            ReleaseCounts {
+                delegate: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "sqlite")]
+    fn counts_agree_between_cache_and_git_on_healthy_repo() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        {
+            let mut releases = Releases::open(&*repo).unwrap();
+            for i in 0..3 {
+                let oid = commit(&repo.backend, &format!("r{i}"));
+                let mut r = releases.create(oid, None, &alice.signer).unwrap();
+                r.register_artifact(test_cid(i), format!("bin-{i}"), &alice.signer)
+                    .unwrap();
+                if i == 0 {
+                    r.redact(test_cid(i), "bad build".into(), &alice.signer)
+                        .unwrap();
+                }
+            }
+        }
+
+        // On a repo where every object still materializes, the two read paths
+        // must report the same buckets.
+        let git = Releases::open(&*repo).unwrap().counts().unwrap();
+        let cached = Releases::open(&*repo)
+            .unwrap()
+            .with_cache(memory_cache())
+            .counts()
+            .unwrap();
+        assert_eq!(git, cached);
+        assert_eq!(git.total(), 3);
+        assert_eq!(git.visible(), 2);
     }
 
     #[test]
