@@ -116,7 +116,6 @@ _Avoid_: stale location (a Stale Endpoint is the distinct case where the URL is 
 - **Seeding** and **Adding** a Location are the two halves of making an artifact available over iroh: a node seeds the bytes and adds the `radiroh://` **Location** so peers can discover it; the two drift apart as **Dangling Tags** (seeded, no Location) and **Orphaned Locations** (Location added, no longer seeded)
 
 [COB]: https://radicle.dev/guides/protocol#collaborative-objects
-[canonical reference]: https://radicle.dev/2025/08/12/canonical-references
 [iroh]: https://docs.iroh.computer/protocols/blobs
 [BLAKE3]: https://github.com/BLAKE3-team/BLAKE3
 [uri-scheme]: ./docs/uri-scheme.md

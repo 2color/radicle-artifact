@@ -65,7 +65,7 @@ radicle-artifact = { git = "https://radicle.norman.life/z4VYyJ9KuwMNkXGQnmKuGPGK
 
 ## Workflow
 
-1. **Tag:** Create a release tag or commit, ideally a [canonical reference](https://radicle.dev/2025/08/12/canonical-references). Push it to your Radicle remote (`git push rad`); see the note below.
+1. **Tag:** Create a release tag or pick a commit. Push it to your Radicle remote (`git push rad`); see the note below. To attach a release to a tag, the tag must be a [canonical reference].
 2. **Build:** Build your release artifacts.
 3. **Register:** Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. This is signed discovery metadata in the COB, synced over the Radicle protocol, not the bytes.
 4. **Seed:** Upload artifacts to an HTTP server and add the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
@@ -74,7 +74,7 @@ radicle-artifact = { git = "https://radicle.norman.life/z4VYyJ9KuwMNkXGQnmKuGPGK
 7. **Attest:** Other delegates check out the release version, build the artifacts independently, `verify` the CIDs match, and attest. Note that `attest` records a signed claim and rehashes nothing itself, so run `verify` first.
 8. **Redact:** If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason. A redaction by a delegate makes `verify` fail, so it withdraws a published artifact without touching wherever the bytes are hosted.
 
-> **Note:** A release is bound to a revision in your **Radicle storage**, not your working copy. Release operations resolve `<REVISION>` against Radicle storage, so the commit (or annotated tag) must already be there before you can register against it. Push it first with `git push rad` (and `git push rad --tags` for an annotated tag). If the revision is missing, the command fails to resolve it.
+> **Note:** A release is bound to a revision in your **Radicle storage**, not your working copy. Release operations resolve `<REVISION>` against Radicle storage, so the commit (or annotated tag) must already be there before you can register against it. Push it first with `git push rad --tags`. A tag name resolves only when the tag is a [canonical reference]
 
 See [CONTEXT.md](./CONTEXT.md) for a glossary of the project's terminology: Register, Seed, Add, Announce, and the drift states they produce.
 
@@ -169,7 +169,7 @@ Other URL schemes (`ipfs://`, `magnet://`, `rasl://`, …) can be recorded as lo
 
 ## CLI usage
 
-`<REVISION>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**. It is resolved against Radicle storage, so push it first (`git push rad`, or `git push rad --tags` for an annotated tag).
+`<REVISION>` accepts a full OID, abbreviated hash, or tag name of a **commit or annotated tag**. It is resolved against Radicle storage, so push it first (`git push rad`, or `git push rad --tags` for an annotated tag). A tag name must be a [canonical reference](https://radicle.garden/blog/canonical-references-in-radicle).
 
 Every command accepts these global options, before or after the subcommand:
 
@@ -319,3 +319,4 @@ MIT OR Apache-2.0
 [CID]: https://github.com/multiformats/cid
 [multicodec]: https://github.com/multiformats/multicodec
 [BLAKE3]: https://github.com/BLAKE3-team/BLAKE3
+[canonical reference]: https://radicle.garden/blog/canonical-references-in-radicle

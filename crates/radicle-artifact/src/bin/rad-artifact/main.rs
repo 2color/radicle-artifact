@@ -4114,7 +4114,7 @@ mod error {
 
     #[derive(Debug, Error)]
     #[error(
-        "could not resolve '{revision}' to a git object\n  hint: if the tag or commit is local, push it to Radicle storage with `git push rad --tags`"
+        "could not resolve '{revision}' to a git object\n  hint: if the tag or commit is local, push it to Radicle storage with `git push rad --tags`\n Note: a tag must be a canonical reference to resolve"
     )]
     pub struct Resolve {
         pub revision: String,
