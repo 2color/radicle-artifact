@@ -23,8 +23,8 @@ indicatif = "0.18"
 inquire = { version = "0.9" }
 log = "0.4"
 radicle = { version = "0.25.1" }
-radicle-artifact-client = { version = "0.19.0", path = "../radicle-artifact-client" }
-radicle-artifact-core = { version = "0.19.0", path = "../radicle-artifact-core" }
+radicle-artifact-client = { version = "0.20.0", path = "../radicle-artifact-client" }
+radicle-artifact-core = { version = "0.20.0", path = "../radicle-artifact-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sqlite = { version = "0.37", features = ["bundled"], optional = true }
