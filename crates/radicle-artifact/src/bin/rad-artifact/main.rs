@@ -283,6 +283,13 @@ fn run(args: Args) -> Result<(), RadArtifactError> {
                 announce(&profile, repo.id)?;
             }
         }
+        Command::Delete(cmd) => {
+            let signer = profile.signer().map_err(error::Signer)?;
+            delete_release(cmd, &mut releases, &repo, &signer)?;
+            if !args.no_announce {
+                announce(&profile, repo.id)?;
+            }
+        }
         Command::Metadata(meta) => {
             let signer = profile.signer().map_err(error::Signer)?;
             match meta.command {
@@ -1197,6 +1204,34 @@ where
         .redact(cid, reason, signer)
         .map_err(|err| error::Redact::Artifact { id, err })?;
     eprintln!("Redacted artifact {cid}");
+    Ok(())
+}
+
+fn delete_release<G>(
+    command::Delete { release }: command::Delete,
+    releases: &mut Releases<Repository>,
+    repo: &Repository,
+    signer: &G,
+) -> Result<(), error::Delete>
+where
+    G: crypto::Signer,
+{
+    let id = parse_release_id(&release, repo)?;
+    match releases.get(&id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(error::Find::NoReleaseId(id).into()),
+        Err(err) => {
+            return Err(error::Find::LookupId {
+                release_id: id,
+                err,
+            }
+            .into())
+        }
+    }
+    releases
+        .remove(&id, signer)
+        .map_err(|err| error::Delete::Store { id, err })?;
+    eprintln!("Deleted release {id}");
     Ok(())
 }
 
@@ -2867,6 +2902,8 @@ enum RadArtifactError {
     #[error(transparent)]
     Redact(#[from] error::Redact),
     #[error(transparent)]
+    Delete(#[from] error::Delete),
+    #[error(transparent)]
     Metadata(#[from] error::Metadata),
     #[error(transparent)]
     Find(#[from] error::Find),
@@ -2912,6 +2949,7 @@ mod command {
         Location(Location),
         Attest(Attest),
         Redact(Redact),
+        Delete(Delete),
         /// Manage free-form metadata entries on artifacts.
         Metadata(Metadata),
         Show(Show),
@@ -3393,6 +3431,23 @@ Examples:
         /// a `<revision>`.
         #[clap(long)]
         pub all_authors: bool,
+    }
+
+    /// Remove your ref to a release
+    ///
+    /// The release disappears once no user has a ref to it. Your actions
+    /// stay visible if another user's actions build on them. Peers that
+    /// already fetched your actions can keep them. To withdraw a published
+    /// artifact, use `redact` instead.
+    #[derive(Parser)]
+    #[clap(after_long_help = "\
+Examples:
+  Delete a release by its id:
+    $ rad-artifact delete 3f2a9c1")]
+    pub struct Delete {
+        /// Id of the release to delete.
+        #[clap(value_name = "RELEASE_ID")]
+        pub release: String,
     }
 
     /// Redact an artifact CID, indicating it should not be used.
@@ -3953,6 +4008,20 @@ mod error {
             err: radicle_artifact::error::Redact,
         },
         #[error("failed to redact artifact in release {id}")]
+        Store {
+            id: ReleaseId,
+            #[source]
+            err: cob::store::Error,
+        },
+    }
+
+    #[derive(Debug, Error)]
+    pub enum Delete {
+        #[error(transparent)]
+        Resolve(#[from] Resolve),
+        #[error(transparent)]
+        Find(#[from] Find),
+        #[error("failed to delete release {id}")]
         Store {
             id: ReleaseId,
             #[source]

@@ -1182,6 +1182,20 @@ where
             store: self,
         })
     }
+
+    /// Remove the signer's ref to a release.
+    ///
+    /// The release disappears once no user has a ref to it. The signer's
+    /// actions stay visible if another user's actions build on them, because
+    /// the release is rebuilt by walking back from every remaining ref. The
+    /// cache catches up on the next read, because the release's ref tips
+    /// change. Removing a release the signer has no ref to is a no-op.
+    pub fn remove<G>(&mut self, id: &ReleaseId, signer: &G) -> Result<(), store::Error>
+    where
+        G: crypto::Signer,
+    {
+        self.write_store(signer)?.remove(id.as_object_id())
+    }
 }
 
 /// A `ReleaseMut` is a [`Release`] where the underlying `Release` can be
@@ -3427,6 +3441,60 @@ mod test {
         // A repo-wide cached read refreshes and prunes entries absent from git.
         assert_eq!(releases.all().unwrap().len(), 1);
         assert!(cache.get(&repo.id, &bogus_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_deletes_own_release() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let releases = Releases::open(&*repo).unwrap();
+        #[cfg(feature = "sqlite")]
+        let releases = releases.with_cache(memory_cache());
+        let mut releases = releases;
+
+        let oid = commit(&repo.backend, "release commit");
+        let id = *releases.create(oid, None, &alice.signer).unwrap().id();
+        // Materialize into the cache first, so the removal must invalidate it.
+        assert!(releases.get(&id).unwrap().is_some());
+
+        releases.remove(&id, &alice.signer).unwrap();
+        assert!(releases.get(&id).unwrap().is_none());
+        assert!(releases.all().unwrap().is_empty());
+
+        // Removing again is a no-op, not an error.
+        releases.remove(&id, &alice.signer).unwrap();
+    }
+
+    #[test]
+    fn remove_keeps_actions_others_build_on() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
+        let releases = Releases::open(&*repo).unwrap();
+        #[cfg(feature = "sqlite")]
+        let releases = releases.with_cache(memory_cache());
+        let mut releases = releases;
+
+        let oid = commit(&repo.backend, "release commit");
+        let cid = test_cid(1);
+        let id = {
+            let mut r = releases.create(oid, None, &alice.signer).unwrap();
+            r.register_artifact(cid, "bin".into(), &alice.signer)
+                .unwrap();
+            r.attest(cid, &bob).unwrap();
+            *r.id()
+        };
+
+        // Bob's ref keeps the release alive after Alice removes hers. His
+        // attestation builds on her actions, so her artifact stays visible.
+        releases.remove(&id, &alice.signer).unwrap();
+        let release = releases.get(&id).unwrap().expect("bob's ref remains");
+        assert!(release.artifact(&cid).is_some());
+
+        releases.remove(&id, &bob).unwrap();
+        assert!(releases.get(&id).unwrap().is_none());
     }
 
     #[test]

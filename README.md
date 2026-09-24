@@ -195,6 +195,7 @@ rad-artifact location add --revision <REVISION> --cid <CID> <URL>    # add disco
 rad-artifact location remove --revision <REVISION> --cid <CID> <URL> # remove discovery URL
 rad-artifact attest <REVISION> --cid <CID>                       # attest to an artifact
 rad-artifact redact <REVISION> --cid <CID> -m <REASON>           # redact an artifact
+rad-artifact delete <RELEASE_ID>                                 # remove your ref to a release (gone once nobody has one)
 rad-artifact metadata set --revision <REVISION> --cid <CID> [--json] <KEY> <VALUE>  # attach metadata
 rad-artifact metadata unset --revision <REVISION> --cid <CID> <KEY>                 # remove metadata
 rad-artifact show <REVISION> [--pretty] [--all-authors]          # show release

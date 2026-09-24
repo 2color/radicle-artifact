@@ -42,6 +42,10 @@ releases 11
 
 `--json` gives the same figures nested under a `releases` key, so later subjects arrive as sibling keys and a script reading it keeps working.
 
+### `rad-artifact delete`
+
+A new `rad-artifact delete <RELEASE_ID>` command removes a release you created by mistake. It works like `rad patch delete`: it removes your ref to the release, not your actions. The release disappears once no user has a ref to it. Your actions stay visible if another user's actions build on them. The library exposes this as `Releases::remove`.
+
 ### ⚠️ Breaking changes
 
 `Releases::count` was renamed to `Releases::count_refs` to better reflect that a ref walk counts COBs that may no longer materialize, which `counts` drops. 
