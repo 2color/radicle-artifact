@@ -52,6 +52,17 @@ A new `rad-artifact delete <RELEASE_ID>` command removes a release you created b
 
 If you need release counts, it's generally best to use the new `counts` function
 
+### Added
+
+* `71c7605` add trust-aware release counts [**breaking**] *<daniel@norman.life>*
+* `091f60a` add rad-artifact delete *<daniel@norman.life>*
+
+### Docs
+
+* `86e3075` content addressing artifacts *<daniel@norman.life>*
+* `19b428c` document canonical tags for releases *<daniel@norman.life>*
+* `87a682a` refine README *<daniel@norman.life>*
+
 ## [0.19.0] - 2026-09-18
 
 ### Seed trusted artifacts automatically with `rad-artifact watch`
