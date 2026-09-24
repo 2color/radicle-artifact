@@ -107,10 +107,10 @@ CIDv1 = <version 1> <codec> <multihash: 0x1e (BLAKE3), 32-byte digest>
 
 The codec distinguishes the two kinds of artifact:
 
-| Artifact kind | Codec                    | Digest                          | Produced by           |
-| ------------- | ------------------------ | ------------------------------- | --------------------- |
-| Blob          | `raw` (0x55)             | `blake3(file contents)`         | `compute_blob_cid`    |
-| Collection    | `blake3-hashseq` (0x80)  | `blake3(root blob)` (see above) | `compute_content_id`  |
+| Kind       | CID [multicodec]          | Hash              | Contents                             | Transports       |
+| ---------- | ------------------------- | ----------------- | ------------------------------------ | ---------------- |
+| Blob       | `raw` (`0x55`)            | `blake3` (`0x1e`) | a single file                        | HTTP, iroh-blobs |
+| Collection | `blake3-hashseq` (`0x80`) | `blake3` (`0x1e`) | a collection of files, i.e. a folder | iroh-blobs only  |
 
 `artifact_kind` reads the codec back out of a CID, and `cid_to_blake3_hash` recovers the digest for the iroh-blobs boundary, where fetching and seeding work with plain BLAKE3 hashes. It accepts either codec but rejects any multihash that is not BLAKE3.
 
