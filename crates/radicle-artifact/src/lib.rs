@@ -670,6 +670,7 @@ impl ReleaseCounts {
 ///   - [`Releases::counts`]
 ///   - [`Releases::get`]
 ///   - [`Releases::all`]
+///   - [`Releases::list`]
 ///
 /// The write operations for [`Releases`] are:
 ///
@@ -825,6 +826,35 @@ where
         #[cfg(not(feature = "sqlite"))]
         let items: Vec<ReleaseEntry> = self.read_store()?.all()?.collect();
         Ok(items)
+    }
+
+    /// Iterate over every [`Release`], newest first, with ties ordered by id.
+    ///
+    /// With a cache, SQLite sorts the releases and yields them lazily, so a
+    /// caller that takes one page parses only the rows up to the end of that
+    /// page. Without a cache, every release is read from git and sorted in
+    /// memory; failed entries come last.
+    pub fn list(&self) -> Result<Box<dyn Iterator<Item = ReleaseEntry> + '_>, store::Error> {
+        #[cfg(feature = "sqlite")]
+        if self.cache.is_some() {
+            match self.cached_list() {
+                Ok(iter) => return Ok(Box::new(iter)),
+                Err(CacheOpError::Store(err)) => return Err(err),
+                Err(CacheOpError::Cache(msg)) => {
+                    log::warn!(target: "artifact", "cache list failed ({msg}); using git");
+                }
+            }
+        }
+        let mut items: Vec<ReleaseEntry> = self.read_store()?.all()?.collect();
+        items.sort_by_key(|entry| {
+            std::cmp::Reverse(
+                entry
+                    .as_ref()
+                    .ok()
+                    .map(|(id, release)| (release.timestamp(), *id)),
+            )
+        });
+        Ok(Box::new(items.into_iter()))
     }
 
     /// Get a [`Release`], given its [`ReleaseId`] identifier.
@@ -1026,6 +1056,23 @@ where
             .into_iter()
             .map(|(id, release)| (*id.as_object_id(), release))
             .collect())
+    }
+
+    fn cached_list(&self) -> Result<impl Iterator<Item = ReleaseEntry> + '_, CacheOpError> {
+        let cache = self.cache.as_ref().expect("cache is present");
+        self.refresh_repo(cache)?;
+        let rows = cache
+            .list_by_timestamp(&self.repo.id())
+            .map_err(|e| CacheOpError::Cache(e.to_string()))?;
+        // Rows are read after this returns, so a bad row can no longer fall
+        // back to git; skip it, as `refresh_repo` skips unreadable objects.
+        Ok(rows.filter_map(|row| match row {
+            Ok((id, release)) => Some(Ok((*id.as_object_id(), release))),
+            Err(err) => {
+                log::warn!(target: "artifact", "skipping unreadable cached release: {err}");
+                None
+            }
+        }))
     }
 
     fn cached_get(&self, id: &ReleaseId) -> Result<Option<Release>, CacheOpError> {
@@ -3218,6 +3265,51 @@ mod test {
             .unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].1.artifacts().len(), 2);
+    }
+
+    #[test]
+    fn list_is_newest_first_with_and_without_cache() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        {
+            let mut releases = Releases::open(&*repo).unwrap();
+            for i in 0..3 {
+                let oid = commit(&repo.backend, &format!("r{i}"));
+                releases.create(oid, None, &alice.signer).unwrap();
+            }
+        }
+        let keys = |releases: &Releases<_>| -> Vec<_> {
+            releases
+                .list()
+                .unwrap()
+                .map(|entry| {
+                    let (id, release) = entry.unwrap();
+                    (release.timestamp(), id)
+                })
+                .collect()
+        };
+
+        // The expected order: `all()`, sorted newest first, ties by id.
+        let mut expected: Vec<_> = Releases::open(&*repo)
+            .unwrap()
+            .all()
+            .unwrap()
+            .into_iter()
+            .map(|entry| {
+                let (id, release) = entry.unwrap();
+                (release.timestamp(), id)
+            })
+            .collect();
+        expected.sort_by(|a, b| b.cmp(a));
+        assert_eq!(expected.len(), 3);
+
+        assert_eq!(keys(&Releases::open(&*repo).unwrap()), expected);
+        #[cfg(feature = "sqlite")]
+        assert_eq!(
+            keys(&Releases::open(&*repo).unwrap().with_cache(memory_cache())),
+            expected
+        );
     }
 
     #[test]

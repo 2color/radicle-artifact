@@ -37,7 +37,10 @@ const DB_FILE: &str = "artifacts.db";
 
 /// Ordered database migrations. Each entry is applied once, in order, bumping
 /// `PRAGMA user_version`.
-const MIGRATIONS: &[&str] = &[include_str!("cache/migrations/1.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("cache/migrations/1.sql"),
+    include_str!("cache/migrations/2.sql"),
+];
 
 /// A cache error.
 #[derive(Debug, thiserror::Error)]
@@ -202,6 +205,26 @@ impl Store {
         Ok(out)
     }
 
+    /// Cached releases for a repository, newest first, with ties ordered by id.
+    ///
+    /// Rows are read and parsed one at a time, as the caller pulls them, so
+    /// taking the first few rows does not parse the rest.
+    pub fn list_by_timestamp(
+        &self,
+        repo: &RepoId,
+    ) -> Result<impl Iterator<Item = Result<(ReleaseId, Release), Error>> + '_, Error> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, head, release FROM releases
+             WHERE repo = ?1
+             ORDER BY timestamp DESC, id DESC",
+        )?;
+        stmt.bind((1, sql::Value::String(repo.to_string())))?;
+        Ok(stmt.into_iter().map(|row| {
+            let (id, _head, release) = parse_release_row(&row?)?;
+            Ok((id, release))
+        }))
+    }
+
     /// A map of cached release id to its freshness token, for a repository.
     pub fn heads(&self, repo: &RepoId) -> Result<HashMap<ReleaseId, String>, Error> {
         let mut stmt = self
@@ -342,4 +365,82 @@ fn parse_release_row(row: &sql::Row) -> Result<(ReleaseId, String, Release), Err
     let head = row.try_read::<&str, _>("head")?.to_string();
     let release: Release = serde_json::from_str(row.try_read::<&str, _>("release")?)?;
     Ok((id, head, release))
+}
+
+#[cfg(test)]
+mod tests {
+    use radicle::cob;
+
+    use super::*;
+
+    const REPO: &str = "rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5";
+    const DID: &str = "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp";
+
+    /// A release id and release, from a single hex digit and a time in seconds.
+    fn release(digit: char, secs: u64) -> (ReleaseId, Release) {
+        let hex: String = std::iter::repeat_n(digit, 40).collect();
+        let release = Release::new(
+            Oid::from_str(&hex).unwrap(),
+            None,
+            Did::from_str(DID).unwrap(),
+            cob::Timestamp::from_secs(secs),
+        );
+        (ReleaseId::from_str(&hex).unwrap(), release)
+    }
+
+    fn insert(store: &Store, repo: &RepoId, releases: &[(ReleaseId, Release)]) {
+        for (id, release) in releases {
+            store.update(repo, id, "head", release).unwrap();
+        }
+    }
+
+    fn ids(store: &Store, repo: &RepoId) -> Vec<ReleaseId> {
+        store
+            .list_by_timestamp(repo)
+            .unwrap()
+            .map(|row| row.unwrap().0)
+            .collect()
+    }
+
+    #[test]
+    fn list_by_timestamp_is_newest_first_with_ties_by_id() {
+        let store = Store::memory().unwrap().with_migrations().unwrap();
+        let repo = RepoId::from_str(REPO).unwrap();
+        let (a, b, c, d) = (
+            release('a', 20),
+            release('b', 10),
+            release('c', 30),
+            release('d', 20),
+        );
+        insert(&store, &repo, &[a.clone(), b.clone(), c.clone(), d.clone()]);
+
+        // Newest first; `a` and `d` tie on time, so the larger id comes first.
+        assert_eq!(ids(&store, &repo), vec![c.0, d.0, a.0, b.0]);
+    }
+
+    #[test]
+    fn migration_2_derives_timestamp_for_existing_rows() {
+        let store = Store::memory().unwrap();
+        store.db.execute(MIGRATIONS[0]).unwrap();
+        store.db.execute("PRAGMA user_version = 1").unwrap();
+        let repo = RepoId::from_str(REPO).unwrap();
+        let (old, new) = (release('a', 10), release('b', 20));
+        insert(&store, &repo, &[old.clone(), new.clone()]);
+
+        let mut store = store;
+        assert_eq!(store.migrate().unwrap(), MIGRATIONS.len());
+
+        // Rows written before the column existed sort by their blob's time.
+        assert_eq!(ids(&store, &repo), vec![new.0, old.0]);
+        let millis = store
+            .db
+            .prepare("SELECT timestamp FROM releases WHERE id = ?1")
+            .and_then(|mut stmt| {
+                stmt.bind((1, new.0.to_string().as_str()))?;
+                stmt.next()?;
+                stmt.read::<i64, _>(0)
+            })
+            .unwrap();
+        assert_eq!(millis, 20_000);
+    }
 }
