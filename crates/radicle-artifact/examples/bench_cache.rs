@@ -139,6 +139,31 @@ fn run_reads<'r>(
         },
         {
             let (_keep, releases) = make();
+            let (mean, cold) = bench("list (drain)", 10, show_cold, || {
+                let v = releases
+                    .list()
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                black_box(v);
+            });
+            ("list (drain)", mean, cold)
+        },
+        {
+            let (_keep, releases) = make();
+            let (mean, cold) = bench("list (first 20)", 10, show_cold, || {
+                let v = releases
+                    .list()
+                    .unwrap()
+                    .take(20)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                black_box(v);
+            });
+            ("list (first 20)", mean, cold)
+        },
+        {
+            let (_keep, releases) = make();
             let (mean, cold) = bench("get(one)", 50, show_cold, || {
                 black_box(releases.get(sample_id).unwrap());
             });
