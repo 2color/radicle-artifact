@@ -1183,9 +1183,13 @@ where
     /// The signer's DID confers no release-level privilege — it's the git
     /// committer of the wrapping COB op, not the "owner" of the release.
     ///
-    /// Callers that want to add to an existing release for the same
-    /// commit should look it up via [`Releases::find_by_commit`] first
-    /// and fall back to `create` only when no release exists.
+    /// Do not rely on `create` to deduplicate. The release id includes the
+    /// creation time in whole seconds, so two calls for the same commit and
+    /// signer usually give two releases, but calls in the same second can
+    /// give the same release. Callers that want to add to an existing
+    /// release for the same commit should look it up via
+    /// [`Releases::find_by_commit`] first and fall back to `create` only
+    /// when no release exists.
     pub fn create<'g, G>(
         &'g mut self,
         oid: Oid,
@@ -1722,27 +1726,6 @@ mod test {
         let oid = test::arbitrary::oid();
         let release = releases.create(oid, None, &alice.signer);
         assert!(release.is_err());
-    }
-
-    #[test]
-    fn idempotent_create() {
-        let test::setup::NodeWithRepo {
-            node: alice, repo, ..
-        } = test::setup::NodeWithRepo::default();
-        let oid = commit(&repo.backend, "Test Commit");
-        let mut releases = Releases::open(&*repo).unwrap();
-        let r1 = {
-            let r1 = releases.create(oid, None, &alice.signer).unwrap();
-            r1.id
-        };
-        let r2 = {
-            let r2 = releases.create(oid, None, &alice.signer).unwrap();
-            r2.id
-        };
-
-        // COB store deduplicates: same OID + same signer = same release.
-        assert_eq!(r1, r2);
-        assert_eq!(releases.get(&r1).unwrap(), releases.get(&r2).unwrap());
     }
 
     #[test]
