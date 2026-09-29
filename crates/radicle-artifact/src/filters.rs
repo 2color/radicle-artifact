@@ -1,41 +1,43 @@
 //! Visibility rules for releases and artifacts.
 
-use std::collections::BTreeSet;
+use crate::trust::Trust;
+use crate::{Artifact, Release};
 
-use radicle::identity::Did;
-
-/// Visibility rules for releases and artifacts, as `list` / `show` apply them
-/// and as the `trust` checks reuse them.
+/// Visibility rules for releases and artifacts, as `list` / `show` apply them.
 ///
-/// Both filters below consult the repository's delegate set. The flags
-/// opt into broader visibility; each defaults (at the caller) to a
-/// delegate-scoped view.
+/// [`Trust`] decides whose releases and artifacts count. The flag below
+/// opts into broader visibility; it defaults (at the caller) to hiding
+/// withdrawn artifacts.
 #[derive(Clone, Copy)]
 pub struct Filters<'a> {
-    /// Delegates of the repository.
-    pub delegates: &'a BTreeSet<Did>,
+    /// Whose releases and artifacts are shown.
+    pub trust: Trust<'a>,
     /// When true, include artifacts redacted by their author or by a delegate.
     pub redacted: bool,
-    /// When true, include artifacts whose author is not a repository delegate.
-    pub all_authors: bool,
-    /// Local user's DID. Artifacts authored by this user are always
-    /// visible, even when the user isn't a delegate and `all_authors`
-    /// is false — users should always see their own contributions.
-    pub local: Option<&'a Did>,
 }
 
 impl Filters<'_> {
-    /// Check whether `did` may create a release or register an artifact:
-    /// a delegate, the local user, or anyone when `all_authors` is set.
-    pub fn trusts(&self, did: &Did) -> bool {
-        self.all_authors || self.delegates.contains(did) || self.local == Some(did)
+    /// Check whether `list` / `show` include `artifact`:
+    /// - Artifacts redacted by a trusted party are hidden, unless
+    ///   `redacted` is set.
+    /// - Artifacts whose author `trust` does not trust are hidden.
+    pub fn shows_artifact(&self, artifact: &Artifact) -> bool {
+        if !self.redacted && artifact.is_redacted_by_trusted(self.trust.delegates) {
+            return false;
+        }
+        // Delegates are the curated source of truth for a repo; non-delegate
+        // contributions are opt-in. The local user always sees their own.
+        self.trust.trusts(artifact.author())
     }
-}
 
-/// Check whether a redaction by `redactor` withdraws an artifact by `author`:
-/// only the author and the delegates may withdraw it. `all_authors` does not
-/// widen this — it opens up who may register an artifact, not who may
-/// withdraw one.
-pub fn honours_redaction(redactor: &Did, author: &Did, delegates: &BTreeSet<Did>) -> bool {
-    redactor == author || delegates.contains(redactor)
+    /// Check whether `list` shows `release`.
+    ///
+    /// `trust` must trust the release creator. Then a release with no
+    /// artifacts is shown, and any other release is shown when at least one
+    /// artifact passes [`Self::shows_artifact`].
+    pub fn shows_release(&self, release: &Release) -> bool {
+        self.trust.trusts(release.creator())
+            && (release.artifacts().is_empty()
+                || release.artifacts().values().any(|a| self.shows_artifact(a)))
+    }
 }

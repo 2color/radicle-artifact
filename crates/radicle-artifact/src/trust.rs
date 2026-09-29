@@ -3,18 +3,18 @@
 //! Trust is anchored in the repository's delegate set: by default only
 //! releases and artifacts authored by a delegate — or by the local user —
 //! count, and a redaction from the artifact's own author or from a
-//! delegate withdraws it. [`classify`] is the single place those rules
-//! live, shared by `verify` (does this file match something a delegate
-//! published?) and by `watch` (is this artifact worth seeding?).
+//! delegate withdraws it. [`Trust`] is the single place those rules
+//! live, shared by `list`/`show` (through [`crate::Filters`]), by `verify`
+//! (does this file match something a delegate published?) and by `watch`
+//! (is this artifact worth seeding?).
 //!
-//! The rules read from a [`Candidate`] rather than from a repository, so
-//! they can be tested without one.
+//! The rules read from a private `Candidate` rather than from a repository,
+//! so they can be tested without one.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use radicle::identity::Did;
 
-use crate::filters::{honours_redaction, Filters};
 use crate::{Artifact, Release};
 
 /// Why a release that registers a CID doesn't count as verification.
@@ -33,18 +33,18 @@ pub enum Untrusted {
 /// The trust inputs read from one release that registers the CID being
 /// checked. Extracted from the COB so the rules below can be tested
 /// without a repository.
-pub struct Candidate {
+struct Candidate {
     /// DID that created the release COB.
-    pub release_creator: Did,
+    release_creator: Did,
     /// DID that registered the artifact within that release.
-    pub artifact_author: Did,
+    artifact_author: Did,
     /// Every DID that has redacted the artifact, with its stated reason.
-    pub redactions: BTreeMap<Did, String>,
+    redactions: BTreeMap<Did, String>,
 }
 
 impl Candidate {
     /// Read the trust inputs out of a release and one of its artifacts.
-    pub fn new(release: &Release, artifact: &Artifact) -> Self {
+    fn new(release: &Release, artifact: &Artifact) -> Self {
         Self {
             release_creator: *release.creator(),
             artifact_author: *artifact.author(),
@@ -53,41 +53,64 @@ impl Candidate {
     }
 }
 
-/// Apply the trust rules `list`/`show` already use (see
-/// [`crate::Filters`]) to a single candidate: the release and the
-/// artifact must both be authored by a delegate or by us, and no trusted
-/// party may have redacted the artifact.
-pub fn classify(
-    candidate: &Candidate,
-    delegates: &BTreeSet<Did>,
-    local: &Did,
-    all_authors: bool,
-) -> Result<(), Untrusted> {
-    let filters = Filters {
-        delegates,
-        redacted: false,
-        all_authors,
-        local: Some(local),
-    };
+/// Whose releases and artifacts the repository trusts.
+///
+/// By default that is a repository delegate or the local user.
+/// `all_authors` opens it up to everyone who registers or creates, but
+/// never to who may withdraw — see [`honours_redaction`].
+#[derive(Clone, Copy)]
+pub struct Trust<'a> {
+    /// Delegates of the repository.
+    pub delegates: &'a BTreeSet<Did>,
+    /// Local user's DID. The local user always trusts their own work,
+    /// even when they aren't a delegate.
+    pub local: Option<&'a Did>,
+    /// When true, trust any author, not only delegates and the local user.
+    pub all_authors: bool,
+}
 
-    if !filters.trusts(&candidate.release_creator) {
-        return Err(Untrusted::Author(candidate.release_creator));
+impl Trust<'_> {
+    /// Check whether `did` may create a release or register an artifact:
+    /// a delegate, the local user, or anyone when `all_authors` is set.
+    pub fn trusts(&self, did: &Did) -> bool {
+        self.all_authors || self.delegates.contains(did) || self.local == Some(did)
     }
-    // A redaction from a passing stranger must not block the check, or
-    // anyone on the network could veto a release.
-    let redactions: BTreeMap<Did, String> = candidate
-        .redactions
-        .iter()
-        .filter(|(did, _)| honours_redaction(did, &candidate.artifact_author, delegates))
-        .map(|(did, reason)| (*did, reason.clone()))
-        .collect();
-    if !redactions.is_empty() {
-        return Err(Untrusted::Redacted(redactions));
+
+    /// Apply the trust rules to `artifact` in `release`: the release and the
+    /// artifact must both be authored by a trusted party, and no party
+    /// that [`honours_redaction`] accepts may have redacted the artifact.
+    pub fn classify(&self, release: &Release, artifact: &Artifact) -> Result<(), Untrusted> {
+        self.classify_candidate(&Candidate::new(release, artifact))
     }
-    if !filters.trusts(&candidate.artifact_author) {
-        return Err(Untrusted::Author(candidate.artifact_author));
+
+    fn classify_candidate(&self, candidate: &Candidate) -> Result<(), Untrusted> {
+        if !self.trusts(&candidate.release_creator) {
+            return Err(Untrusted::Author(candidate.release_creator));
+        }
+        // A redaction from a passing stranger must not block the check, or
+        // anyone on the network could veto a release.
+        let redactions: BTreeMap<Did, String> = candidate
+            .redactions
+            .iter()
+            .filter(|(did, _)| honours_redaction(did, &candidate.artifact_author, self.delegates))
+            .map(|(did, reason)| (*did, reason.clone()))
+            .collect();
+        if !redactions.is_empty() {
+            return Err(Untrusted::Redacted(redactions));
+        }
+        if !self.trusts(&candidate.artifact_author) {
+            return Err(Untrusted::Author(candidate.artifact_author));
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+/// Check whether a redaction by `redactor` withdraws an artifact by `author`:
+/// only the author and the delegates may withdraw it. `all_authors` does not
+/// widen this — it opens up who may register an artifact, not who may
+/// withdraw one.
+pub fn honours_redaction(redactor: &Did, author: &Did, delegates: &BTreeSet<Did>) -> bool {
+    redactor == author || delegates.contains(redactor)
 }
 
 #[cfg(test)]
@@ -123,7 +146,14 @@ mod tests {
     }
 
     fn check(candidate: &Candidate, all_authors: bool) -> Result<(), Untrusted> {
-        classify(candidate, &delegates(), &did(LOCAL), all_authors)
+        let delegates = delegates();
+        let local = did(LOCAL);
+        Trust {
+            delegates: &delegates,
+            local: Some(&local),
+            all_authors,
+        }
+        .classify_candidate(candidate)
     }
 
     #[test]

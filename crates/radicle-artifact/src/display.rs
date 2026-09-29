@@ -320,7 +320,7 @@ impl Releases {
     ///
     /// `filters` controls artifact visibility — see [`Filters`] for the
     /// redaction and author-trust knobs. When `keep_filtered` is false, only
-    /// releases that pass [`crate::Release::is_visible`] are kept: the creator
+    /// releases that pass [`Filters::shows_release`] are kept: the creator
     /// must pass the filters, and a release with artifacts needs at least one
     /// that passes too.
     ///
@@ -347,7 +347,7 @@ impl Releases {
                     .and_then(|t| titles.title(t))
                     .or_else(|| titles.title(release.oid()));
                 let tag_name = release.tag().and_then(|t| tag_names.tag_name(t));
-                let keep = keep_filtered || release.is_visible(&filters);
+                let keep = keep_filtered || filters.shows_release(&release);
                 keep.then(|| Release::new(id, &release, aliases, filters, title, tag_name))
             })
             .collect();
@@ -473,7 +473,7 @@ impl Release {
         let mut artifacts: Vec<_> = release
             .artifacts()
             .iter()
-            .filter(|(_cid, artifact)| artifact.is_visible(&filters))
+            .filter(|(_cid, artifact)| filters.shows_artifact(artifact))
             .map(|(cid, artifact)| {
                 let mut locations: Vec<_> = artifact
                     .locations()
@@ -536,7 +536,7 @@ impl Release {
             creator,
             creator_alias: resolve(&creator, aliases),
             artifacts,
-            local: filters.local.copied(),
+            local: filters.trust.local.copied(),
         }
     }
 
@@ -1133,6 +1133,7 @@ impl VerifyMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trust::Trust;
     use std::str::FromStr;
 
     /// A valid CIDv1 (raw codec, sha2-256) for output-shape assertions.
@@ -1186,10 +1187,12 @@ mod tests {
                 (ReleaseId::from(id), release)
             });
             let filters = Filters {
-                delegates: &delegates,
+                trust: Trust {
+                    delegates: &delegates,
+                    local: None,
+                    all_authors: false,
+                },
                 redacted,
-                all_authors: false,
-                local: None,
             };
             let aliases = std::collections::HashMap::new();
             Releases::new(all, &aliases, filters, false, &(), &())

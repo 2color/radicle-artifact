@@ -15,7 +15,7 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
-use radicle_artifact::trust::{classify, Candidate, Untrusted};
+use radicle_artifact::trust::{Trust, Untrusted};
 use radicle_artifact::*;
 use radicle_artifact_client::{sync::Client, DownloadArgs, FetchArgs};
 use radicle_artifact_core::cid as share;
@@ -152,12 +152,12 @@ fn release_visible(
     local: &Did,
     all_authors: bool,
 ) -> bool {
-    release.has_visible_creator(&Filters {
+    Trust {
         delegates,
-        redacted: false,
-        all_authors,
         local: Some(local),
-    })
+        all_authors,
+    }
+    .trusts(release.creator())
 }
 
 pub(crate) fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
@@ -1564,10 +1564,12 @@ fn show_release(
         };
 
     let filters = Filters {
-        delegates,
+        trust: Trust {
+            delegates,
+            local: Some(local),
+            all_authors,
+        },
         redacted,
-        all_authors,
-        local: Some(local),
     };
     let shown = display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
     if use_pretty(pretty, json) {
@@ -1611,10 +1613,12 @@ fn list_releases(
             }
         });
     let filters = Filters {
-        delegates,
+        trust: Trust {
+            delegates,
+            local: Some(local),
+            all_authors,
+        },
         redacted,
-        all_authors,
-        local: Some(local),
     };
     let releases = display::Releases::new(iter, aliases, filters, false, repo, repo);
     if use_pretty(pretty, json) {
@@ -1728,12 +1732,12 @@ fn run_verify(
         let artifact = release
             .artifact(&cid)
             .expect("find_by_cid only returns releases containing the CID");
-        match classify(
-            &Candidate::new(&release, artifact),
+        let trust = Trust {
             delegates,
-            local,
+            local: Some(local),
             all_authors,
-        ) {
+        };
+        match trust.classify(&release, artifact) {
             Ok(()) => matched.push(display::VerifyMatch::new(
                 release_id,
                 &release,

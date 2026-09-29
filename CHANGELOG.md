@@ -35,38 +35,40 @@ This change includes:
 
 ### Visibility filters in the library
 
-The `delegate` bucket of `counts()` is close to the default `list`, but not equal. `list` also hides a release when every artifact is by a non-delegate, and it shows releases created by the local user. Use `is_visible` to get exactly the releases `list` shows.
+The `delegate` bucket of `counts()` is close to the default `list`, but not equal. `list` also hides a release when every artifact is by a non-delegate, and it shows releases created by the local user. Use `Filters::shows_release` to get exactly the releases `list` shows.
 
 `rad-artifact list` filters releases by creator, and artifacts by redaction and author. The library now exposes these rules, so other consumers can apply them:
 
-- `Artifact::is_visible(&Filters)` checks one artifact.
-- `Release::has_visible_creator(&Filters)` checks the release creator. Only delegates and `local` pass, unless `all_authors` is set.
-- `Release::is_visible(&Filters)` checks one release. The creator must pass. Then a release with no artifacts is visible, and any other release is visible when at least one of its artifacts is.
+- `Filters::shows_artifact(&Artifact)` checks one artifact.
+- `Trust::trusts(release.creator())` checks the release creator. Only delegates and `local` pass, unless `all_authors` is set.
+- `Filters::shows_release(&Release)` checks one release. The creator must pass. Then a release with no artifacts is shown, and any other release is shown when at least one of its artifacts is.
 
 `delegates` is the repository's delegate set. `Releases::delegates()` returns it.
 
 This example prints the default `list` view:
 
 ```rust
-use radicle_artifact::{Filters, Releases};
+use radicle_artifact::{trust::Trust, Filters, Releases};
 
 let releases = Releases::open(&repo)?;
 let filters = Filters {
-    delegates: releases.delegates(),
-    redacted: false,    // hide redacted artifacts
-    all_authors: false, // hide releases and artifacts by non-delegates...
-    local: None,        // ...with no local user to exempt
+    trust: Trust {
+        delegates: releases.delegates(),
+        local: None,        // no local user to exempt...
+        all_authors: false, // ...so hide releases and artifacts by non-delegates
+    },
+    redacted: false, // hide redacted artifacts
 };
 
 for entry in releases.list()? {
     let (id, release) = entry?;
     // Skip releases by other creators, or with every artifact filtered out.
-    if !release.is_visible(&filters) {
+    if !filters.shows_release(&release) {
         continue;
     }
     println!("{id}");
     for (cid, artifact) in release.artifacts() {
-        if artifact.is_visible(&filters) {
+        if filters.shows_artifact(artifact) {
             println!("  {cid}");
         }
     }
@@ -75,8 +77,17 @@ for entry in releases.list()? {
 
 `Release::has_unredacted_artifacts` is removed. Use these instead:
 
-- `Release::is_visible(&Filters)` to match `list`.
+- `Filters::shows_release(&Release)` to match `list`.
 - `Release::is_fully_redacted(&delegates)` for the redaction check alone.
+
+### Trust rules split from visibility filters
+
+The trust rules (who may create a release, register an artifact, or withdraw one) are now a separate `trust::Trust` type. `Filters` keeps only the view option `redacted`, and holds a `Trust` for the rest.
+
+- `Filters { delegates, local, all_authors, .. }` becomes `Filters { trust: Trust { delegates, local, all_authors }, .. }`.
+- `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` becomes `Trust::classify(release, artifact)`. `local` is now an `Option`.
+- `trust::Candidate` is no longer public.
+- `Trust::trusts(&did)` checks one author.
 
 ### Sorted, lazy release listing
 

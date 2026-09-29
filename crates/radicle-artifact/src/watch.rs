@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use radicle::identity::Did;
 
-use crate::trust::{classify, Candidate};
+use crate::trust::Trust;
 use crate::{Cid, Release, ReleaseId, METADATA_KEY_SIZE_BYTES};
 
 /// One artifact a watching node would seed.
@@ -33,7 +33,7 @@ pub struct Wanted {
 /// The trusted artifacts in a repository that a node is not seeding yet,
 /// newest release first.
 ///
-/// Trust is [`classify`] with `all_authors: false` — the same rule
+/// Trust is [`Trust::classify`] with `all_authors: false` — the same rule
 /// `verify` applies — so a release or artifact from a stranger is skipped,
 /// and a redaction by the artifact's author or by a delegate withdraws it.
 ///
@@ -52,6 +52,11 @@ pub fn wanted(
     let mut ordered: Vec<&(ReleaseId, Release)> = releases.iter().collect();
     ordered.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
 
+    let trust = Trust {
+        delegates,
+        local: Some(local),
+        all_authors: false,
+    };
     let mut seen: HashSet<Cid> = HashSet::new();
     let mut wanted = Vec::new();
     for (release_id, release) in ordered {
@@ -59,7 +64,7 @@ pub fn wanted(
             if !seen.insert(*cid) {
                 continue;
             }
-            if classify(&Candidate::new(release, artifact), delegates, local, false).is_err() {
+            if trust.classify(release, artifact).is_err() {
                 continue;
             }
             if is_seeded(cid) {
