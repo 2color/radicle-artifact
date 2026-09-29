@@ -21,6 +21,7 @@ Update your code and scripts as follows. The sections below explain each change.
 | `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` | `trust.classify(release, artifact)`              |
 | `trust::Candidate`                                                     | Removed from the public API                                    |
 | `Release::has_unredacted_artifacts()`                                  | `filters.shows_release(&release)` or `release.is_fully_redacted(&delegates)` |
+| `artifact.metadata()`                                                  | `artifact.trusted_metadata(&delegates)`, which returns an owned map |
 
 ### Empty releases are normal releases
 
@@ -105,6 +106,15 @@ The trust rules decide who may create a release, register an artifact, or withdr
 - `Trust::classify(release, artifact)` replaces `trust::classify`. `local` is now an `Option<&Did>`.
 - `trust::may_amend(&did, &author, &delegates)` is true when `did` may withdraw the artifact or change its metadata: its author or a delegate.
 - `trust::withdrawals(&artifact, &delegates)` returns the redactions that count, from parties that pass `may_amend`.
+
+### Metadata ignores untrusted writers
+
+Before, only the CLI checked who may write metadata. A patched client could write metadata that every node showed. Now the library applies the same rule as for redactions: for each key, the last write from the artifact's author or a delegate wins. Writes from other users are recorded, but have no effect.
+
+- `Artifact::metadata` is renamed `Artifact::trusted_metadata(&delegates)`. It returns the metadata that holds. It takes the delegate set, because the delegate set is not part of the COB.
+- `trust::may_amend` now also tells whether `did`'s metadata writes take effect. Use it to gate metadata edits.
+- `trust::metadata(&artifact, &delegates)` applies the rule.
+- The cache freshness token now holds a format version. Cached releases in the old format count as stale, and the next read rebuilds them from git.
 
 ### Sorted, lazy release listing
 

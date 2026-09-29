@@ -83,7 +83,7 @@ Releases contain one or more **Artifacts**, each identified by a content identif
 
 Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. The author's own attestation is a no-op, because registering already implies it. They can also **redact** an artifact with a reason, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Anyone can redact, but only a redaction by the artifact's author or a delegate withdraws it; other redactions are ignored, so no stranger can veto a release. Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
-The artifact author and repository delegates can attach free-form **metadata** entries to an artifact, e.g. a build-environment note or an SBOM URL. Keys are strings; values are arbitrary JSON. The keyspace is shared (last-writer-wins). Per-entry attribution is not stored on the entry itself, but every write is a signed COB op, so the writer's DID is recoverable from the log.
+The artifact author and repository delegates can attach free-form **metadata** entries to an artifact, e.g. a build-environment note or an SBOM URL. Keys are strings; values are arbitrary JSON. The keyspace is shared: for each key, the last write from the author or a delegate wins. Anyone can write, but writes from other users have no effect.
 
 Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key.
 
@@ -107,7 +107,7 @@ Release
         ├── locations: Map<Did, Set<Url>>
         ├── attestations: Set<Did>    # users that verified the CID
         ├── redactions: Map<Did, String> # users that flagged the artifact, with reason
-        └── metadata: Map<String, JsonValue> # free-form annotations (author/delegate writes)
+        └── metadata: Map<String, Map<DID, Write>> # latest write per user per key; reads keep author/delegate writes
 ```
 
 - **Cid** — a string newtype for any content-addressing scheme (CIDv1, sha256, etc.).
@@ -129,7 +129,7 @@ Everything else works without the Radicle node running: computing CIDs, reading 
 
 ## Collaboration and trust model
 
-All actions on a release are signed by the acting user's DID. Most actions — creating a release, adding an artifact, attesting, redacting, registering a location — are open to any user. The exceptions are renaming an artifact (constrained to the artifact's original author, enforced by the COB) and writing metadata (constrained to the artifact's author or a repository delegate, enforced by the CLI only; the COB accepts any signed write).
+All actions on a release are signed by the acting user's DID. Most actions — creating a release, adding an artifact, attesting, redacting, registering a location — are open to any user. The exceptions are renaming an artifact (constrained to the artifact's original author, enforced by the COB) and writing metadata (constrained to the artifact's author or a repository delegate). The COB records every metadata write, because nodes can disagree on the delegate set. Reads then keep only the writes from the author and the delegates, the same rule that applies to redactions.
 
 Trust is inherited from the repository's delegate set. By default, commands consider only releases and artifacts authored by a delegate or by the local user. Contributions from other users are hidden. Pass `--all-authors` to widen the view. Targeting a specific release with `--release <id>` works regardless of who created it, but its artifacts by other users stay hidden without `--all-authors`.
 

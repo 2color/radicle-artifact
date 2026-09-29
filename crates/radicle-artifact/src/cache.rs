@@ -191,6 +191,22 @@ impl Store {
         }
     }
 
+    /// Store `release` as a raw blob, to simulate a row in an older format.
+    #[cfg(test)]
+    pub(crate) fn update_raw(&self, repo: &RepoId, id: &ReleaseId, head: &str, release: &str) {
+        let mut stmt = self
+            .db
+            .prepare(
+                "INSERT OR REPLACE INTO releases (id, repo, head, release) VALUES (?1, ?2, ?3, ?4)",
+            )
+            .unwrap();
+        stmt.bind((1, id.to_string().as_str())).unwrap();
+        stmt.bind((2, repo.to_string().as_str())).unwrap();
+        stmt.bind((3, head)).unwrap();
+        stmt.bind((4, release)).unwrap();
+        stmt.next().unwrap();
+    }
+
     /// Every cached release for a repository.
     pub fn list(&self, repo: &RepoId) -> Result<Vec<(ReleaseId, Release)>, Error> {
         let mut stmt = self
@@ -280,12 +296,17 @@ impl Store {
     }
 }
 
-/// Derive a stable freshness token from a COB's tip OIDs. Equality of the token
-/// across two reads means the COB's git state is unchanged.
+/// Version of the cached [`Release`] format. Bump it when that format
+/// changes: older rows then fail the freshness check and are rebuilt on read.
+const FORMAT: u32 = 2;
+
+/// Derive a stable freshness token from a COB's tip OIDs and the cache
+/// [`FORMAT`]. Equality of the token across two reads means the COB's git
+/// state is unchanged and the row has the current format.
 pub fn head_token(tips: impl IntoIterator<Item = Oid>) -> String {
     let mut tips: Vec<String> = tips.into_iter().map(|o| o.to_string()).collect();
     tips.sort();
-    tips.join(",")
+    format!("v{FORMAT}:{}", tips.join(","))
 }
 
 /// Run `f` inside an immediate write transaction, committing on `Ok` and rolling

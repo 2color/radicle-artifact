@@ -517,7 +517,7 @@ impl Release {
                     locations,
                     attestations,
                     redactions,
-                    metadata: artifact.metadata().clone(),
+                    metadata: artifact.trusted_metadata(filters.trust.delegates),
                 }
             })
             .collect();

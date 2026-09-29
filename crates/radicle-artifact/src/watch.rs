@@ -74,7 +74,7 @@ pub fn wanted(
                 release_id: *release_id,
                 cid: *cid,
                 name: artifact.name().to_owned(),
-                size_hint: size_hint(artifact),
+                size_hint: size_hint(artifact, delegates),
             });
         }
     }
@@ -82,8 +82,11 @@ pub fn wanted(
 }
 
 /// The `sizeBytes` metadata hint, when present and a plain integer.
-fn size_hint(artifact: &crate::Artifact) -> Option<u64> {
-    artifact.metadata().get(METADATA_KEY_SIZE_BYTES)?.as_u64()
+fn size_hint(artifact: &crate::Artifact, delegates: &BTreeSet<Did>) -> Option<u64> {
+    artifact
+        .trusted_metadata(delegates)
+        .get(METADATA_KEY_SIZE_BYTES)?
+        .as_u64()
 }
 
 /// Whether seeding an artifact keeps the store within `limit` total bytes.
@@ -146,7 +149,10 @@ mod tests {
             .map(|(did_n, reason)| (did(*did_n).to_string(), serde_json::json!(reason)))
             .collect();
         let metadata = match size {
-            Some(size) => serde_json::json!({ METADATA_KEY_SIZE_BYTES: size }),
+            // The author's own write, so it holds.
+            Some(size) => serde_json::json!({
+                METADATA_KEY_SIZE_BYTES: { did(author).to_string(): { "Set": size } }
+            }),
             None => serde_json::json!({}),
         };
         let release: Release = serde_json::from_value(serde_json::json!({

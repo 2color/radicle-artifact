@@ -212,14 +212,22 @@ pub struct Artifact {
     /// Users that have redacted this artifact, with their stated reason.
     #[serde(default)]
     redactions: BTreeMap<Did, String>,
-    /// Free-form key/value annotations contributed by the artifact's
-    /// author or repository delegates. Keys are strings; values are
-    /// arbitrary JSON. Shared keyspace, last-writer-wins.
-    /// Authorization is enforced at the CLI layer; the COB itself accepts
-    /// any signed action for replay determinism. Per-entry attribution is
-    /// not stored — the COB entry log retains signatures for audit.
+    /// Free-form key/value annotations. Keys are strings; values are
+    /// arbitrary JSON. For each key, each party's latest write, in write
+    /// order. Anyone may write; [`Self::trusted_metadata`] reads only the
+    /// writes of the author and the delegates. The delegate set is not part
+    /// of the COB, so replay keeps every write and readers filter.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    metadata: BTreeMap<String, serde_json::Value>,
+    metadata: BTreeMap<String, IndexMap<Did, MetadataWrite>>,
+}
+
+/// One party's latest write to a metadata key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum MetadataWrite {
+    Set(serde_json::Value),
+    // Kept, so that a removal by a delegate overrides an earlier write by
+    // the author, and the reverse.
+    Removed,
 }
 
 impl Artifact {
@@ -292,9 +300,21 @@ impl Artifact {
         !trust::withdrawals(self, delegates).is_empty()
     }
 
-    /// Get all metadata entries.
-    pub fn metadata(&self) -> &BTreeMap<String, serde_json::Value> {
-        &self.metadata
+    /// Get the metadata that holds under the trust rules: for each key, the
+    /// last write from the artifact's author or a repository delegate — see
+    /// [`trust::metadata`].
+    pub fn trusted_metadata(
+        &self,
+        delegates: &BTreeSet<Did>,
+    ) -> BTreeMap<String, serde_json::Value> {
+        trust::metadata(self, delegates)
+    }
+
+    /// Record `user`'s write to `key` as the most recent one.
+    fn write_metadata(&mut self, user: Did, key: String, write: MetadataWrite) {
+        let writes = self.metadata.entry(key).or_default();
+        writes.shift_remove(&user);
+        writes.insert(user, write);
     }
 
     /// Get locations filtered by URL scheme, with the contributing DID.
@@ -547,12 +567,12 @@ impl Release {
             }
             Action::SetMetadata { cid, key, value } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    artifact.metadata.insert(key, value);
+                    artifact.write_metadata(user, key, MetadataWrite::Set(value));
                 }
             }
             Action::RemoveMetadata { cid, key } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    artifact.metadata.remove(&key);
+                    artifact.write_metadata(user, key, MetadataWrite::Removed);
                 }
             }
         }
@@ -1090,13 +1110,11 @@ where
             return Ok(None);
         }
         let token = cache::head_token(tips);
-        if let Some((head, release)) = cache
-            .get(&repo_id, id)
-            .map_err(|e| CacheOpError::Cache(e.to_string()))?
-        {
-            if head == token {
-                return Ok(Some(release));
-            }
+        match cache.get(&repo_id, id) {
+            Ok(Some((head, release))) if head == token => return Ok(Some(release)),
+            // A row in an older format fails to parse; rebuild it below.
+            Ok(_) | Err(cache::Error::Json(_)) => {}
+            Err(e) => return Err(CacheOpError::Cache(e.to_string())),
         }
         // Stale or missing: re-materialize.
         let store = self.read_store().map_err(CacheOpError::Store)?;
@@ -1366,10 +1384,10 @@ where
     /// The key is validated here (non-empty, within [`MAX_METADATA_KEY_LEN`]
     /// bytes, no control characters) and the serialized value must fit
     /// within [`MAX_METADATA_VALUE_LEN`] so malformed or oversized entries
-    /// never enter the COB log. Authorization (artifact author or current
-    /// repo delegate) must still be enforced by the caller; the COB layer
-    /// is permissive so replay stays deterministic across nodes that may
-    /// disagree on the delegate set.
+    /// never enter the COB log. Anyone may write, but
+    /// [`Artifact::trusted_metadata`] reads only the writes of the
+    /// artifact's author and the repository delegates. To gate edits, check
+    /// [`trust::may_amend`] for the signer first.
     pub fn set_metadata<G>(
         &mut self,
         cid: Cid,
@@ -1390,7 +1408,9 @@ where
 
     /// Remove a metadata entry from an artifact.
     ///
-    /// Authorization is the caller's responsibility (see [`Self::set_metadata`]).
+    /// Only a removal by the artifact's author or a repository delegate takes
+    /// effect. To gate edits, check [`trust::may_amend`] for the signer first
+    /// (see [`Self::set_metadata`]).
     pub fn remove_metadata<G>(
         &mut self,
         cid: Cid,
@@ -1781,7 +1801,9 @@ mod test {
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(artifact.name(), "binary");
         assert_eq!(
-            artifact.metadata().get(METADATA_KEY_SIZE_BYTES),
+            artifact
+                .trusted_metadata(&BTreeSet::new())
+                .get(METADATA_KEY_SIZE_BYTES),
             Some(&serde_json::json!(4096))
         );
     }
@@ -2829,7 +2851,7 @@ mod test {
 
         let artifact = release.artifact(&cid).unwrap();
         assert_eq!(
-            artifact.metadata().get("build-env"),
+            artifact.trusted_metadata(&BTreeSet::new()).get("build-env"),
             Some(&serde_json::json!("nix --pure")),
         );
     }
@@ -2856,19 +2878,23 @@ mod test {
             .unwrap();
 
         assert_eq!(
-            release.artifact(&cid).unwrap().metadata().get("sbom"),
+            release
+                .artifact(&cid)
+                .unwrap()
+                .trusted_metadata(&BTreeSet::new())
+                .get("sbom"),
             Some(&value),
         );
     }
 
     #[test]
-    fn set_metadata_last_writer_wins() {
-        // The COB layer is permissive: any signer may overwrite any key.
-        // CLI-level authorization is what gates real-world contributions.
+    fn set_metadata_last_trusted_writer_wins() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
         let bob = peer(1);
+        let mallory = peer(2);
+        let delegates = BTreeSet::from([Did::from(bob.public_key())]);
         let oid = commit(&repo.backend, "Test Commit");
         let mut releases = Releases::open(&*repo).unwrap();
         let mut release = releases.create(oid, None, &alice.signer).unwrap();
@@ -2883,11 +2909,98 @@ mod test {
         release
             .set_metadata(cid, "key".into(), "second".into(), &bob)
             .unwrap();
+        // Mallory is neither the author nor a delegate, so the COB records
+        // the write but it carries no authority.
+        release
+            .set_metadata(cid, "key".into(), "third".into(), &mallory)
+            .unwrap();
 
+        let artifact = release.artifact(&cid).unwrap();
         assert_eq!(
-            release.artifact(&cid).unwrap().metadata().get("key"),
+            artifact.trusted_metadata(&delegates).get("key"),
             Some(&serde_json::json!("second")),
         );
+        // Without Bob as a delegate, only the author's write holds.
+        assert_eq!(
+            artifact.trusted_metadata(&BTreeSet::new()).get("key"),
+            Some(&serde_json::json!("first")),
+        );
+    }
+
+    #[test]
+    fn remove_metadata_ignores_untrusted_writers() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
+        let mallory = peer(2);
+        let delegates = BTreeSet::from([Did::from(bob.public_key())]);
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+
+        let cid = test_cid(1);
+        release
+            .register_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "a".into(), "1".into(), &alice.signer)
+            .unwrap();
+        release
+            .set_metadata(cid, "b".into(), "2".into(), &alice.signer)
+            .unwrap();
+        release.remove_metadata(cid, "a".into(), &bob).unwrap();
+        release.remove_metadata(cid, "b".into(), &mallory).unwrap();
+
+        // A delegate's removal overrides the author's earlier write; a
+        // stranger's removal does not.
+        let metadata = release.artifact(&cid).unwrap().trusted_metadata(&delegates);
+        assert!(!metadata.contains_key("a"));
+        assert_eq!(metadata.get("b"), Some(&serde_json::json!("2")));
+    }
+
+    /// Metadata writes as `(key, by_alice)`, with bob as the other party.
+    /// `key` goes alice, bob, alice and `other` goes bob, alice, bob, so each
+    /// key's latest trusted write is from a different party. A sort by DID
+    /// gets one of the two keys wrong.
+    const INTERLEAVED_WRITES: [(&str, bool); 6] = [
+        ("key", true),
+        ("key", false),
+        ("key", true),
+        ("other", false),
+        ("other", true),
+        ("other", false),
+    ];
+
+    #[test]
+    fn set_metadata_rewrite_moves_to_latest() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
+        let delegates = BTreeSet::from([Did::from(bob.public_key())]);
+        let oid = commit(&repo.backend, "Test Commit");
+        let mut releases = Releases::open(&*repo).unwrap();
+        let mut release = releases.create(oid, None, &alice.signer).unwrap();
+        let cid = test_cid(1);
+        release
+            .register_artifact(cid, "binary".into(), &alice.signer)
+            .unwrap();
+        for (n, (key, by_alice)) in INTERLEAVED_WRITES.into_iter().enumerate() {
+            let (key, value) = (key.to_owned(), serde_json::json!(n));
+            if by_alice {
+                release
+                    .set_metadata(cid, key, value, &alice.signer)
+                    .unwrap();
+            } else {
+                release.set_metadata(cid, key, value, &bob).unwrap();
+            }
+        }
+
+        // A party's second write replaces its first as the latest one.
+        let metadata = release.artifact(&cid).unwrap().trusted_metadata(&delegates);
+        assert_eq!(metadata.get("key"), Some(&serde_json::json!(2)));
+        assert_eq!(metadata.get("other"), Some(&serde_json::json!(5)));
     }
 
     #[test]
@@ -2913,8 +3026,11 @@ mod test {
             .remove_metadata(cid, "a".into(), &alice.signer)
             .unwrap();
 
-        let metadata = release.artifact(&cid).unwrap().metadata();
-        assert!(metadata.get("a").is_none());
+        let metadata = release
+            .artifact(&cid)
+            .unwrap()
+            .trusted_metadata(&BTreeSet::new());
+        assert!(!metadata.contains_key("a"));
         assert_eq!(metadata.get("b"), Some(&serde_json::json!("2")));
     }
 
@@ -2949,7 +3065,11 @@ mod test {
         ));
 
         // None of the rejected keys should have been recorded.
-        assert!(release.artifact(&cid).unwrap().metadata().is_empty());
+        assert!(release
+            .artifact(&cid)
+            .unwrap()
+            .trusted_metadata(&BTreeSet::new())
+            .is_empty());
     }
 
     #[test]
@@ -2972,7 +3092,11 @@ mod test {
             release.set_metadata(cid, "k".into(), big, &alice.signer),
             Err(crate::error::Metadata::ValueTooLarge { .. }),
         ));
-        assert!(release.artifact(&cid).unwrap().metadata().is_empty());
+        assert!(release
+            .artifact(&cid)
+            .unwrap()
+            .trusted_metadata(&BTreeSet::new())
+            .is_empty());
     }
 
     #[test]
@@ -3009,7 +3133,11 @@ mod test {
             .remove_metadata(cid, "missing".into(), &alice.signer)
             .unwrap();
 
-        assert!(release.artifact(&cid).unwrap().metadata().is_empty());
+        assert!(release
+            .artifact(&cid)
+            .unwrap()
+            .trusted_metadata(&BTreeSet::new())
+            .is_empty());
     }
 
     #[test]
@@ -3033,7 +3161,11 @@ mod test {
         drop(release);
         let release = releases.get(&id).unwrap().unwrap();
         assert_eq!(
-            release.artifact(&cid).unwrap().metadata().get("build"),
+            release
+                .artifact(&cid)
+                .unwrap()
+                .trusted_metadata(&BTreeSet::new())
+                .get("build"),
             Some(&serde_json::json!("ok")),
         );
     }
@@ -3163,6 +3295,78 @@ mod test {
         {
             (None, crate::discovery::Index::open(storage))
         }
+    }
+
+    #[test]
+    #[cfg(feature = "sqlite")]
+    fn cache_rebuilds_rows_in_an_older_format() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let oid = commit(&repo.backend, "release commit");
+        let cache = memory_cache();
+        let mut releases = Releases::open(&*repo).unwrap().with_cache(cache.clone());
+        let cid = test_cid(1);
+        let id = {
+            let mut release = releases.create(oid, None, &alice.signer).unwrap();
+            release
+                .register_artifact(cid, "bin".into(), &alice.signer)
+                .unwrap();
+            *release.id()
+        };
+
+        // A row from before the format change: unversioned head, old metadata.
+        releases.get(&id).unwrap();
+        let (head, _) = cache.get(&repo.id, &id).unwrap().unwrap();
+        let (_, tips) = head.split_once(':').unwrap();
+        let old = r#"{"oid":"0000000000000000000000000000000000000000","creator":"x","metadata":{"k":"v"}}"#;
+        cache.update_raw(&repo.id, &id, tips, old);
+        // Both read paths rewrite the row, so it parses again.
+        assert!(releases.get(&id).unwrap().unwrap().artifact(&cid).is_some());
+        assert!(cache.get(&repo.id, &id).is_ok());
+
+        cache.update_raw(&repo.id, &id, tips, old);
+        assert_eq!(releases.list().unwrap().count(), 1);
+        assert!(cache.get(&repo.id, &id).is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "sqlite")]
+    fn cache_keeps_metadata_write_order() {
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let bob = peer(1);
+        let delegates = BTreeSet::from([Did::from(bob.public_key())]);
+        let oid = commit(&repo.backend, "release commit");
+        let cache = memory_cache();
+        let mut releases = Releases::open(&*repo).unwrap().with_cache(cache.clone());
+        let cid = test_cid(1);
+        let id = {
+            let mut release = releases.create(oid, None, &alice.signer).unwrap();
+            release
+                .register_artifact(cid, "bin".into(), &alice.signer)
+                .unwrap();
+            for (n, (key, by_alice)) in INTERLEAVED_WRITES.into_iter().enumerate() {
+                let (key, value) = (key.to_owned(), serde_json::json!(n));
+                if by_alice {
+                    release
+                        .set_metadata(cid, key, value, &alice.signer)
+                        .unwrap();
+                } else {
+                    release.set_metadata(cid, key, value, &bob).unwrap();
+                }
+            }
+            *release.id()
+        };
+
+        let from_git = Releases::open(&*repo).unwrap().get(&id).unwrap().unwrap();
+        // A cached read stores the row; the second read parses it back.
+        releases.get(&id).unwrap();
+        let (_, from_cache) = cache.get(&repo.id, &id).unwrap().unwrap();
+        let metadata =
+            |release: &crate::Release| release.artifact(&cid).unwrap().trusted_metadata(&delegates);
+        assert_eq!(metadata(&from_cache), metadata(&from_git));
     }
 
     #[test]

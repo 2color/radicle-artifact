@@ -3,10 +3,11 @@
 //! Trust is anchored in the repository's delegate set: by default only
 //! releases and artifacts authored by a delegate — or by the local user —
 //! count, and a redaction from the artifact's own author or from a
-//! delegate withdraws it. [`Trust`] is the single place those rules
-//! live, shared by `list`/`show` (through [`crate::Filters`]), by `verify`
-//! (does this file match something a delegate published?) and by `watch`
-//! (is this artifact worth seeding?).
+//! delegate withdraws it. The same parties decide the artifact's
+//! metadata. [`Trust`] is the single place those rules live, shared by
+//! `list`/`show` (through [`crate::Filters`]), by `verify` (does this file
+//! match something a delegate published?) and by `watch` (is this artifact
+//! worth seeding?).
 //!
 //! The rules read only the release creator and the artifact, so they can
 //! be tested without a repository.
@@ -14,8 +15,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use radicle::identity::Did;
+use serde_json::Value;
 
-use crate::{Artifact, Release};
+use crate::{Artifact, MetadataWrite, Release};
 
 /// Why a release that registers a CID doesn't count as verification.
 ///
@@ -96,6 +98,26 @@ pub fn withdrawals(artifact: &Artifact, delegates: &BTreeSet<Did>) -> BTreeMap<D
         .iter()
         .filter(|(did, _)| may_amend(did, &artifact.author, delegates))
         .map(|(did, reason)| (*did, reason.clone()))
+        .collect()
+}
+
+/// The metadata of `artifact` that holds: for each key, the last write from
+/// a party that [`may_amend`] it. Other writes carry no authority, or anyone
+/// on the network could overwrite a release's metadata.
+pub fn metadata(artifact: &Artifact, delegates: &BTreeSet<Did>) -> BTreeMap<String, Value> {
+    artifact
+        .metadata
+        .iter()
+        .filter_map(|(key, writes)| {
+            let (_, write) = writes
+                .iter()
+                .rev()
+                .find(|(did, _)| may_amend(did, &artifact.author, delegates))?;
+            match write {
+                MetadataWrite::Set(value) => Some((key.clone(), value.clone())),
+                MetadataWrite::Removed => None,
+            }
+        })
         .collect()
 }
 
