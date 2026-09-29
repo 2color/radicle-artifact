@@ -3719,9 +3719,9 @@ Examples:
     /// Report repository-wide artifact statistics.
     ///
     /// Today it reports release counts, split by whether a repository
-    /// delegate created the release and whether it still has an artifact
-    /// to show. A release is hidden when every artifact in it has been
-    /// redacted by a trusted party, or when it has no artifacts at all.
+    /// delegate created the release and whether its artifacts were
+    /// redacted. A release is redacted when every artifact in it has been
+    /// redacted by a trusted party.
     ///
     /// Unlike a ref walk, this materializes every release, so it is
     /// served from the cache where one is available.

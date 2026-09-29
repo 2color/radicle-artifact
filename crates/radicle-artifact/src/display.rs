@@ -972,9 +972,9 @@ impl Stats {
                 total: counts.total(),
                 visible: counts.visible(),
                 delegate: counts.delegate,
-                delegate_hidden: counts.delegate_hidden,
+                delegate_redacted: counts.delegate_redacted,
                 other: counts.other,
-                other_hidden: counts.other_hidden,
+                other_redacted: counts.other_redacted,
             },
         }
     }
@@ -988,11 +988,11 @@ impl Stats {
             vec![style.dim("visible"), r.visible.to_string()],
             vec![
                 style.dim("by delegate"),
-                format!("{} visible, {} hidden", r.delegate, r.delegate_hidden),
+                format!("{} visible, {} redacted", r.delegate, r.delegate_redacted),
             ],
             vec![
                 style.dim("by others"),
-                format!("{} visible, {} hidden", r.other, r.other_hidden),
+                format!("{} visible, {} redacted", r.other, r.other_redacted),
             ],
         ];
         s.push_str(&format_table(&rows, 2));
@@ -1006,17 +1006,16 @@ impl Stats {
 ///
 /// "Visible" means the release has an artifact no trusted party redacted,
 /// from any author, so `visible` is the row count of
-/// `rad-artifact list --all-authors`. "Hidden" includes a release with no
-/// artifacts at all.
+/// `rad-artifact list --all-authors`. A release with no artifacts is visible.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReleaseStats {
     total: usize,
     visible: usize,
     delegate: usize,
-    delegate_hidden: usize,
+    delegate_redacted: usize,
     other: usize,
-    other_hidden: usize,
+    other_redacted: usize,
 }
 
 /// `verify --json` payload: the CID computed from the local file, and every
@@ -1244,9 +1243,9 @@ mod tests {
     fn stats_nests_release_figures_in_camelcase() {
         let counts = ReleaseCounts {
             delegate: 3,
-            delegate_hidden: 1,
+            delegate_redacted: 1,
             other: 2,
-            other_hidden: 4,
+            other_redacted: 4,
         };
         let out = Stats::new(&counts);
         assert_eq!(
@@ -1258,9 +1257,9 @@ mod tests {
                     "total": 10,
                     "visible": 5,
                     "delegate": 3,
-                    "delegateHidden": 1,
+                    "delegateRedacted": 1,
                     "other": 2,
-                    "otherHidden": 4,
+                    "otherRedacted": 4,
                 }
             })
         );
@@ -1270,14 +1269,14 @@ mod tests {
     fn stats_pretty_reports_each_bucket() {
         let counts = ReleaseCounts {
             delegate: 3,
-            delegate_hidden: 1,
+            delegate_redacted: 1,
             other: 2,
-            other_hidden: 4,
+            other_redacted: 4,
         };
         let out = Stats::new(&counts).pretty(Style::plain(false));
         assert_eq!(
             out,
-            "releases 10\n  visible      5\n  by delegate  3 visible, 1 hidden\n  by others    2 visible, 4 hidden\n"
+            "releases 10\n  visible      5\n  by delegate  3 visible, 1 redacted\n  by others    2 visible, 4 redacted\n"
         );
     }
 

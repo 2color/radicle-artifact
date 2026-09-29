@@ -628,33 +628,34 @@ pub type ReleaseEntry = Result<(ObjectId, Release), store::Error>;
 /// Release counts bucketed by creator trust and artifact redaction.
 ///
 /// "Delegate" means the release's [creator][Release::creator] is in
-/// [`Releases::delegates`]; "hidden" means no artifact survives the
-/// trusted-redaction filter [`Release::has_unredacted_artifacts`].
+/// [`Releases::delegates`]; "redacted" means the release has artifacts and
+/// none survives the trusted-redaction filter
+/// [`Release::has_unredacted_artifacts`]. A release with no artifacts is not
+/// redacted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ReleaseCounts {
-    /// Created by a delegate, with at least one artifact that no trusted party
-    /// redacted, from any author.
+    /// Created by a delegate, with no artifacts or at least one artifact that
+    /// no trusted party redacted, from any author.
     pub delegate: usize,
-    /// Created by a delegate, with every artifact redacted by a trusted party,
-    /// or no artifacts.
-    pub delegate_hidden: usize,
-    /// Created by a non-delegate, with at least one artifact that no trusted
-    /// party redacted, from any author.
+    /// Created by a delegate, with every artifact redacted by a trusted party.
+    pub delegate_redacted: usize,
+    /// Created by a non-delegate, with no artifacts or at least one artifact
+    /// that no trusted party redacted, from any author.
     pub other: usize,
     /// Created by a non-delegate, with every artifact redacted by a trusted
-    /// party, or no artifacts.
-    pub other_hidden: usize,
+    /// party.
+    pub other_redacted: usize,
 }
 
 impl ReleaseCounts {
     /// Total across every bucket.
     pub fn total(&self) -> usize {
-        self.delegate + self.delegate_hidden + self.other + self.other_hidden
+        self.delegate + self.delegate_redacted + self.other + self.other_redacted
     }
 
-    /// Releases with at least one unredacted artifact, from any creator: the
-    /// row count of `rad-artifact list --all-authors`.
+    /// Releases that are not redacted, from any creator: the row count of
+    /// `rad-artifact list --all-authors`.
     pub fn visible(&self) -> usize {
         self.delegate + self.other
     }
@@ -794,11 +795,13 @@ where
             ReleaseCounts::default(),
             |mut counts, (_, release)| {
                 let by_delegate = delegates.contains(release.creator());
-                match (by_delegate, release.has_unredacted_artifacts(delegates)) {
-                    (true, true) => counts.delegate += 1,
-                    (true, false) => counts.delegate_hidden += 1,
-                    (false, true) => counts.other += 1,
-                    (false, false) => counts.other_hidden += 1,
+                let redacted =
+                    !release.artifacts().is_empty() && !release.has_unredacted_artifacts(delegates);
+                match (by_delegate, redacted) {
+                    (true, false) => counts.delegate += 1,
+                    (true, true) => counts.delegate_redacted += 1,
+                    (false, false) => counts.other += 1,
+                    (false, true) => counts.other_redacted += 1,
                 }
                 counts
             },
@@ -3654,7 +3657,7 @@ mod test {
         }
         // Delegate creator, delegate artifact redacted by its own author.
         {
-            let oid = commit(&repo.backend, "alice hidden");
+            let oid = commit(&repo.backend, "alice redacted");
             let mut r = releases.create(oid, None, &alice.signer).unwrap();
             r.register_artifact(test_cid(2), "bin".into(), &alice.signer)
                 .unwrap();
@@ -3679,7 +3682,7 @@ mod test {
         }
         // Non-delegate creator, artifact redacted by a delegate.
         {
-            let oid = commit(&repo.backend, "bob hidden");
+            let oid = commit(&repo.backend, "bob redacted");
             let mut r = releases.create(oid, None, &bob.signer).unwrap();
             r.register_artifact(test_cid(5), "bin".into(), &bob.signer)
                 .unwrap();
@@ -3692,9 +3695,9 @@ mod test {
             counts,
             ReleaseCounts {
                 delegate: 1,
-                delegate_hidden: 1,
+                delegate_redacted: 1,
                 other: 2,
-                other_hidden: 1,
+                other_redacted: 1,
             }
         );
         assert_eq!(counts.total(), 5);
@@ -3731,7 +3734,7 @@ mod test {
     }
 
     #[test]
-    fn empty_release_counts_as_hidden() {
+    fn empty_release_counts_as_unredacted() {
         let test::setup::NodeWithRepo {
             node: alice, repo, ..
         } = test::setup::NodeWithRepo::default();
@@ -3739,8 +3742,8 @@ mod test {
         let oid = commit(&repo.backend, "no artifacts");
         let mut releases = Releases::open(&*repo).unwrap();
 
-        // A release with no artifacts has nothing to show, so it folds into
-        // the same bucket as a fully-redacted one.
+        // A release with no artifacts has nothing redacted, so it counts
+        // with the visible releases, as `list` shows it.
         let release = releases.create(oid, None, &alice.signer).unwrap();
         assert!(!release.has_unredacted_artifacts(&delegates));
         drop(release);
@@ -3748,7 +3751,7 @@ mod test {
         assert_eq!(
             releases.counts().unwrap(),
             ReleaseCounts {
-                delegate_hidden: 1,
+                delegate: 1,
                 ..Default::default()
             }
         );
