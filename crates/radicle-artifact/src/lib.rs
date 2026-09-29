@@ -479,10 +479,6 @@ impl Release {
     /// see [`Artifact::is_redacted_by_trusted`]. The artifact's author may be
     /// anyone.
     ///
-    /// This ignores the author filter, so a release that is not fully redacted
-    /// can still render empty in the default `list` view. Use
-    /// [`Filters::shows_release`] to match `list`.
-    ///
     /// False for a release with no artifacts.
     pub fn is_fully_redacted(&self, delegates: &BTreeSet<Did>) -> bool {
         !self.artifacts.is_empty()
@@ -3750,8 +3746,8 @@ mod test {
         );
     }
 
-    /// `Filters::shows_release` applies the redaction and author rules together,
-    /// and always shows a release with no artifacts.
+    /// `Filters::shows_release` applies the creator and redaction rules, and
+    /// ignores artifact authors.
     #[test]
     fn shows_release_applies_filters() {
         let test::setup::Network {
@@ -3779,14 +3775,12 @@ mod test {
         assert!(default.shows_release(&empty));
         drop(empty);
 
-        // Only a non-delegate artifact: hidden unless the author filter opens.
+        // Delegate creator, only a non-delegate artifact: shown.
         let oid = commit(&repo.backend, "bob artifact");
         let mut r = releases.create(oid, None, &alice.signer).unwrap();
         r.register_artifact(test_cid(1), "bin".into(), &bob.signer)
             .unwrap();
-        assert!(!default.shows_release(&r));
-        assert!(filters(false, true, None).shows_release(&r));
-        assert!(filters(false, false, Some(&bob_did)).shows_release(&r));
+        assert!(default.shows_release(&r));
         drop(r);
 
         // Non-delegate creator, delegate artifact: hidden unless the creator

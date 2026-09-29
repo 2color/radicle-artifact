@@ -321,8 +321,7 @@ impl Releases {
     /// `filters` controls artifact visibility — see [`Filters`] for the
     /// redaction and author-trust knobs. When `keep_filtered` is false, only
     /// releases that pass [`Filters::shows_release`] are kept: the creator
-    /// must pass the filters, and a release with artifacts needs at least one
-    /// that passes too.
+    /// must pass the filters, and the release must not be fully redacted.
     ///
     /// The `titles` resolver looks up the title line for each release's
     /// keying ref — the tag message when the release records a tag,

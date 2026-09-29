@@ -30,14 +30,12 @@ impl Filters<'_> {
         self.trust.trusts(artifact.author())
     }
 
-    /// Check whether `list` shows `release`.
-    ///
-    /// `trust` must trust the release creator. Then a release with no
-    /// artifacts is shown, and any other release is shown when at least one
-    /// artifact passes [`Self::shows_artifact`].
+    /// Check whether `list` shows `release`: `trust` must trust the creator,
+    /// and a trusted party must not have redacted every artifact, unless
+    /// `redacted` is set. Artifact authors do not matter here; they only
+    /// decide which artifacts [`Self::shows_artifact`] lists.
     pub fn shows_release(&self, release: &Release) -> bool {
         self.trust.trusts(release.creator())
-            && (release.artifacts().is_empty()
-                || release.artifacts().values().any(|a| self.shows_artifact(a)))
+            && (self.redacted || !release.is_fully_redacted(self.trust.delegates))
     }
 }

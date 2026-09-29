@@ -57,12 +57,14 @@ Before, when the release creator was untrusted, `rad-artifact verify` blamed the
 
 ### Show the same releases as `rad-artifact list`
 
-The library now exposes the rules that `rad-artifact list` uses, so you can show the same view:
+`rad-artifact list` now shows a release when a trusted party created it. Before, `list` also hid a delegate's release when every artifact was by a non-delegate. Now it shows the release, and hides only those artifacts.
 
-- `Filters::shows_release(&Release)` is true when the creator is trusted and the release has no artifacts or at least one shown artifact.
+The library exposes the rules that `list` uses, so you can show the same view:
+
+- `Filters::shows_release(&Release)` is true when the creator is trusted and the release is not fully redacted. Artifact authors do not matter.
 - `Filters::shows_artifact(&Artifact)` is true when the artifact passes the author and redaction filters.
 
-Do not use the `delegate` bucket of `counts()` as a stand-in for `list`. `list` also hides releases where every artifact is by a non-delegate, and it shows releases by the local user.
+By default, the releases `list` shows are the `delegate` bucket of `counts()`, plus releases by the local user.
 
 This example prints the default `list` view:
 
