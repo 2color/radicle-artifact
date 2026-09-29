@@ -289,9 +289,7 @@ impl Artifact {
     /// carries no authority. The delegate set is not part of the COB, so callers
     /// pass it in — see [`Releases::delegates`].
     pub fn is_redacted_by_trusted(&self, delegates: &BTreeSet<Did>) -> bool {
-        self.redactions
-            .keys()
-            .any(|did| trust::honours_redaction(did, &self.author, delegates))
+        !trust::withdrawals(self, delegates).is_empty()
     }
 
     /// Get all metadata entries.

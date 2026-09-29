@@ -1300,8 +1300,7 @@ fn resolve_metadata_target(
         .ok_or(error::Metadata::UnknownCid { id, cid })?
         .author();
 
-    let authorized = local == artifact_author || delegates.contains(&local);
-    if !authorized {
+    if !trust::may_amend(&local, &artifact_author, delegates) {
         return Err(error::Metadata::NotAuthorized {
             local: Box::new(local),
             artifact_author: Box::new(artifact_author),

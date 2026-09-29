@@ -88,6 +88,7 @@ The trust rules (who may create a release, register an artifact, or withdraw one
 - `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` becomes `Trust::classify(release, artifact)`. `local` is now an `Option`.
 - `trust::Candidate` is no longer public.
 - `Trust::trusts(&did)` checks one author.
+- `trust::may_amend(&did, &author, &delegates)` checks who may withdraw an artifact or change its metadata: its author or a delegate. `trust::withdrawals` returns the redactions that count.
 
 ### `verify` names an untrusted release creator
 

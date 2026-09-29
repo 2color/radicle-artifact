@@ -8,8 +8,8 @@
 //! (does this file match something a delegate published?) and by `watch`
 //! (is this artifact worth seeding?).
 //!
-//! The rules read from a private `Candidate` rather than from a repository,
-//! so they can be tested without one.
+//! The rules read only the release creator and the artifact, so they can
+//! be tested without a repository.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,34 +32,11 @@ pub enum Untrusted {
     Author(Did),
 }
 
-/// The trust inputs read from one release that registers the CID being
-/// checked. Extracted from the COB so the rules below can be tested
-/// without a repository.
-struct Candidate {
-    /// DID that created the release COB.
-    release_creator: Did,
-    /// DID that registered the artifact within that release.
-    artifact_author: Did,
-    /// Every DID that has redacted the artifact, with its stated reason.
-    redactions: BTreeMap<Did, String>,
-}
-
-impl Candidate {
-    /// Read the trust inputs out of a release and one of its artifacts.
-    fn new(release: &Release, artifact: &Artifact) -> Self {
-        Self {
-            release_creator: *release.creator(),
-            artifact_author: *artifact.author(),
-            redactions: artifact.redactions().clone(),
-        }
-    }
-}
-
 /// Whose releases and artifacts the repository trusts.
 ///
 /// By default that is a repository delegate or the local user.
 /// `all_authors` opens it up to everyone who registers or creates, but
-/// never to who may withdraw — see [`honours_redaction`].
+/// never to who may withdraw — see [`may_amend`].
 #[derive(Clone, Copy)]
 pub struct Trust<'a> {
     /// Delegates of the repository.
@@ -80,39 +57,46 @@ impl Trust<'_> {
 
     /// Apply the trust rules to `artifact` in `release`: the release and the
     /// artifact must both be authored by a trusted party, and no party
-    /// that [`honours_redaction`] accepts may have redacted the artifact.
+    /// that [`may_amend`] the artifact may have redacted it.
     pub fn classify(&self, release: &Release, artifact: &Artifact) -> Result<(), Untrusted> {
-        self.classify_candidate(&Candidate::new(release, artifact))
+        self.classify_by(release.creator(), artifact)
     }
 
-    fn classify_candidate(&self, candidate: &Candidate) -> Result<(), Untrusted> {
-        if !self.trusts(&candidate.release_creator) {
-            return Err(Untrusted::Creator(candidate.release_creator));
+    /// [`Self::classify`], given only the release's creator.
+    fn classify_by(&self, creator: &Did, artifact: &Artifact) -> Result<(), Untrusted> {
+        if !self.trusts(creator) {
+            return Err(Untrusted::Creator(*creator));
         }
         // A redaction from a passing stranger must not block the check, or
         // anyone on the network could veto a release.
-        let redactions: BTreeMap<Did, String> = candidate
-            .redactions
-            .iter()
-            .filter(|(did, _)| honours_redaction(did, &candidate.artifact_author, self.delegates))
-            .map(|(did, reason)| (*did, reason.clone()))
-            .collect();
+        let redactions = withdrawals(artifact, self.delegates);
         if !redactions.is_empty() {
             return Err(Untrusted::Redacted(redactions));
         }
-        if !self.trusts(&candidate.artifact_author) {
-            return Err(Untrusted::Author(candidate.artifact_author));
+        if !self.trusts(&artifact.author) {
+            return Err(Untrusted::Author(artifact.author));
         }
         Ok(())
     }
 }
 
-/// Check whether a redaction by `redactor` withdraws an artifact by `author`:
-/// only the author and the delegates may withdraw it. `all_authors` does not
-/// widen this — it opens up who may register an artifact, not who may
-/// withdraw one.
-pub fn honours_redaction(redactor: &Did, author: &Did, delegates: &BTreeSet<Did>) -> bool {
-    redactor == author || delegates.contains(redactor)
+/// Check whether `did` may amend an artifact by `author` — withdraw it or
+/// change its metadata: only the author and the delegates may. `all_authors`
+/// does not widen this — it opens up who may register an artifact, not who
+/// may amend one.
+pub fn may_amend(did: &Did, author: &Did, delegates: &BTreeSet<Did>) -> bool {
+    did == author || delegates.contains(did)
+}
+
+/// The redactions of `artifact` that withdraw it: those from a party that
+/// [`may_amend`] it. Other redactions carry no authority.
+pub fn withdrawals(artifact: &Artifact, delegates: &BTreeSet<Did>) -> BTreeMap<Did, String> {
+    artifact
+        .redactions
+        .iter()
+        .filter(|(did, _)| may_amend(did, &artifact.author, delegates))
+        .map(|(did, reason)| (*did, reason.clone()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -138,16 +122,23 @@ mod tests {
         BTreeSet::from([did(DELEGATE), did(OTHER_DELEGATE)])
     }
 
-    /// A candidate a delegate created and registered, with no redactions.
-    fn trusted_candidate() -> Candidate {
-        Candidate {
-            release_creator: did(DELEGATE),
-            artifact_author: did(DELEGATE),
-            redactions: BTreeMap::new(),
+    /// An artifact registered by `author`, redacted by each of `redactions`.
+    fn artifact(author: u8, redactions: &[(u8, &str)]) -> Artifact {
+        Artifact {
+            author: did(author),
+            name: "bin".to_owned(),
+            locations: BTreeMap::new(),
+            attestations: BTreeSet::new(),
+            redactions: redactions
+                .iter()
+                .map(|(n, reason)| (did(*n), (*reason).to_owned()))
+                .collect(),
+            metadata: BTreeMap::new(),
         }
     }
 
-    fn check(candidate: &Candidate, all_authors: bool) -> Result<(), Untrusted> {
+    /// Classify `artifact` in a release created by `creator`.
+    fn check(creator: u8, artifact: &Artifact, all_authors: bool) -> Result<(), Untrusted> {
         let delegates = delegates();
         let local = did(LOCAL);
         Trust {
@@ -155,60 +146,46 @@ mod tests {
             local: Some(&local),
             all_authors,
         }
-        .classify_candidate(candidate)
+        .classify_by(&did(creator), artifact)
     }
 
     #[test]
     fn delegate_registered_artifact_verifies() {
-        assert_eq!(check(&trusted_candidate(), false), Ok(()));
+        assert_eq!(check(DELEGATE, &artifact(DELEGATE, &[]), false), Ok(()));
     }
 
     #[test]
     fn stranger_authored_artifact_is_rejected() {
-        let candidate = Candidate {
-            artifact_author: did(STRANGER),
-            ..trusted_candidate()
-        };
+        let artifact = artifact(STRANGER, &[]);
         assert_eq!(
-            check(&candidate, false),
+            check(DELEGATE, &artifact, false),
             Err(Untrusted::Author(did(STRANGER)))
         );
         // `--all-authors` is exactly the opt-in for this case.
-        assert_eq!(check(&candidate, true), Ok(()));
+        assert_eq!(check(DELEGATE, &artifact, true), Ok(()));
     }
 
     #[test]
     fn stranger_created_release_is_rejected() {
-        let candidate = Candidate {
-            release_creator: did(STRANGER),
-            ..trusted_candidate()
-        };
+        let artifact = artifact(DELEGATE, &[]);
         assert_eq!(
-            check(&candidate, false),
+            check(STRANGER, &artifact, false),
             Err(Untrusted::Creator(did(STRANGER)))
         );
-        assert_eq!(check(&candidate, true), Ok(()));
+        assert_eq!(check(STRANGER, &artifact, true), Ok(()));
     }
 
     #[test]
     fn own_artifact_verifies_without_all_authors() {
         // The local user is not a delegate here, but must still be able to
         // verify what they registered themselves.
-        let candidate = Candidate {
-            release_creator: did(LOCAL),
-            artifact_author: did(LOCAL),
-            redactions: BTreeMap::new(),
-        };
-        assert_eq!(check(&candidate, false), Ok(()));
+        assert_eq!(check(LOCAL, &artifact(LOCAL, &[]), false), Ok(()));
     }
 
     #[test]
     fn delegate_redaction_is_rejected() {
-        let candidate = Candidate {
-            redactions: BTreeMap::from([(did(OTHER_DELEGATE), "compromised".to_owned())]),
-            ..trusted_candidate()
-        };
-        let err = check(&candidate, false).unwrap_err();
+        let artifact = artifact(DELEGATE, &[(OTHER_DELEGATE, "compromised")]);
+        let err = check(DELEGATE, &artifact, false).unwrap_err();
         assert_eq!(
             err,
             Untrusted::Redacted(BTreeMap::from([(
@@ -218,17 +195,14 @@ mod tests {
         );
         // A redaction is a withdrawal by a trusted party; --all-authors
         // widens who may register an artifact, not who may withdraw one.
-        assert!(check(&candidate, true).is_err());
+        assert!(check(DELEGATE, &artifact, true).is_err());
     }
 
     #[test]
     fn self_redaction_is_rejected() {
-        let candidate = Candidate {
-            redactions: BTreeMap::from([(did(DELEGATE), "bad build".to_owned())]),
-            ..trusted_candidate()
-        };
+        let artifact = artifact(DELEGATE, &[(DELEGATE, "bad build")]);
         assert!(matches!(
-            check(&candidate, false),
+            check(DELEGATE, &artifact, false),
             Err(Untrusted::Redacted(_))
         ));
     }
@@ -237,23 +211,17 @@ mod tests {
     fn stranger_redaction_does_not_block() {
         // Redacting is open to anyone on the network, so honouring an
         // untrusted redaction would let any peer veto a release.
-        let candidate = Candidate {
-            redactions: BTreeMap::from([(did(STRANGER), "trust me".to_owned())]),
-            ..trusted_candidate()
-        };
-        assert_eq!(check(&candidate, false), Ok(()));
+        let artifact = artifact(DELEGATE, &[(STRANGER, "trust me")]);
+        assert_eq!(check(DELEGATE, &artifact, false), Ok(()));
     }
 
     #[test]
     fn only_trusted_redactions_are_reported() {
-        let candidate = Candidate {
-            redactions: BTreeMap::from([
-                (did(STRANGER), "noise".to_owned()),
-                (did(OTHER_DELEGATE), "real reason".to_owned()),
-            ]),
-            ..trusted_candidate()
-        };
-        let Err(Untrusted::Redacted(reported)) = check(&candidate, false) else {
+        let artifact = artifact(
+            DELEGATE,
+            &[(STRANGER, "noise"), (OTHER_DELEGATE, "real reason")],
+        );
+        let Err(Untrusted::Redacted(reported)) = check(DELEGATE, &artifact, false) else {
             panic!("expected a redaction");
         };
         assert_eq!(
