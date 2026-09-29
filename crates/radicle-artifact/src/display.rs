@@ -335,8 +335,9 @@ impl Releases {
     /// The `aliases` store is used to resolve human-readable aliases for DIDs.
     ///
     /// `filters` controls artifact visibility — see [`Filters`] for the
-    /// redaction and author-trust knobs. When `show_empty` is false,
-    /// releases with no visible artifacts are excluded from the output.
+    /// redaction and author-trust knobs. A release with no artifacts is
+    /// always kept. When `keep_filtered` is false, a release whose
+    /// artifacts the filters all removed is excluded from the output.
     ///
     /// The `titles` resolver looks up the title line for each release's
     /// keying ref — the tag message when the release records a tag,
@@ -348,12 +349,12 @@ impl Releases {
         releases: impl Iterator<Item = (ReleaseId, crate::Release)>,
         aliases: &impl AliasStore,
         filters: Filters<'_>,
-        show_empty: bool,
+        keep_filtered: bool,
         titles: &impl CommitTitle,
         tag_names: &impl TagName,
     ) -> Self {
         let mut releases: Vec<_> = releases
-            .map(|(id, release)| {
+            .filter_map(|(id, release)| {
                 // Prefer the tag's title when set; fall back to the commit
                 // summary if the tag object isn't present locally.
                 let title = release
@@ -361,9 +362,12 @@ impl Releases {
                     .and_then(|t| titles.title(t))
                     .or_else(|| titles.title(release.oid()));
                 let tag_name = release.tag().and_then(|t| tag_names.tag_name(t));
-                Release::new(id, &release, aliases, filters, title, tag_name)
+                let shown = Release::new(id, &release, aliases, filters, title, tag_name);
+                let keep = keep_filtered
+                    || release.artifacts().is_empty()
+                    || !shown.artifacts.is_empty();
+                keep.then_some(shown)
             })
-            .filter(|r| show_empty || !r.artifacts.is_empty())
             .collect();
         releases.sort_by_key(|r| Reverse(r.created_at));
 
@@ -1177,6 +1181,63 @@ mod tests {
 
     fn test_oid() -> Oid {
         Oid::from_str("0123456789abcdef0123456789abcdef01234567").unwrap()
+    }
+
+    /// `list` keeps a release with no artifacts but drops one whose
+    /// artifacts were all redacted, unless `--redacted` asks for them.
+    #[test]
+    fn releases_keep_empty_and_drop_fully_redacted() {
+        use radicle::test;
+
+        let test::setup::NodeWithRepo {
+            node: alice, repo, ..
+        } = test::setup::NodeWithRepo::default();
+        let commit = |message: &str| -> Oid {
+            let tree = repo.backend.treebuilder(None).unwrap().write().unwrap();
+            let tree = repo.backend.find_tree(tree).unwrap();
+            let sig = repo.backend.signature().unwrap();
+            repo.backend
+                .commit(None, &sig, &sig, message, &tree, &[])
+                .unwrap()
+                .into()
+        };
+        let cid = test_cid();
+        let mut releases = crate::Releases::open(&*repo).unwrap();
+        let empty = *releases
+            .create(commit("empty"), None, &alice.signer)
+            .unwrap()
+            .id();
+        {
+            let mut r = releases
+                .create(commit("redacted"), None, &alice.signer)
+                .unwrap();
+            r.register_artifact(cid, "bin".into(), &alice.signer)
+                .unwrap();
+            r.redact(cid, "bad build".into(), &alice.signer).unwrap();
+        }
+        let delegates = releases.delegates().clone();
+
+        let shown = |redacted: bool| -> Vec<ReleaseId> {
+            let all = releases.all().unwrap().into_iter().map(|entry| {
+                let (id, release) = entry.unwrap();
+                (ReleaseId::from(id), release)
+            });
+            let filters = Filters {
+                delegates: &delegates,
+                redacted,
+                all_authors: false,
+                local: None,
+            };
+            let aliases = std::collections::HashMap::new();
+            Releases::new(all, &aliases, filters, false, &(), &())
+                .releases
+                .iter()
+                .map(|r| r.release_id)
+                .collect()
+        };
+
+        assert_eq!(shown(false), vec![empty]);
+        assert_eq!(shown(true).len(), 2);
     }
 
     #[test]

@@ -1583,7 +1583,6 @@ fn list_releases(
         verbose,
         all_authors,
         redacted,
-        empty,
     }: command::List,
     releases: &Releases<Repository>,
     repo: &Repository,
@@ -1613,7 +1612,7 @@ fn list_releases(
         all_authors,
         local: Some(local),
     };
-    let releases = display::Releases::new(iter, aliases, filters, empty, repo, repo);
+    let releases = display::Releases::new(iter, aliases, filters, false, repo, repo);
     if use_pretty(pretty, json) {
         print!("{}", releases.pretty(pretty_style(verbose)));
     } else {
@@ -3692,8 +3691,8 @@ Examples:
   Include artifacts from non-delegate authors:
     $ rad-artifact list --pretty --all-authors
 
-  Include empty and redacted releases:
-    $ rad-artifact list --pretty --empty --redacted")]
+  Include redacted releases:
+    $ rad-artifact list --pretty --redacted")]
     pub struct List {
         /// Format output in a human-readable way.
         ///
@@ -3715,9 +3714,6 @@ Examples:
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
-        /// Also show releases that have no artifacts.
-        #[clap(long)]
-        pub empty: bool,
     }
 
     /// Report repository-wide artifact statistics.
