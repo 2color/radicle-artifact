@@ -7,43 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Empty releases show up by default
+### ⚠️ Breaking changes
 
-The previous release introduced bucketed release counts that counted empty releases (releases with no artifacts) as redacted. This confused users. Empty releases are now treated as normal releases.
+Update your code and scripts as follows. The sections below explain each change.
 
-To simplify the mental model, releases now sort along two axes, which gives four buckets:
+| Before                                                                 | After                                                          |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `rad-artifact list --empty`                                            | `rad-artifact list` (empty releases show by default)           |
+| `stats --json`: `delegateHidden`, `otherHidden`                        | `delegateRedacted`, `otherRedacted`                            |
+| `verify --json`: `untrustedAuthor` when the release creator is untrusted | `untrustedCreator`                                           |
+| `ReleaseCounts::delegate_hidden`, `other_hidden`                       | `delegate_redacted`, `other_redacted`                          |
+| `Filters { delegates, local, all_authors, redacted }`                  | `Filters { trust: Trust { delegates, local, all_authors }, redacted }` |
+| `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` | `trust.classify(release, artifact)`              |
+| `trust::Candidate`                                                     | Removed from the public API                                    |
+| `Release::has_unredacted_artifacts()`                                  | `filters.shows_release(&release)` or `release.is_fully_redacted(&delegates)` |
 
-1. Who created the release: a delegate or someone else.
-2. Whether a trusted party (a delegate or the author) redacted the release.
+### Empty releases are normal releases
 
-| Release                                                          | `counts()` bucket    |
-| ---------------------------------------------------------------- | -------------------- |
-| delegate creator, delegate artifact                              | `delegate`           |
-| delegate creator, only non-delegate artifacts                    | `delegate`           |
-| delegate creator, no artifacts (empty release)                   | `delegate`           |
-| delegate creator, every artifact redacted by a trusted party     | `delegate_redacted`  |
-| non-delegate creator, delegate artifact                          | `other`              |
-| non-delegate creator, only non-delegate artifacts                | `other`              |
-| non-delegate creator, no artifacts (empty release)               | `other`              |
-| non-delegate creator, every artifact redacted by a trusted party | `other_redacted`     |
+The previous release counted empty releases (releases with no artifacts) as hidden. This confused users. Now an empty release counts and shows like any other release.
 
-This change includes:
+`counts()` sorts each release by two questions:
 
-- `rad-artifact list` shows empty releases by default. The `--empty` flag is removed.
-- `ReleaseCounts::delegate_hidden` and `ReleaseCounts::other_hidden` are renamed to `delegate_redacted` and `other_redacted` (see the table above).
-- `rad-artifact stats --json` renames `delegateHidden` and `otherHidden` to `delegateRedacted` and `otherRedacted`. The pretty output says "redacted" in place of "hidden".
+1. Did a delegate create the release?
+2. Did a trusted party (a delegate or the artifact's author) redact every artifact?
 
-### Visibility filters in the library
+| Release                                                          | `counts()` bucket   |
+| ---------------------------------------------------------------- | ------------------- |
+| delegate creator, at least one unredacted artifact               | `delegate`          |
+| delegate creator, no artifacts                                   | `delegate`          |
+| delegate creator, every artifact redacted by a trusted party     | `delegate_redacted` |
+| non-delegate creator, at least one unredacted artifact           | `other`             |
+| non-delegate creator, no artifacts                               | `other`             |
+| non-delegate creator, every artifact redacted by a trusted party | `other_redacted`    |
 
-The `delegate` bucket of `counts()` is close to the default `list`, but not equal. `list` also hides a release when every artifact is by a non-delegate, and it shows releases created by the local user. Use `Filters::shows_release` to get exactly the releases `list` shows.
+The artifact's author does not change the bucket.
 
-`rad-artifact list` filters releases by creator, and artifacts by redaction and author. The library now exposes these rules, so other consumers can apply them:
+"Hidden" is now "redacted" everywhere, because redaction is the only thing these buckets measure:
 
-- `Filters::shows_artifact(&Artifact)` checks one artifact.
-- `Trust::trusts(release.creator())` checks the release creator. Only delegates and `local` pass, unless `all_authors` is set.
-- `Filters::shows_release(&Release)` checks one release. The creator must pass. Then a release with no artifacts is shown, and any other release is shown when at least one of its artifacts is.
+- `rad-artifact list` shows empty releases. The `--empty` flag is removed.
+- `rad-artifact stats` says "redacted" in place of "hidden". With `--json`, the keys are `delegateRedacted` and `otherRedacted`.
+- `ReleaseCounts` has the fields `delegate_redacted` and `other_redacted`.
 
-`delegates` is the repository's delegate set. `Releases::delegates()` returns it.
+### `verify` names the untrusted release creator
+
+Before, when the release creator was untrusted, `rad-artifact verify` blamed the artifact's author. Now it names the creator.
+
+- The new variant `trust::Untrusted::Creator(Did)` covers this case. `Untrusted::Author` now applies only to the artifact's author.
+- `verify --json` reports `untrustedCreator` as the `reason`.
+
+### Show the same releases as `rad-artifact list`
+
+The library now exposes the rules that `rad-artifact list` uses, so you can show the same view:
+
+- `Filters::shows_release(&Release)` is true when the creator is trusted and the release has no artifacts or at least one shown artifact.
+- `Filters::shows_artifact(&Artifact)` is true when the artifact passes the author and redaction filters.
+
+Do not use the `delegate` bucket of `counts()` as a stand-in for `list`. `list` also hides releases where every artifact is by a non-delegate, and it shows releases by the local user.
 
 This example prints the default `list` view:
 
@@ -54,15 +73,14 @@ let releases = Releases::open(&repo)?;
 let filters = Filters {
     trust: Trust {
         delegates: releases.delegates(),
-        local: None,        // no local user to exempt...
-        all_authors: false, // ...so hide releases and artifacts by non-delegates
+        local: None,        // no local user to exempt,
+        all_authors: false, // so only delegates are trusted
     },
     redacted: false, // hide redacted artifacts
 };
 
 for entry in releases.list()? {
     let (id, release) = entry?;
-    // Skip releases by other creators, or with every artifact filtered out.
     if !filters.shows_release(&release) {
         continue;
     }
@@ -75,35 +93,25 @@ for entry in releases.list()? {
 }
 ```
 
-`Release::has_unredacted_artifacts` is removed. Use these instead:
+`Release::has_unredacted_artifacts` is removed. To match `list`, use `Filters::shows_release`. For the redaction check alone, use `Release::is_fully_redacted(&delegates)`.
 
-- `Filters::shows_release(&Release)` to match `list`.
-- `Release::is_fully_redacted(&delegates)` for the redaction check alone.
+### `Trust` holds the trust rules
 
-### Trust rules split from visibility filters
+The trust rules decide who may create a release, register an artifact, or withdraw one. They now live in the new `trust::Trust` type. `Filters` holds a `Trust` and keeps only the view option `redacted`.
 
-The trust rules (who may create a release, register an artifact, or withdraw one) are now a separate `trust::Trust` type. `Filters` keeps only the view option `redacted`, and holds a `Trust` for the rest.
-
-- `Filters { delegates, local, all_authors, .. }` becomes `Filters { trust: Trust { delegates, local, all_authors }, .. }`.
-- `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` becomes `Trust::classify(release, artifact)`. `local` is now an `Option`.
-- `trust::Candidate` is no longer public.
-- `Trust::trusts(&did)` checks one author.
-- `trust::may_amend(&did, &author, &delegates)` checks who may withdraw an artifact or change its metadata: its author or a delegate. `trust::withdrawals` returns the redactions that count.
-
-### `verify` names an untrusted release creator
-
-`rad-artifact verify` blamed the artifact's author when the release creator was the untrusted party. It now reports the creator.
-
-- `trust::Untrusted::Creator(Did)` is new. `Untrusted::Author` now means only the artifact's author.
-- `verify --json` reports `untrustedCreator` as the `reason` for this case. Before, it reported `untrustedAuthor`.
+- `Trust::trusts(&did)` is true for a delegate or the local user, or for anyone when `all_authors` is set.
+- `Trust::classify(release, artifact)` replaces `trust::classify`. `local` is now an `Option<&Did>`.
+- `trust::may_amend(&did, &author, &delegates)` is true when `did` may withdraw the artifact or change its metadata: its author or a delegate.
+- `trust::withdrawals(&artifact, &delegates)` returns the redactions that count, from parties that pass `may_amend`.
 
 ### Sorted, lazy release listing
 
-A new `Releases::list` function returns an iterator over every release, newest first.
+The new `Releases::list` returns an iterator over every release, newest first.
 
-With a cache, SQLite sorts the releases and yields them lazily, so a caller that takes one page parses only the rows up to the end of that page. Without a cache, every release is read from git and sorted in memory, and entries that fail to parse come last.
+- With a cache, SQLite sorts the releases and yields them one by one. To read one page, `list` parses only the rows up to the end of that page.
+- Without a cache, `list` reads every release from git and sorts them in memory. Entries that fail to parse come last.
 
-Use `list` instead of `all` when you need releases in order or only some of them, for example to paginate. `all` returns every release, in no particular order, and reads each one before it returns. With a cache, `list` is faster for a page of releases. Without a cache, `list` is not faster than `all`, but it saves you the sort.
+Use `list` when you need releases in order, or only some of them, for example to paginate. Use `all` when you need every release and the order does not matter: it reads each release before it returns. With a cache, `list` is faster for one page. Without a cache, `list` is as slow as `all`, but it sorts for you.
 
 ## [0.20.0] - 2026-09-24
 
