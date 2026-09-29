@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Empty releases show up by default
+
+The previous release introduced bucketed release counts that conflated redacted releases with empty releases (with no artifacts). This turned out to be confusing and undesired from a user perspective. Empty releases are now treated as normal releases.
+
+To simplify the mental model, there are two axes:
+
+1. Who created the release
+2. Was the release redacted by a trusted party, i.e. a delegate or its author.
+
+| Release                                                          | `counts()` bucket    |
+| ---------------------------------------------------------------- | ---------------------|
+| delegate creator, delegate artifact                              | `delegate`           |
+| delegate creator, only non-delegate artifacts                    | `delegate`           |
+| delegate creator, no artifacts (empty release)                   | `delegate`           |
+| delegate creator, every artifact redacted by a trusted party     | `delegate_redacted`  |
+| non-delegate creator, delegate artifact                          | `other`              |
+| non-delegate creator, only non-delegate artifacts                | `other`              |
+| non-delegate creator, no artifacts (empty release)               | `other`              |
+| non-delegate creator, every artifact redacted by a trusted party | `other_redacted`     |
+
+
+This change includes:
+- `rad-artifact list` shows empty releases by default. The `--empty` flag is removed. 
+- `ReleaseCounts::delegate_hidden` and `ReleaseCounts::other_hidden` are renamed to `delegate_redacted` and `other_redacted` (see table above).
+- `rad-artifact stats --json` renames `delegateHidden` and `otherHidden` to `delegateRedacted` and `otherRedacted`. The pretty output says "redacted" in place of "hidden".
+
 ## [0.20.0] - 2026-09-24
 
 ### Bucketed release counts
@@ -15,7 +43,7 @@ Note that unlike the `count_refs` (previously `count`), `counts` materializes th
 
 The following table is a helpful guide for how releases are bucketed.
 
-| Release                                                          | `count()` bucket  |
+| Release                                                          | `counts()` bucket |
 | ---------------------------------------------------------------- | ----------------- |
 | delegate creator, delegate artifact                              | `delegate`        |
 | delegate creator, only non-delegate artifacts                    | `delegate`        |
