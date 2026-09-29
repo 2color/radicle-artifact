@@ -1053,7 +1053,8 @@ pub struct VerifyFailure {
     cid: Cid,
     /// Always `false`. See [`VerifyReceipt::verified`].
     verified: bool,
-    /// A stable token: `noMatch`, `redacted` or `untrustedAuthor`.
+    /// A stable token: `noMatch`, `redacted`, `untrustedCreator` or
+    /// `untrustedAuthor`.
     reason: &'static str,
     /// The same sentence that goes to stderr.
     message: String,

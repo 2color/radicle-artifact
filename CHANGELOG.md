@@ -89,6 +89,13 @@ The trust rules (who may create a release, register an artifact, or withdraw one
 - `trust::Candidate` is no longer public.
 - `Trust::trusts(&did)` checks one author.
 
+### `verify` names an untrusted release creator
+
+`rad-artifact verify` blamed the artifact's author when the release creator was the untrusted party. It now reports the creator.
+
+- `trust::Untrusted::Creator(Did)` is new. `Untrusted::Author` now means only the artifact's author.
+- `verify --json` reports `untrustedCreator` as the `reason` for this case. Before, it reported `untrustedAuthor`.
+
 ### Sorted, lazy release listing
 
 A new `Releases::list` function returns an iterator over every release, newest first.

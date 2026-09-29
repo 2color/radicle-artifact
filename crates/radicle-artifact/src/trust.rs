@@ -26,7 +26,9 @@ use crate::{Artifact, Release};
 pub enum Untrusted {
     /// Redacted by the artifact's own author or by a delegate.
     Redacted(BTreeMap<Did, String>),
-    /// Registered by someone who is neither a delegate nor the local user.
+    /// Release created by someone who is neither a delegate nor the local user.
+    Creator(Did),
+    /// Artifact registered by someone who is neither a delegate nor the local user.
     Author(Did),
 }
 
@@ -85,7 +87,7 @@ impl Trust<'_> {
 
     fn classify_candidate(&self, candidate: &Candidate) -> Result<(), Untrusted> {
         if !self.trusts(&candidate.release_creator) {
-            return Err(Untrusted::Author(candidate.release_creator));
+            return Err(Untrusted::Creator(candidate.release_creator));
         }
         // A redaction from a passing stranger must not block the check, or
         // anyone on the network could veto a release.
@@ -183,7 +185,7 @@ mod tests {
         };
         assert_eq!(
             check(&candidate, false),
-            Err(Untrusted::Author(did(STRANGER)))
+            Err(Untrusted::Creator(did(STRANGER)))
         );
         assert_eq!(check(&candidate, true), Ok(()));
     }

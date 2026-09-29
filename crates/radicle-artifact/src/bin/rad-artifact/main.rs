@@ -1667,11 +1667,20 @@ fn rejection(untrusted: &[Untrusted], cid: &Cid, rid: RepoId) -> error::Verify {
             };
         }
     }
-    if let Some(Untrusted::Author(author)) = untrusted.first() {
-        return error::Verify::UntrustedAuthor {
-            cid: cid.to_string(),
-            author: *author,
-        };
+    match untrusted.first() {
+        Some(Untrusted::Creator(creator)) => {
+            return error::Verify::UntrustedCreator {
+                cid: cid.to_string(),
+                creator: *creator,
+            }
+        }
+        Some(Untrusted::Author(author)) => {
+            return error::Verify::UntrustedAuthor {
+                cid: cid.to_string(),
+                author: *author,
+            }
+        }
+        Some(Untrusted::Redacted(_)) | None => {}
     }
     error::Verify::NoMatch {
         cid: cid.to_string(),
@@ -1687,6 +1696,7 @@ fn verify_failure(cid: Cid, err: &error::Verify) -> Option<display::VerifyFailur
     let (reason, redactions) = match err {
         error::Verify::NoMatch { .. } => ("noMatch", BTreeMap::new()),
         error::Verify::Redacted { redactions, .. } => ("redacted", redactions.clone()),
+        error::Verify::UntrustedCreator { .. } => ("untrustedCreator", BTreeMap::new()),
         error::Verify::UntrustedAuthor { .. } => ("untrustedAuthor", BTreeMap::new()),
         _ => return None,
     };
@@ -3870,6 +3880,8 @@ mod error {
         },
         #[error("artifact {cid} is only registered by {author}, who is not a repository delegate\n  hint: pass --all-authors to accept it anyway")]
         UntrustedAuthor { cid: String, author: Did },
+        #[error("artifact {cid} is only in releases created by {creator}, who is not a repository delegate\n  hint: pass --all-authors to accept it anyway")]
+        UntrustedCreator { cid: String, creator: Did },
         #[error("failed to serialize verify output to JSON")]
         Json(#[source] serde_json::Error),
     }
@@ -3880,7 +3892,10 @@ mod error {
         /// need to tell "verified false" from "could not verify".
         pub fn exit_code(&self) -> i32 {
             match self {
-                Self::NoMatch { .. } | Self::Redacted { .. } | Self::UntrustedAuthor { .. } => 2,
+                Self::NoMatch { .. }
+                | Self::Redacted { .. }
+                | Self::UntrustedAuthor { .. }
+                | Self::UntrustedCreator { .. } => 2,
                 Self::ComputeCid(_) | Self::Lookup { .. } | Self::Json(_) => 1,
             }
         }
@@ -4225,6 +4240,20 @@ mod tests {
         ));
     }
 
+    /// A stranger's release holding a delegate's artifact must blame the
+    /// creator, not the delegate who registered the artifact.
+    #[test]
+    fn untrusted_creator_is_reported_as_creator() {
+        let rid = radicle::prelude::RepoId::from_urn("rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv").unwrap();
+        let err = rejection(&[Untrusted::Creator(did(STRANGER))], &cid(), rid);
+        assert!(matches!(
+            err,
+            error::Verify::UntrustedCreator { creator, .. } if creator == did(STRANGER)
+        ));
+        let json = serde_json::to_value(verify_failure(cid(), &err).unwrap()).unwrap();
+        assert_eq!(json["reason"], serde_json::json!("untrustedCreator"));
+    }
+
     #[test]
     fn no_candidates_reports_no_match() {
         let rid = radicle::prelude::RepoId::from_urn("rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv").unwrap();
@@ -4242,6 +4271,10 @@ mod tests {
         assert_eq!(rejection(&[], &cid(), rid).exit_code(), 2);
         assert_eq!(
             rejection(&[Untrusted::Author(did(STRANGER))], &cid(), rid).exit_code(),
+            2
+        );
+        assert_eq!(
+            rejection(&[Untrusted::Creator(did(STRANGER))], &cid(), rid).exit_code(),
             2
         );
         assert_eq!(
