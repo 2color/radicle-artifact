@@ -9,15 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Empty releases show up by default
 
-The previous release introduced bucketed release counts that conflated redacted releases with empty releases (with no artifacts). This turned out to be confusing and undesired from a user perspective. Empty releases are now treated as normal releases.
+The previous release introduced bucketed release counts that counted empty releases (releases with no artifacts) as redacted. This confused users. Empty releases are now treated as normal releases.
 
-To simplify the mental model, there are two axes:
+To simplify the mental model, releases now sort along two axes, which gives four buckets:
 
-1. Who created the release
-2. Was the release redacted by a trusted party, i.e. a delegate or its author.
+1. Who created the release: a delegate or someone else.
+2. Whether a trusted party (a delegate or the author) redacted the release.
 
 | Release                                                          | `counts()` bucket    |
-| ---------------------------------------------------------------- | ---------------------|
+| ---------------------------------------------------------------- | -------------------- |
 | delegate creator, delegate artifact                              | `delegate`           |
 | delegate creator, only non-delegate artifacts                    | `delegate`           |
 | delegate creator, no artifacts (empty release)                   | `delegate`           |
@@ -27,11 +27,19 @@ To simplify the mental model, there are two axes:
 | non-delegate creator, no artifacts (empty release)               | `other`              |
 | non-delegate creator, every artifact redacted by a trusted party | `other_redacted`     |
 
-
 This change includes:
-- `rad-artifact list` shows empty releases by default. The `--empty` flag is removed. 
-- `ReleaseCounts::delegate_hidden` and `ReleaseCounts::other_hidden` are renamed to `delegate_redacted` and `other_redacted` (see table above).
+
+- `rad-artifact list` shows empty releases by default. The `--empty` flag is removed.
+- `ReleaseCounts::delegate_hidden` and `ReleaseCounts::other_hidden` are renamed to `delegate_redacted` and `other_redacted` (see the table above).
 - `rad-artifact stats --json` renames `delegateHidden` and `otherHidden` to `delegateRedacted` and `otherRedacted`. The pretty output says "redacted" in place of "hidden".
+
+### Sorted, lazy release listing
+
+A new `Releases::list` function returns an iterator over every release, newest first.
+
+With a cache, SQLite sorts the releases and yields them lazily, so a caller that takes one page parses only the rows up to the end of that page. Without a cache, every release is read from git and sorted in memory, and entries that fail to parse come last.
+
+Use `list` instead of `all` when you need releases in order or only some of them, for example to paginate. `all` returns every release, in no particular order, and reads each one before it returns. With a cache, `list` is faster for a page of releases. Without a cache, `list` is not faster than `all`, but it saves you the sort.
 
 ## [0.20.0] - 2026-09-24
 
