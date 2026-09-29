@@ -144,15 +144,20 @@ pub(crate) fn open_releases<'a>(
     Releases::open(repo).map_err(|err| error::Releases { rid: repo.id, err })
 }
 
-/// Visibility rule for a release: by default show delegate-authored or
-/// local-authored releases. `--all-authors` opens it up to everyone.
+/// Visibility rule for a release's creator: by default show delegate-created or
+/// local-created releases. `--all-authors` opens it up to everyone.
 fn release_visible(
     release: &radicle_artifact::Release,
     delegates: &BTreeSet<Did>,
     local: &Did,
     all_authors: bool,
 ) -> bool {
-    all_authors || delegates.contains(release.creator()) || release.creator() == local
+    release.has_visible_creator(&Filters {
+        delegates,
+        redacted: false,
+        all_authors,
+        local: Some(local),
+    })
 }
 
 pub(crate) fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
@@ -1558,7 +1563,7 @@ fn show_release(
             (None, None) => unreachable!("clap requires one of --release or <revision>"),
         };
 
-    let filters = display::Filters {
+    let filters = Filters {
         delegates,
         redacted,
         all_authors,
@@ -1604,9 +1609,8 @@ fn list_releases(
                 }
                 None
             }
-        })
-        .filter(|(_, release)| release_visible(release, delegates, local, all_authors));
-    let filters = display::Filters {
+        });
+    let filters = Filters {
         delegates,
         redacted,
         all_authors,

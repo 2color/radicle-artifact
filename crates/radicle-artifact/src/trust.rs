@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use radicle::identity::Did;
 
+use crate::filters::{honours_redaction, Filters};
 use crate::{Artifact, Release};
 
 /// Why a release that registers a CID doesn't count as verification.
@@ -53,7 +54,7 @@ impl Candidate {
 }
 
 /// Apply the trust rules `list`/`show` already use (see
-/// [`crate::display::Filters`]) to a single candidate: the release and the
+/// [`crate::Filters`]) to a single candidate: the release and the
 /// artifact must both be authored by a delegate or by us, and no trusted
 /// party may have redacted the artifact.
 pub fn classify(
@@ -62,26 +63,28 @@ pub fn classify(
     local: &Did,
     all_authors: bool,
 ) -> Result<(), Untrusted> {
-    let trusted = |did: &Did| all_authors || delegates.contains(did) || did == local;
+    let filters = Filters {
+        delegates,
+        redacted: false,
+        all_authors,
+        local: Some(local),
+    };
 
-    if !trusted(&candidate.release_creator) {
+    if !filters.trusts(&candidate.release_creator) {
         return Err(Untrusted::Author(candidate.release_creator));
     }
-    // A redaction counts when it comes from the artifact's own author or
-    // from a delegate; one from a passing stranger must not block the
-    // check, or anyone on the network could veto a release. `--all-authors`
-    // deliberately does not widen this — it opens up who may *register* an
-    // artifact, not who may withdraw one.
+    // A redaction from a passing stranger must not block the check, or
+    // anyone on the network could veto a release.
     let redactions: BTreeMap<Did, String> = candidate
         .redactions
         .iter()
-        .filter(|(did, _)| **did == candidate.artifact_author || delegates.contains(did))
+        .filter(|(did, _)| honours_redaction(did, &candidate.artifact_author, delegates))
         .map(|(did, reason)| (*did, reason.clone()))
         .collect();
     if !redactions.is_empty() {
         return Err(Untrusted::Redacted(redactions));
     }
-    if !trusted(&candidate.artifact_author) {
+    if !filters.trusts(&candidate.artifact_author) {
         return Err(Untrusted::Author(candidate.artifact_author));
     }
     Ok(())

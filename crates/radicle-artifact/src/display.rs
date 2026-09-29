@@ -4,7 +4,7 @@
 //! `rad-artifact` CLI tool.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use radicle::{git::Oid, identity::Did, node::AliasStore, storage::git::Repository};
 use serde::Serialize;
@@ -13,6 +13,9 @@ use url::Url;
 use crate::{Cid, ReleaseCounts, ReleaseId};
 use radicle_artifact_core::keys::EndpointId;
 use radicle_artifact_core::protocol::FetchProgress;
+
+// Keep the old path working for existing callers.
+pub use crate::filters::Filters;
 
 /// A visible change to a progress display derived from a [`FetchProgress`]
 /// frame: terminal frontends apply it to a spinner, but the type carries no
@@ -302,25 +305,6 @@ impl TagName for Repository {
     }
 }
 
-/// Visibility rules for artifacts rendered in `list` / `show` output.
-///
-/// Both filters below consult the repository's delegate set. The flags
-/// opt into broader visibility; each defaults (at the caller) to a
-/// delegate-scoped view.
-#[derive(Clone, Copy)]
-pub struct Filters<'a> {
-    /// Delegates of the repository.
-    pub delegates: &'a BTreeSet<Did>,
-    /// When true, include artifacts redacted by their author or by a delegate.
-    pub redacted: bool,
-    /// When true, include artifacts whose author is not a repository delegate.
-    pub all_authors: bool,
-    /// Local user's DID. Artifacts authored by this user are always
-    /// visible, even when the user isn't a delegate and `all_authors`
-    /// is false — users should always see their own contributions.
-    pub local: Option<&'a Did>,
-}
-
 /// A set of [`Release`]s sorted by creation time.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -335,9 +319,10 @@ impl Releases {
     /// The `aliases` store is used to resolve human-readable aliases for DIDs.
     ///
     /// `filters` controls artifact visibility — see [`Filters`] for the
-    /// redaction and author-trust knobs. A release with no artifacts is
-    /// always kept. When `keep_filtered` is false, a release whose
-    /// artifacts the filters all removed is excluded from the output.
+    /// redaction and author-trust knobs. When `keep_filtered` is false, only
+    /// releases that pass [`crate::Release::is_visible`] are kept: the creator
+    /// must pass the filters, and a release with artifacts needs at least one
+    /// that passes too.
     ///
     /// The `titles` resolver looks up the title line for each release's
     /// keying ref — the tag message when the release records a tag,
@@ -362,10 +347,8 @@ impl Releases {
                     .and_then(|t| titles.title(t))
                     .or_else(|| titles.title(release.oid()));
                 let tag_name = release.tag().and_then(|t| tag_names.tag_name(t));
-                let shown = Release::new(id, &release, aliases, filters, title, tag_name);
-                let keep =
-                    keep_filtered || release.artifacts().is_empty() || !shown.artifacts.is_empty();
-                keep.then_some(shown)
+                let keep = keep_filtered || release.is_visible(&filters);
+                keep.then(|| Release::new(id, &release, aliases, filters, title, tag_name))
             })
             .collect();
         releases.sort_by_key(|r| Reverse(r.created_at));
@@ -490,25 +473,7 @@ impl Release {
         let mut artifacts: Vec<_> = release
             .artifacts()
             .iter()
-            .filter(|(_cid, artifact)| {
-                // Redaction filter: hide artifacts redacted by a trusted
-                // party (the author itself or any repository delegate).
-                if !filters.redacted && artifact.is_redacted_by_trusted(filters.delegates) {
-                    return false;
-                }
-                // Author filter: hide artifacts added by users who are not
-                // repository delegates. Delegates are the curated source of
-                // truth for a repo; non-delegate contributions are opt-in.
-                // The local user is always exempt so they can see their own
-                // contributions without `--all-authors`.
-                if !filters.all_authors
-                    && !filters.delegates.contains(artifact.author())
-                    && filters.local != Some(artifact.author())
-                {
-                    return false;
-                }
-                true
-            })
+            .filter(|(_cid, artifact)| artifact.is_visible(&filters))
             .map(|(cid, artifact)| {
                 let mut locations: Vec<_> = artifact
                     .locations()

@@ -80,6 +80,8 @@ use url::Url;
 // that serializes as its canonical multibase string; see the type's docs.
 pub use radicle_artifact_core::cid::Cid;
 
+pub use filters::Filters;
+
 // Resolve the cache database path from a node's COBs directory, without
 // exposing the filename the `cache` module owns.
 #[cfg(feature = "sqlite")]
@@ -88,6 +90,7 @@ pub use cache::db_path as cache_db_path;
 pub mod discovery;
 pub mod display;
 pub mod error;
+mod filters;
 pub mod trust;
 pub mod watch;
 
@@ -288,7 +291,23 @@ impl Artifact {
     pub fn is_redacted_by_trusted(&self, delegates: &BTreeSet<Did>) -> bool {
         self.redactions
             .keys()
-            .any(|did| *did == self.author || delegates.contains(did))
+            .any(|did| filters::honours_redaction(did, &self.author, delegates))
+    }
+
+    /// Check whether this artifact passes the given visibility [`Filters`].
+    ///
+    /// This is the per-artifact rule behind `rad-artifact list`:
+    /// - Artifacts redacted by a trusted party are hidden, unless
+    ///   `filters.redacted` is set.
+    /// - Artifacts by non-delegate authors are hidden, unless
+    ///   `filters.all_authors` is set or the author is `filters.local`.
+    pub fn is_visible(&self, filters: &Filters<'_>) -> bool {
+        if !filters.redacted && self.is_redacted_by_trusted(filters.delegates) {
+            return false;
+        }
+        // Delegates are the curated source of truth for a repo; non-delegate
+        // contributions are opt-in. The local user always sees their own.
+        filters.trusts(&self.author)
     }
 
     /// Get all metadata entries.
@@ -474,19 +493,39 @@ impl Release {
         self.artifacts.get(cid)
     }
 
-    /// Check whether any artifact in this release survives the trusted-redaction
-    /// filter — see [`Artifact::is_redacted_by_trusted`]. The artifact's author
-    /// may be anyone.
+    /// Check whether the release's [creator][Self::creator] passes `filters`.
     ///
-    /// This is the rule `rad-artifact list --all-authors` applies. The default
-    /// view also hides artifacts whose author is not a delegate, so a release
-    /// can be true here and still render empty there.
+    /// By default only releases created by a delegate, or by `filters.local`,
+    /// pass. `filters.all_authors` opens it up to everyone.
+    pub fn has_visible_creator(&self, filters: &Filters<'_>) -> bool {
+        filters.trusts(&self.creator)
+    }
+
+    /// Check whether `rad-artifact list` shows this release under `filters`.
+    ///
+    /// The creator must pass [`Self::has_visible_creator`]. Then a release with
+    /// no artifacts is visible, and any other release is visible when at least
+    /// one artifact passes [`Artifact::is_visible`].
+    pub fn is_visible(&self, filters: &Filters<'_>) -> bool {
+        self.has_visible_creator(filters)
+            && (self.artifacts.is_empty() || self.artifacts.values().any(|a| a.is_visible(filters)))
+    }
+
+    /// Check whether a trusted party redacted every artifact in this release —
+    /// see [`Artifact::is_redacted_by_trusted`]. The artifact's author may be
+    /// anyone.
+    ///
+    /// This ignores the author filter, so a release that is not fully redacted
+    /// can still render empty in the default `list` view. Use
+    /// [`Self::is_visible`] to match `list`.
     ///
     /// False for a release with no artifacts.
-    pub fn has_unredacted_artifacts(&self, delegates: &BTreeSet<Did>) -> bool {
-        self.artifacts
-            .values()
-            .any(|a| !a.is_redacted_by_trusted(delegates))
+    pub fn is_fully_redacted(&self, delegates: &BTreeSet<Did>) -> bool {
+        !self.artifacts.is_empty()
+            && self
+                .artifacts
+                .values()
+                .all(|a| a.is_redacted_by_trusted(delegates))
     }
 
     /// Apply an action to the release state.
@@ -628,10 +667,8 @@ pub type ReleaseEntry = Result<(ObjectId, Release), store::Error>;
 /// Release counts bucketed by creator trust and artifact redaction.
 ///
 /// "Delegate" means the release's [creator][Release::creator] is in
-/// [`Releases::delegates`]; "redacted" means the release has artifacts and
-/// none survives the trusted-redaction filter
-/// [`Release::has_unredacted_artifacts`]. A release with no artifacts is not
-/// redacted.
+/// [`Releases::delegates`]; "redacted" means [`Release::is_fully_redacted`]. A
+/// release with no artifacts is not redacted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ReleaseCounts {
@@ -795,8 +832,7 @@ where
             ReleaseCounts::default(),
             |mut counts, (_, release)| {
                 let by_delegate = delegates.contains(release.creator());
-                let redacted =
-                    !release.artifacts().is_empty() && !release.has_unredacted_artifacts(delegates);
+                let redacted = release.is_fully_redacted(delegates);
                 match (by_delegate, redacted) {
                     (true, false) => counts.delegate += 1,
                     (true, true) => counts.delegate_redacted += 1,
@@ -1595,7 +1631,7 @@ mod test {
     use radicle::test;
     use url::Url;
 
-    use crate::{Cid, ReleaseCounts, Releases, METADATA_KEY_SIZE_BYTES};
+    use crate::{Cid, Filters, ReleaseCounts, Releases, METADATA_KEY_SIZE_BYTES};
 
     /// An additional signer for multi-user tests. `test::setup::Node::default`
     /// signs with a fixed key, so each peer needs a distinct key of its own
@@ -2796,7 +2832,7 @@ mod test {
         use radicle::storage::ReadRepository;
         let delegates: BTreeSet<Did> = repo.delegates().unwrap().into_iter().collect();
         let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
-        let filters = display::Filters {
+        let filters = Filters {
             delegates: &delegates,
             redacted: false,
             all_authors: false,
@@ -3082,7 +3118,7 @@ mod test {
         let release = releases.get(&id).unwrap().unwrap();
         let delegates: BTreeSet<Did> = BTreeSet::new();
         let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
-        let filters = display::Filters {
+        let filters = Filters {
             delegates: &delegates,
             redacted: false,
             all_authors: true,
@@ -3130,7 +3166,7 @@ mod test {
         let release = releases.get(&id).unwrap().unwrap();
         let delegates: BTreeSet<Did> = BTreeSet::new();
         let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
-        let filters = display::Filters {
+        let filters = Filters {
             delegates: &delegates,
             redacted: false,
             all_authors: true,
@@ -3142,7 +3178,7 @@ mod test {
         assert_eq!(out.matches('🌱').count(), 1);
 
         // Without a local DID nothing is marked as seeded.
-        let anon = display::Filters {
+        let anon = Filters {
             local: None,
             ..filters
         };
@@ -3721,7 +3757,7 @@ mod test {
             let mut r = releases.create(oid, None, &alice.signer).unwrap();
             r.register_artifact(test_cid(1), "bin".into(), &bob.signer)
                 .unwrap();
-            assert!(r.has_unredacted_artifacts(&delegates));
+            assert!(!r.is_fully_redacted(&delegates));
         }
 
         assert_eq!(
@@ -3745,7 +3781,7 @@ mod test {
         // A release with no artifacts has nothing redacted, so it counts
         // with the visible releases, as `list` shows it.
         let release = releases.create(oid, None, &alice.signer).unwrap();
-        assert!(!release.has_unredacted_artifacts(&delegates));
+        assert!(!release.is_fully_redacted(&delegates));
         drop(release);
 
         assert_eq!(
@@ -3755,6 +3791,68 @@ mod test {
                 ..Default::default()
             }
         );
+    }
+
+    /// `Release::is_visible` applies the redaction and author rules together,
+    /// and always shows a release with no artifacts.
+    #[test]
+    fn release_is_visible_applies_filters() {
+        let test::setup::Network {
+            alice, bob, rid, ..
+        } = test::setup::Network::default();
+        let repo = alice.storage.repository(rid).unwrap();
+        let alice_did = Did::from(alice.signer.public_key());
+        let bob_did = Did::from(bob.signer.public_key());
+        let delegates = BTreeSet::from([alice_did]);
+        let mut releases = Releases::open(&repo).unwrap();
+
+        let filters = |redacted, all_authors, local| Filters {
+            delegates: &delegates,
+            redacted,
+            all_authors,
+            local,
+        };
+        let default = filters(false, false, None);
+
+        // No artifacts.
+        let oid = commit(&repo.backend, "empty");
+        let empty = releases.create(oid, None, &alice.signer).unwrap();
+        assert!(empty.is_visible(&default));
+        drop(empty);
+
+        // Only a non-delegate artifact: hidden unless the author filter opens.
+        let oid = commit(&repo.backend, "bob artifact");
+        let mut r = releases.create(oid, None, &alice.signer).unwrap();
+        r.register_artifact(test_cid(1), "bin".into(), &bob.signer)
+            .unwrap();
+        assert!(!r.is_visible(&default));
+        assert!(r.is_visible(&filters(false, true, None)));
+        assert!(r.is_visible(&filters(false, false, Some(&bob_did))));
+        drop(r);
+
+        // Non-delegate creator, delegate artifact: hidden unless the creator
+        // filter opens. Empty releases follow the same creator rule.
+        let oid = commit(&repo.backend, "bob release");
+        let mut r = releases.create(oid, None, &bob.signer).unwrap();
+        assert!(!r.is_visible(&default));
+        r.register_artifact(test_cid(3), "bin".into(), &alice.signer)
+            .unwrap();
+        assert!(!r.is_visible(&default));
+        assert!(r.has_visible_creator(&filters(false, true, None)));
+        assert!(r.is_visible(&filters(false, true, None)));
+        assert!(r.is_visible(&filters(false, false, Some(&bob_did))));
+        drop(r);
+
+        // Only a redacted delegate artifact: hidden unless redactions show.
+        let oid = commit(&repo.backend, "redacted");
+        let mut r = releases.create(oid, None, &alice.signer).unwrap();
+        r.register_artifact(test_cid(2), "bin".into(), &alice.signer)
+            .unwrap();
+        r.redact(test_cid(2), "bad build".into(), &alice.signer)
+            .unwrap();
+        assert!(!r.is_visible(&default));
+        assert!(!r.is_visible(&filters(false, true, None)));
+        assert!(r.is_visible(&filters(true, false, None)));
     }
 
     #[test]
@@ -3779,7 +3877,7 @@ mod test {
             let artifact = r.artifact(&cid).unwrap();
             assert!(artifact.is_redacted());
             assert!(!artifact.is_redacted_by_trusted(&delegates));
-            assert!(r.has_unredacted_artifacts(&delegates));
+            assert!(!r.is_fully_redacted(&delegates));
         }
 
         assert_eq!(
