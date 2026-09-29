@@ -363,9 +363,8 @@ impl Releases {
                     .or_else(|| titles.title(release.oid()));
                 let tag_name = release.tag().and_then(|t| tag_names.tag_name(t));
                 let shown = Release::new(id, &release, aliases, filters, title, tag_name);
-                let keep = keep_filtered
-                    || release.artifacts().is_empty()
-                    || !shown.artifacts.is_empty();
+                let keep =
+                    keep_filtered || release.artifacts().is_empty() || !shown.artifacts.is_empty();
                 keep.then_some(shown)
             })
             .collect();
