@@ -66,10 +66,10 @@ radicle-artifact = { git = "https://radicle.norman.life/z4VYyJ9KuwMNkXGQnmKuGPGK
 2. **Build:** Build your release artifacts.
 3. **Register:** Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. The COB holds only signed discovery metadata, synced over the Radicle protocol, not the bytes.
 4. **Seed:** Upload artifacts to an HTTP server and add the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
-5. **Download:** Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`.
+5. **Download:** Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`. Both need the local artifact node running (`rad-artifact node start`), even for HTTP locations.
 6. **Verify:** Check a file you downloaded or rebuilt against the COB with `rad-artifact verify <PATH>`. It hashes the file and looks for an artifact with that CID, honoring the same delegate and redaction rules as `list`/`show`. Reads local storage only: no daemon, no network, no signer.
 7. **Attest:** Other delegates check out the release version, build the artifacts independently, `verify` the CIDs match, and attest. Note that `attest` records a signed claim and rehashes nothing itself, so run `verify` first.
-8. **Redact:** If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason. A redaction by a delegate makes `verify` fail, so it withdraws a published artifact without touching wherever the bytes are hosted.
+8. **Redact:** If an artifact is found to be compromised or fails reproducibility checks, redact it with a reason. A redaction by a delegate or by the artifact's author makes `verify` fail, so it withdraws a published artifact without touching wherever the bytes are hosted.
 
 > **Note:** A release is bound to a revision in your **Radicle storage**, not your working copy. Release operations resolve `<REVISION>` against Radicle storage, so the commit (or annotated tag) must already be there before you can register against it. Push it first with `git push rad --tags`. A tag name resolves only when the tag is a [canonical reference].
 
@@ -81,11 +81,11 @@ A **Release** is a Radicle [COB] (Collaborative Object) identified by a Release 
 
 Releases contain one or more **Artifacts**, each identified by a content identifier ([CID]) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help seed artifacts by adding location URLs for any artifact, enabling decentralized seeding.
 
-Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. They can also **redact** an artifact with a reason, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
+Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. The author's own attestation is a no-op, because registering already implies it. They can also **redact** an artifact with a reason, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Anyone can redact, but only a redaction by the artifact's author or a delegate withdraws it; other redactions are ignored, so no stranger can veto a release. Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
 The artifact author and repository delegates can attach free-form **metadata** entries to an artifact, e.g. a build-environment note or an SBOM URL. Keys are strings; values are arbitrary JSON. The keyspace is shared (last-writer-wins). Per-entry attribution is not stored on the entry itself, but every write is a signed COB op, so the writer's DID is recoverable from the log.
 
-Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key
+Each user is identified by a DID that is currently mapped 1:1 to the Radicle NodeID, an Ed25519 public key.
 
 This COB is **build-system agnostic**. It works with any toolchain or build process that produces addressable artifacts. Ideally your builds are deterministic (reproducible), which lets other delegates independently verify artifacts and record attestations. However, deterministic builds are not a requirement; you can use radicle-artifact purely for publishing and discovering release artifacts without attestation.
 
@@ -99,6 +99,7 @@ Release
 ├── oid: Oid                          # git commit ID the release is linked to
 ├── tag: Option<Oid>                  # optional annotated tag OID linked to the commit
 ├── creator: Did                      # user that created the release
+├── timestamp: Timestamp              # creation time, from the root op
 └── artifacts: Map<CID, Artifact>
     └── Artifact
         ├── author: Did               # user that added this artifact
@@ -124,13 +125,13 @@ A COB write (`register`, `attest`, `location add`, ...) is a local git operation
 
 For other peers to actually discover an artifact, they also need to fetch the COB refs from your node, which typically happens after receiving the announcement.
 
-Everything else works without the Radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder node is a **separate process** (the `rad-artifact-node` binary, spawned by `rad-artifact node start`) from the Radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the Radicle node. Fetching resolves locations (iroh or HTTP) directly and never consults it.
+Everything else works without the Radicle node running: computing CIDs, reading releases, seeding, and fetching artifacts. The artifact seeder node is a **separate process** (the `rad-artifact-node` binary, spawned by `rad-artifact node start`) from the Radicle node with its own control socket; it shares only your Ed25519 identity and does not talk to the Radicle node. Fetching goes through the artifact node, which resolves locations (iroh or HTTP) directly and never consults the Radicle node.
 
 ## Collaboration and trust model
 
-All actions on a release are signed by the acting user's DID. Most actions — creating a release, adding an artifact, attesting, redacting, registering a location — are open to any user. The exceptions are renaming an artifact (constrained to the artifact's original author) and writing metadata (constrained to the artifact's author or a repository delegate).
+All actions on a release are signed by the acting user's DID. Most actions — creating a release, adding an artifact, attesting, redacting, registering a location — are open to any user. The exceptions are renaming an artifact (constrained to the artifact's original author, enforced by the COB) and writing metadata (constrained to the artifact's author or a repository delegate, enforced by the CLI only; the COB accepts any signed write).
 
-Trust is inherited from the repository's delegate set. By default, commands consider only releases and artifacts authored by a delegate or by the local user. Contributions from other users are hidden. Pass `--all-authors` to widen the view. Targeting a specific release with `--release <id>` always works regardless of who authored it.
+Trust is inherited from the repository's delegate set. By default, commands consider only releases and artifacts authored by a delegate or by the local user. Contributions from other users are hidden. Pass `--all-authors` to widen the view. Targeting a specific release with `--release <id>` works regardless of who created it, but its artifacts by other users stay hidden without `--all-authors`.
 
 ## Artifact types
 
@@ -142,7 +143,7 @@ Blobs are the common case: one binary, archive, or model file. [Collections](htt
 
 | Action             | Description                                                                       |
 | ------------------ | --------------------------------------------------------------------------------- |
-| `Create`           | Initialize a release for a git OID (internal, auto-created by `RegisterArtifact`) |
+| `Create`           | Initialize a release for a git OID (`create`, or implicit on first `register`)    |
 | `RegisterArtifact` | Add an artifact (CID + name), or update name if author re-sends                   |
 | `AddLocation`      | Add a discovery URL for an artifact                                               |
 | `RemoveLocation`   | Retract a previously added URL                                                    |
@@ -165,7 +166,7 @@ Every command accepts these global options, before or after the subcommand:
 - `--no-announce` skips the network announcement after writes.
 - `--no-input` disables interactive prompts (for scripts and CI).
 
-Commands that do not read or write a repository ignore them: `--repo` has no effect on `cid`, `locate`, `node`, and `watch`, and `--no-announce` has no effect on read-only commands such as `list` and `show`.
+Commands that do not read or write a repository ignore them: `--repo` has no effect on `cid`, `locate`, `watch`, and `node start/stop/status/logs`, and `--no-announce` has no effect on read-only commands such as `list` and `show`.
 
 `--repo` only needs the repository to be in local storage, so commands work from any directory:
 
@@ -176,23 +177,28 @@ rad-artifact list --repo rad:z4VYyJ9KuwMNkXGQnmKuGPGKw3inv
 ### COB-facing commands
 
 ```
-rad-artifact register <PATH> [--revision <REVISION>] [-n <NAME>] # register artifact (creates release if needed; records a sizeBytes hint, skip with --no-size)
+rad-artifact create [<REVISION>] [--json]                        # create a release (or reuse your own) and print its id
+rad-artifact register <PATH> [--revision <REVISION>] [-n <NAME>] [--seed] # register artifact (creates release if needed; records a sizeBytes hint, skip with --no-size)
 rad-artifact register <DIR> [--each|--collection]                # a folder asks which; --no-input or -n makes one collection
 rad-artifact register --cid <CID> --revision <REVISION> -n <NAME>  # register a precomputed CID without local bytes
 rad-artifact location add --revision <REVISION> --cid <CID> <URL>    # add discovery URL
-rad-artifact location remove --revision <REVISION> --cid <CID> <URL> # remove discovery URL
+rad-artifact location remove [--revision <REVISION> --cid <CID> <URL>] # remove discovery URL (interactive without args)
 rad-artifact attest <REVISION> --cid <CID>                       # attest to an artifact
 rad-artifact redact <REVISION> --cid <CID> -m <REASON>           # redact an artifact
 rad-artifact delete <RELEASE_ID>                                 # remove your ref to a release (gone once nobody has one)
 rad-artifact metadata set --revision <REVISION> --cid <CID> [--json] <KEY> <VALUE>  # attach metadata
 rad-artifact metadata unset --revision <REVISION> --cid <CID> <KEY>                 # remove metadata
-rad-artifact show <REVISION> [--pretty] [--all-authors]          # show release
-rad-artifact list [--pretty] [--all-authors]                     # list releases (default: delegate- or local-authored)
+rad-artifact show <REVISION> [--pretty] [--all-authors] [--redacted] # show release
+rad-artifact list [--pretty] [--all-authors] [--redacted]        # list releases (default: delegate- or local-created)
+rad-artifact stats [--json]                                      # count releases by creator and redaction
 rad-artifact cid <PATH>                                          # compute BLAKE3 CID
-rad-artifact verify <PATH> [--all-authors]                       # check a local file against the registered artifacts
-rad-artifact fetch [<REVISION> --cid <CID>]                      # fetch artifact into the store (interactive without args)
-rad-artifact download [<REVISION> --cid <CID>] [-o <PATH>]       # download artifact to disk (interactive without args)
+rad-artifact verify <PATH> [--all-authors] [--json]              # check a local file against the registered artifacts
+rad-artifact locate <CID> [--releases]                           # find a CID's locations across all local repos
+rad-artifact fetch [<REVISION> --cid <CID>] [--url <URL>] [--seed] # fetch artifact into the store (interactive without args)
+rad-artifact download [<REVISION> --cid <CID>] [-o <PATH>] [--url <URL>] [--seed] [--offline] # download artifact to disk (interactive without args)
 ```
+
+Commands that take `--revision <REVISION>` or `<REVISION>` also accept `--release <ID>` to target a release by id. `show` and `list` hide artifacts that a trusted party redacted; pass `--redacted` to include them.
 
 ### Node control
 
@@ -226,16 +232,17 @@ Seeding involves running a daemon that holds a persistent iroh-blobs store that 
 
 ```
 $ rad-artifact node start
-Node started (socket: /Users/you/.radicle/artifacts/control.sock)
+🌱 Node awake and seeding — listening on /Users/you/.radicle/artifacts/control.sock
+   tip: check on it anytime with `rad-artifact node status`
 
 $ rad-artifact seed ./dist/linux-amd64.tar.gz
-Seeded baf...abc (12.4 MiB, new tagged)
-Added radiroh location to release abc1234
+🌱 Seeded baf...abc (12.4 MiB, new tagged)
+📡 Added a radiroh:// location in release abc1234
 ```
 
 The daemon stores blobs under `<home>/artifacts/store/` (persistent iroh-blobs FsStore), tracks what to seed via `seeded/{rid}/{release}/{cid}` tags, and writes a JSON log to `<home>/artifacts/node.log` (rotated on each start). The control socket lives at `<home>/artifacts/control.sock` (mode 0600); set `RAD_ARTIFACT_SOCKET` to override.
 
-Log verbosity is controlled via `RUST_LOG`, which covers both this crate and iroh — e.g. `RUST_LOG=iroh_blobs=debug rad-artifact node start`. Default filter: `warn,iroh=warn,iroh_blobs=warn,radicle_artifact=info`.
+Log verbosity is controlled via `RUST_LOG`, which covers both this crate and iroh — e.g. `RUST_LOG=iroh_blobs=debug rad-artifact node start`. Default filter: `warn,iroh=warn,iroh_blobs=warn,radicle_artifact_node=info,radicle_artifact_core=info`.
 
 The node never writes COB ops — every signed location write (`add_location`, `remove_location`) happens client-side. The daemon's identity (the iroh endpoint id) currently derives from the same Ed25519 secret as your Radicle DID, so `RAD_PASSPHRASE` is required on start when the keystore is encrypted (or the parent CLI will prompt).
 
@@ -256,7 +263,7 @@ It runs until you interrupt it, so supervise it with launchd or systemd. It need
 Two things decide what it seeds:
 
 - **Which repositories** — every repository your Radicle node seeds (`rad seed <RID>`). Name one or more RIDs to narrow it to those. A named repository your node does not seed is an error, because its COBs would never arrive.
-- **Which artifacts** — the same trust rules as `verify`: an artifact registered by a delegate (or by you) in a release a delegate created, and redacted by nobody who counts. Everything else is ignored.
+- **Which artifacts** — the same trust rules as `verify`: an artifact registered by a delegate (or by you) in a release a delegate (or you) created, and redacted by nobody who counts. Everything else is ignored.
 
 It notices new artifacts two ways. The Radicle node's event stream reports which repositories' refs moved, so an artifact registered by a peer is picked up within seconds of the COB arriving. A full sweep every `--sweep` seconds (15 minutes by default) covers anything that landed while either process was down.
 
@@ -281,6 +288,5 @@ MIT OR Apache-2.0
 [Radicle]: https://radicle.dev/
 [COB]: https://radicle.dev/guides/protocol#collaborative-objects
 [CID]: docs/content-addressing-artifacts.md
-[multicodec]: https://github.com/multiformats/multicodec
 [BLAKE3]: https://github.com/BLAKE3-team/BLAKE3
 [canonical reference]: https://radicle.garden/blog/canonical-references-in-radicle
