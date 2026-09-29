@@ -369,7 +369,7 @@ pub struct FetchReceipt {
     pub bytes: u64,
     /// `true` if the bytes were already local; no network was used.
     pub from_cache: bool,
-    /// `true` if a `seeded/{rid}/{cid}` tag is now set.
+    /// `true` if a `seeded/{rid}/{release}/{cid}` tag is now set.
     pub seeded: bool,
     /// Endpoint id the node serves on, as a canonical `radiroh://<base32>`
     /// URL. Present so the caller can write the `add_location` COB after a
@@ -391,7 +391,7 @@ pub struct DownloadReceipt {
     pub bytes: u64,
     /// `true` if the bytes were already local; no network was used.
     pub from_cache: bool,
-    /// `true` if a `seeded/{rid}/{cid}` tag is now set.
+    /// `true` if a `seeded/{rid}/{release}/{cid}` tag is now set.
     pub seeded: bool,
     /// Endpoint id the node serves on, as a canonical `radiroh://<base32>`
     /// URL. Present so the caller can write the `add_location` COB after a
@@ -421,13 +421,14 @@ pub struct Status {
     pub warnings: Warnings,
 }
 
-/// Aggregated `seeded/{rid}/{cid}` tag stats across all repos.
+/// Aggregated `seeded/{rid}/{release}/{cid}` tag stats across all repos.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SeededStats {
-    /// Number of tagged `(rid, cid)` pairs.
+    /// Number of distinct seeded blobs. A blob tagged in several releases
+    /// counts once.
     pub count: usize,
-    /// Sum of logical artifact sizes across all tags.
+    /// Sum of logical sizes across distinct seeded blobs.
     pub bytes_logical: u64,
 }
 

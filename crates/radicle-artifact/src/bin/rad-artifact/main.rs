@@ -3163,7 +3163,7 @@ Examples:
     /// Alias for `rad-artifact node seed`.
     ///
     /// Computes the CID from the given path, asks the running node to
-    /// register `seeded/{rid}/{cid}`, and writes a
+    /// set a `seeded/{rid}/{release}/{cid}` tag, and writes a
     /// `radiroh://{endpoint_id}` location to the COB unless
     /// `--no-location`. Requires a running node — start one with
     /// `rad-artifact node start`.
