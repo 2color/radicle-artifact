@@ -131,7 +131,7 @@ Everything else works without the Radicle node running: computing CIDs, reading 
 
 All actions on a release are signed by the acting user's DID. Most actions — creating a release, adding an artifact, attesting, redacting, registering a location — are open to any user. The exceptions are renaming an artifact (constrained to the artifact's original author, enforced by the COB) and writing metadata (constrained to the artifact's author or a repository delegate). The COB records every metadata write, because nodes can disagree on the delegate set. Reads then keep only the writes from the author and the delegates, the same rule that applies to redactions.
 
-Trust is inherited from the repository's delegate set. By default, commands consider only releases and artifacts authored by a delegate or by the local user. Contributions from other users are hidden. Pass `--all-authors` to widen the view. Targeting a specific release with `--release <id>` works regardless of who created it, but its artifacts by other users stay hidden without `--all-authors`.
+Trust is inherited from the repository's delegate set. By default, commands consider only releases and artifacts authored by a delegate or by the local user. Contributions from other users are hidden. Pass `--all-authors` to widen the view, or `--untrusted` on `list` and `show` to see only contributions from other users. Targeting a specific release with `--release <id>` works regardless of who created it, but its artifacts by other users stay hidden without `--all-authors`.
 
 ## Artifact types
 
@@ -188,8 +188,8 @@ rad-artifact redact <REVISION> --cid <CID> -m <REASON>           # redact an art
 rad-artifact delete <RELEASE_ID>                                 # remove your ref to a release (gone once nobody has one)
 rad-artifact metadata set --revision <REVISION> --cid <CID> [--json] <KEY> <VALUE>  # attach metadata
 rad-artifact metadata unset --revision <REVISION> --cid <CID> <KEY>                 # remove metadata
-rad-artifact show <REVISION> [--pretty] [--all-authors] [--redacted] # show release
-rad-artifact list [--pretty] [--all-authors] [--redacted]        # list releases (default: delegate- or local-created)
+rad-artifact show <REVISION> [--pretty] [--all-authors | --untrusted] [--redacted] # show release
+rad-artifact list [--pretty] [--all-authors | --untrusted] [--redacted] # list releases (default: delegate- or local-created)
 rad-artifact stats [--json]                                      # count releases by creator and redaction
 rad-artifact cid <PATH>                                          # compute BLAKE3 CID
 rad-artifact verify <PATH> [--all-authors] [--json]              # check a local file against the registered artifacts

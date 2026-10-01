@@ -154,6 +154,16 @@ fn scope(all_authors: bool) -> Scope {
     }
 }
 
+/// The [`Scope`] for `list` and `show`, where `--untrusted` narrows to
+/// untrusted users.
+fn list_scope(all_authors: bool, untrusted: bool) -> Scope {
+    if untrusted {
+        Scope::Untrusted
+    } else {
+        scope(all_authors)
+    }
+}
+
 /// Visibility rule for a release's creator: it must fall in `scope`.
 fn release_visible(
     release: &radicle_artifact::Release,
@@ -1526,6 +1536,7 @@ fn show_release(
         verbose,
         redacted,
         all_authors,
+        untrusted,
         revision,
         release,
     }: command::Show,
@@ -1556,7 +1567,9 @@ fn show_release(
                 let oid = resolve_ref(rev, repo)?.commit;
                 let hits: Vec<_> = collect_candidates(releases, oid)?
                     .into_iter()
-                    .filter(|(_, r)| release_visible(r, delegates, local, scope(all_authors)))
+                    .filter(|(_, r)| {
+                        release_visible(r, delegates, local, list_scope(all_authors, untrusted))
+                    })
                     .collect();
                 if hits.is_empty() {
                     return Err(error::Find::NoRelease(oid).into());
@@ -1568,7 +1581,7 @@ fn show_release(
 
     let filters = Filters {
         trust: Trust::new(delegates, Some(local)),
-        scope: scope(all_authors),
+        scope: list_scope(all_authors, untrusted),
         include_redacted: redacted,
     };
     let shown = display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
@@ -1589,6 +1602,7 @@ fn list_releases(
         json,
         verbose,
         all_authors,
+        untrusted,
         redacted,
     }: command::List,
     releases: &Releases<Repository>,
@@ -1614,7 +1628,7 @@ fn list_releases(
         });
     let filters = Filters {
         trust: Trust::new(delegates, Some(local)),
-        scope: scope(all_authors),
+        scope: list_scope(all_authors, untrusted),
         include_redacted: redacted,
     };
     let releases = display::Releases::new(iter, aliases, filters, false, repo, repo);
@@ -3679,6 +3693,10 @@ Examples:
         /// repository delegates.
         #[clap(long)]
         pub all_authors: bool,
+        /// Show only releases and artifacts by users who are neither
+        /// repository delegates nor the local user.
+        #[clap(long, conflicts_with = "all_authors")]
+        pub untrusted: bool,
         /// Git revision (commit, tag, or abbreviated OID) of the release.
         /// Conflicts with --release.
         pub revision: Option<String>,
@@ -3692,7 +3710,8 @@ Examples:
     ///
     /// By default only releases (and artifacts within them) authored by
     /// a repository delegate or by the local user are shown. Pass
-    /// `--all-authors` to include releases and artifacts from other users.
+    /// `--all-authors` to include releases and artifacts from other users,
+    /// or `--untrusted` to show only those.
     #[derive(Parser)]
     #[clap(after_long_help = "\
 Examples:
@@ -3701,6 +3720,9 @@ Examples:
 
   Include artifacts from non-delegate authors:
     $ rad-artifact list --pretty --all-authors
+
+  Show only releases and artifacts from non-delegate authors:
+    $ rad-artifact list --pretty --untrusted
 
   Include redacted releases:
     $ rad-artifact list --pretty --redacted")]
@@ -3722,6 +3744,10 @@ Examples:
         /// repository delegates.
         #[clap(long)]
         pub all_authors: bool,
+        /// Show only releases and artifacts by users who are neither
+        /// repository delegates nor the local user.
+        #[clap(long, conflicts_with = "all_authors")]
+        pub untrusted: bool,
         /// Also show artifacts that have been redacted by a trusted party.
         #[clap(long)]
         pub redacted: bool,
