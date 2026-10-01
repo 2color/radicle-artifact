@@ -43,18 +43,11 @@ The previous release counted empty releases (releases with no artifacts) as hidd
 
 The artifact's author does not change the bucket.
 
-"Hidden" is now "redacted" everywhere, because redaction is the only thing these buckets measure:
-
-- `rad-artifact list` shows empty releases. The `--empty` flag is removed.
-- `rad-artifact stats` says "redacted" in place of "hidden". With `--json`, the keys are `delegateRedacted` and `otherRedacted`.
-- `ReleaseCounts` has the fields `delegate_redacted` and `other_redacted`.
+"Hidden" is now "redacted" everywhere, because redaction is the only thing these buckets measure. This includes `rad-artifact stats`, its JSON keys, and the `ReleaseCounts` fields.
 
 ### `verify` names the untrusted release creator
 
-Before, when the release creator was untrusted, `rad-artifact verify` blamed the artifact's author. Now it names the creator.
-
-- The new variant `trust::Untrusted::Creator(Did)` covers this case. `Untrusted::Author` now applies only to the artifact's author.
-- `verify --json` reports `untrustedCreator` as the `reason`.
+Before, when the release creator was untrusted, `rad-artifact verify` blamed the artifact's author. Now it names the creator, with the new variant `trust::Untrusted::Creator(Did)`. `Untrusted::Author` now applies only to the artifact's author.
 
 ### Show the same releases as `rad-artifact list`
 
@@ -71,11 +64,13 @@ By default, the releases `list` shows are the `delegate` bucket of `counts()`, p
 This example prints the default `list` view:
 
 ```rust
+use radicle::identity::Did;
 use radicle_artifact::{trust::Trust, Filters, Releases};
 
 let releases = Releases::open(&repo)?;
+let local = Did::from(*profile.id());
 let filters = Filters {
-    trust: Trust::new(releases.delegates(), None),
+    trust: Trust::new(releases.delegates(), Some(&local)),
     include_redacted: false,
 };
 
@@ -91,24 +86,21 @@ for entry in releases.list()? {
 }
 ```
 
-`Release::has_unredacted_artifacts` is removed. To match `list`, use `Filters::shows_release`. For the redaction check alone, use `Release::is_fully_redacted(&delegates)`.
-
 ### `Trust` holds the trust rules
 
-The trust rules decide who may create a release, register an artifact, or withdraw one. They now live in the new `trust::Trust` type. `Filters` holds a `Trust` and keeps only the view option `include_redacted`, renamed from `redacted`.
+The trust rules decide who may create a release, register an artifact, or withdraw one. They now live in the new `trust::Trust` type. `Filters` holds a `Trust` and keeps only the view option `include_redacted`.
 
 - `Trust::new(&delegates, local)` trusts delegates and the local user, as `list` does by default.
 - `Trust::trusts(&did)` is true for a delegate or the local user, or for anyone when `all_authors` is set.
 - `Trust::check(release, artifact)` replaces `trust::classify`. `local` is now an `Option<&Did>`.
-- `trust::is_author_or_delegate(&did, &author, &delegates)` is true when `did` may withdraw the artifact or change its metadata: its author or a delegate.
+- `trust::is_author_or_delegate(&did, &author, &delegates)` is true when `did` may withdraw the artifact or change its metadata: its author or a delegate. Use it to gate metadata edits.
 - `trust::withdrawals(&artifact, &delegates)` returns the redactions that count, from the author or a delegate.
 
 ### Metadata ignores untrusted writers
 
 Before, only the CLI checked who may write metadata. A patched client could write metadata that every node showed. Now the library applies the same rule as for redactions: for each key, the last write from the artifact's author or a delegate wins. Writes from other users are recorded, but have no effect.
 
-- `Artifact::metadata` is renamed `Artifact::trusted_metadata(&delegates)`. It returns the metadata that holds. It takes the delegate set, because the delegate set is not part of the COB.
-- `trust::is_author_or_delegate` now also tells whether `did`'s metadata writes take effect. Use it to gate metadata edits.
+- `Artifact::trusted_metadata(&delegates)` returns the metadata that holds. It takes the delegate set, because the delegate set is not part of the COB.
 - `trust::metadata(&artifact, &delegates)` applies the rule.
 - The cache freshness token now holds a format version. Cached releases in the old format count as stale, and the next read rebuilds them from git.
 
@@ -119,7 +111,7 @@ The new `Releases::list` returns an iterator over every release, newest first.
 - With a cache, SQLite sorts the releases and yields them one by one. To read one page, `list` parses only the rows up to the end of that page.
 - Without a cache, `list` reads every release from git and sorts them in memory. Entries that fail to parse come last.
 
-Use `list` when you need releases in order, or only some of them, for example to paginate. Use `all` when you need every release and the order does not matter: it reads each release before it returns. With a cache, `list` is faster for one page. Without a cache, `list` is as slow as `all`, but it sorts for you.
+Use `list` when you need releases in order, or only some of them, for example to paginate. Use `all` when you need every release and the order does not matter: it reads each release before it returns.
 
 ## [0.20.0] - 2026-09-24
 
