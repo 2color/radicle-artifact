@@ -49,7 +49,19 @@ pub struct Trust<'a> {
     pub all_authors: bool,
 }
 
-impl Trust<'_> {
+impl<'a> Trust<'a> {
+    /// Trust delegates and the local user, as `list` does by default.
+    ///
+    /// To trust everyone, set `all_authors` with
+    /// `Trust { all_authors: true, ..Trust::new(delegates, local) }`.
+    pub fn new(delegates: &'a BTreeSet<Did>, local: Option<&'a Did>) -> Self {
+        Self {
+            delegates,
+            local,
+            all_authors: false,
+        }
+    }
+
     /// Check whether `did` may create a release or register an artifact:
     /// a delegate, the local user, or anyone when `all_authors` is set.
     pub fn trusts(&self, did: &Did) -> bool {

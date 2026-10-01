@@ -64,6 +64,7 @@ The library exposes the rules that `list` uses, so you can show the same view:
 
 - `Filters::shows_release(&Release)` is true when the creator is trusted and the release is not fully redacted. Artifact authors do not matter.
 - `Filters::shows_artifact(&Artifact)` is true when the artifact passes the author and redaction filters.
+- `Filters::artifacts(&Release)` returns the artifacts in a release that `shows_artifact` lets through.
 
 By default, the releases `list` shows are the `delegate` bucket of `counts()`, plus releases by the local user.
 
@@ -74,11 +75,7 @@ use radicle_artifact::{trust::Trust, Filters, Releases};
 
 let releases = Releases::open(&repo)?;
 let filters = Filters {
-    trust: Trust {
-        delegates: releases.delegates(),
-        local: None,        // no local user to exempt,
-        all_authors: false, // so only delegates are trusted
-    },
+    trust: Trust::new(releases.delegates(), None),
     include_redacted: false,
 };
 
@@ -88,10 +85,8 @@ for entry in releases.list()? {
         continue;
     }
     println!("{id}");
-    for (cid, artifact) in release.artifacts() {
-        if filters.shows_artifact(artifact) {
-            println!("  {cid}");
-        }
+    for (cid, _) in filters.artifacts(&release) {
+        println!("  {cid}");
     }
 }
 ```
@@ -102,6 +97,7 @@ for entry in releases.list()? {
 
 The trust rules decide who may create a release, register an artifact, or withdraw one. They now live in the new `trust::Trust` type. `Filters` holds a `Trust` and keeps only the view option `include_redacted`, renamed from `redacted`.
 
+- `Trust::new(&delegates, local)` trusts delegates and the local user, as `list` does by default.
 - `Trust::trusts(&did)` is true for a delegate or the local user, or for anyone when `all_authors` is set.
 - `Trust::check(release, artifact)` replaces `trust::classify`. `local` is now an `Option<&Did>`.
 - `trust::is_author_or_delegate(&did, &author, &delegates)` is true when `did` may withdraw the artifact or change its metadata: its author or a delegate.

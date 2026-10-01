@@ -469,10 +469,8 @@ impl Release {
         title: Option<String>,
         tag_name: Option<String>,
     ) -> Self {
-        let mut artifacts: Vec<_> = release
-            .artifacts()
-            .iter()
-            .filter(|(_cid, artifact)| filters.shows_artifact(artifact))
+        let mut artifacts: Vec<_> = filters
+            .artifacts(release)
             .map(|(cid, artifact)| {
                 let mut locations: Vec<_> = artifact
                     .locations()
@@ -1187,11 +1185,7 @@ mod tests {
                 (ReleaseId::from(id), release)
             });
             let filters = Filters {
-                trust: Trust {
-                    delegates: &delegates,
-                    local: None,
-                    all_authors: false,
-                },
+                trust: Trust::new(&delegates, None),
                 include_redacted: redacted,
             };
             let aliases = std::collections::HashMap::new();

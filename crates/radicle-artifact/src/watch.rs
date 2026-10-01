@@ -52,11 +52,7 @@ pub fn wanted(
     let mut ordered: Vec<&(ReleaseId, Release)> = releases.iter().collect();
     ordered.sort_by_key(|(_, r)| std::cmp::Reverse(r.timestamp()));
 
-    let trust = Trust {
-        delegates,
-        local: Some(local),
-        all_authors: false,
-    };
+    let trust = Trust::new(delegates, Some(local));
     let mut seen: HashSet<Cid> = HashSet::new();
     let mut wanted = Vec::new();
     for (release_id, release) in ordered {

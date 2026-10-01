@@ -1,7 +1,7 @@
 //! Visibility rules for releases and artifacts.
 
 use crate::trust::Trust;
-use crate::{Artifact, Release};
+use crate::{Artifact, Cid, Release};
 
 /// Visibility rules for releases and artifacts, as `list` / `show` apply them.
 ///
@@ -16,7 +16,7 @@ pub struct Filters<'a> {
     pub include_redacted: bool,
 }
 
-impl Filters<'_> {
+impl<'a> Filters<'a> {
     /// Check whether `list` / `show` include `artifact`:
     /// - Artifacts redacted by a trusted party are hidden, unless
     ///   `include_redacted` is set.
@@ -28,6 +28,14 @@ impl Filters<'_> {
         // Delegates are the curated source of truth for a repo; non-delegate
         // contributions are opt-in. The local user always sees their own.
         self.trust.trusts(artifact.author())
+    }
+
+    /// The artifacts in `release` that [`Self::shows_artifact`] lets through.
+    pub fn artifacts(self, release: &'a Release) -> impl Iterator<Item = (&'a Cid, &'a Artifact)> {
+        release
+            .artifacts()
+            .iter()
+            .filter(move |(_, artifact)| self.shows_artifact(artifact))
     }
 
     /// Check whether `list` shows `release`: `trust` must trust the creator,

@@ -2799,11 +2799,7 @@ mod test {
         let delegates: BTreeSet<Did> = repo.delegates().unwrap().into_iter().collect();
         let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
         let filters = Filters {
-            trust: Trust {
-                delegates: &delegates,
-                local: None,
-                all_authors: false,
-            },
+            trust: Trust::new(&delegates, None),
             include_redacted: false,
         };
         let title = display::CommitTitle::title(&*repo, release.oid());
