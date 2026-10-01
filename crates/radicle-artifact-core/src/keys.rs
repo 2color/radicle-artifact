@@ -64,6 +64,12 @@ impl EndpointId {
         .expect("radiroh:// URL with valid base32 host always parses")
     }
 
+    /// Build the `pk:<z32>` URI that names this key in pkarr. Pkarr servers
+    /// publish the endpoint's records under the z-base-32 form.
+    pub fn to_pkarr_uri(&self) -> String {
+        format!("pk:{}", self.0.to_z32())
+    }
+
     /// Parse a `radiroh://<id>` URL into an endpoint id.
     ///
     /// Returns `Ok(None)` for a bare `radiroh://` (no host) so callers
@@ -246,6 +252,17 @@ mod tests {
         let iroh_pk = iroh_sk.public();
 
         assert_eq!(&radicle_pk.into_inner(), iroh_pk.as_bytes());
+    }
+
+    #[test]
+    fn pkarr_uri_uses_z32() {
+        let id: EndpointId = "radiroh://25igmk4u75iqsbosfvep5sxoozazizgoxfnuqzsnl22pbddig5ra"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            id.to_pkarr_uri(),
+            "pk:47egckhw97eo1bq1firx71zqq3y3e3gqzfpwo31pm44xbddeg7ty"
+        );
     }
 
     /// Pins the radicle -> iroh derivation to a known vector.
