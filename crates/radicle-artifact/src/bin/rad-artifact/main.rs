@@ -15,7 +15,7 @@ use radicle::{
     profile,
     storage::git::Repository,
 };
-use radicle_artifact::trust::{Trust, Untrusted};
+use radicle_artifact::trust::{Scope, Trust, Untrusted};
 use radicle_artifact::*;
 use radicle_artifact_client::{sync::Client, DownloadArgs, FetchArgs};
 use radicle_artifact_core::cid as share;
@@ -144,20 +144,24 @@ pub(crate) fn open_releases<'a>(
     Releases::open(repo).map_err(|err| error::Releases { rid: repo.id, err })
 }
 
-/// Visibility rule for a release's creator: by default show delegate-created or
-/// local-created releases. `--all-authors` opens it up to everyone.
+/// The [`Scope`] for `--all-authors`: everyone when set, else only
+/// delegates and the local user.
+fn scope(all_authors: bool) -> Scope {
+    if all_authors {
+        Scope::All
+    } else {
+        Scope::Trusted
+    }
+}
+
+/// Visibility rule for a release's creator: it must fall in `scope`.
 fn release_visible(
     release: &radicle_artifact::Release,
     delegates: &BTreeSet<Did>,
     local: &Did,
-    all_authors: bool,
+    scope: Scope,
 ) -> bool {
-    Trust {
-        delegates,
-        local: Some(local),
-        all_authors,
-    }
-    .trusts(release.creator())
+    Trust::new(delegates, Some(local)).admits(scope, release.creator())
 }
 
 pub(crate) fn announce(profile: &Profile, repo_id: RepoId) -> Result<(), error::Announce> {
@@ -797,7 +801,7 @@ where
             let oid = resolved.commit;
             let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
                 .into_iter()
-                .filter(|(_, r)| release_visible(r, &delegates, &local, all_authors))
+                .filter(|(_, r)| release_visible(r, &delegates, &local, scope(all_authors)))
                 .collect();
 
             // Disambiguate when multiple releases exist OR when a single
@@ -1552,7 +1556,7 @@ fn show_release(
                 let oid = resolve_ref(rev, repo)?.commit;
                 let hits: Vec<_> = collect_candidates(releases, oid)?
                     .into_iter()
-                    .filter(|(_, r)| release_visible(r, delegates, local, all_authors))
+                    .filter(|(_, r)| release_visible(r, delegates, local, scope(all_authors)))
                     .collect();
                 if hits.is_empty() {
                     return Err(error::Find::NoRelease(oid).into());
@@ -1563,11 +1567,8 @@ fn show_release(
         };
 
     let filters = Filters {
-        trust: Trust {
-            delegates,
-            local: Some(local),
-            all_authors,
-        },
+        trust: Trust::new(delegates, Some(local)),
+        scope: scope(all_authors),
         include_redacted: redacted,
     };
     let shown = display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
@@ -1612,11 +1613,8 @@ fn list_releases(
             }
         });
     let filters = Filters {
-        trust: Trust {
-            delegates,
-            local: Some(local),
-            all_authors,
-        },
+        trust: Trust::new(delegates, Some(local)),
+        scope: scope(all_authors),
         include_redacted: redacted,
     };
     let releases = display::Releases::new(iter, aliases, filters, false, repo, repo);
@@ -1741,12 +1739,8 @@ fn run_verify(
         let artifact = release
             .artifact(&cid)
             .expect("find_by_cid only returns releases containing the CID");
-        let trust = Trust {
-            delegates,
-            local: Some(local),
-            all_authors,
-        };
-        match trust.check(&release, artifact) {
+        let trust = Trust::new(delegates, Some(local));
+        match trust.check(scope(all_authors), &release, artifact) {
             Ok(()) => matched.push(display::VerifyMatch::new(
                 release_id,
                 &release,
@@ -2774,7 +2768,7 @@ fn resolve_target_release(
             let oid = resolve_ref(rev, repo)?.commit;
             let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
                 .into_iter()
-                .filter(|(_, r)| release_visible(r, delegates, local, all_authors))
+                .filter(|(_, r)| release_visible(r, delegates, local, scope(all_authors)))
                 .collect();
             match candidates.as_slice() {
                 [] => Err(error::Find::NoRelease(oid).into()),
@@ -2817,7 +2811,7 @@ fn resolve_release_after_pick(
 ) -> Result<ReleaseId, error::Find> {
     let candidates: Vec<(ReleaseId, Release)> = collect_candidates(releases, oid)?
         .into_iter()
-        .filter(|(_, r)| release_visible(r, delegates, local, all_authors))
+        .filter(|(_, r)| release_visible(r, delegates, local, scope(all_authors)))
         .filter(|(_, r)| r.artifact(cid).is_some())
         .collect();
     match candidates.as_slice() {

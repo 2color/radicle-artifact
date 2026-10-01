@@ -27,17 +27,14 @@ use crate::{Artifact, MetadataWrite, Release};
 pub enum Untrusted {
     /// Redacted by the artifact's own author or by a delegate.
     Redacted(BTreeMap<Did, String>),
-    /// Release created by someone who is neither a delegate nor the local user.
+    /// Release created by someone outside the [`Scope`].
     Creator(Did),
-    /// Artifact registered by someone who is neither a delegate nor the local user.
+    /// Artifact registered by someone outside the [`Scope`].
     Author(Did),
 }
 
-/// Whose releases and artifacts the repository trusts.
-///
-/// By default that is a repository delegate or the local user.
-/// `all_authors` opens it up to everyone who registers or creates, but
-/// never to who may withdraw — see [`is_author_or_delegate`].
+/// Whose releases and artifacts the repository trusts: a repository
+/// delegate or the local user.
 #[derive(Clone, Copy)]
 pub struct Trust<'a> {
     /// Delegates of the repository.
@@ -45,39 +42,65 @@ pub struct Trust<'a> {
     /// Local user's DID. The local user always trusts their own work,
     /// even when they aren't a delegate.
     pub local: Option<&'a Did>,
-    /// When true, trust any author, not only delegates and the local user.
-    pub all_authors: bool,
+}
+
+/// Which side of the [`Trust`] line to accept.
+///
+/// The scope applies to release creators and artifact authors alike. It
+/// never widens who may withdraw an artifact — see [`is_author_or_delegate`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    /// Only delegates and the local user.
+    #[default]
+    Trusted,
+    /// Only users who are neither a delegate nor the local user.
+    Untrusted,
+    /// Everyone.
+    All,
+}
+
+impl Scope {
+    /// Check whether a party that is `trusted` (or not) falls in this scope.
+    pub fn admits(self, trusted: bool) -> bool {
+        match self {
+            Self::Trusted => trusted,
+            Self::Untrusted => !trusted,
+            Self::All => true,
+        }
+    }
 }
 
 impl<'a> Trust<'a> {
-    /// Trust delegates and the local user, as `list` does by default.
-    ///
-    /// To trust everyone, set `all_authors` with
-    /// `Trust { all_authors: true, ..Trust::new(delegates, local) }`.
+    /// Trust delegates and the local user.
     pub fn new(delegates: &'a BTreeSet<Did>, local: Option<&'a Did>) -> Self {
-        Self {
-            delegates,
-            local,
-            all_authors: false,
-        }
+        Self { delegates, local }
     }
 
-    /// Check whether `did` may create a release or register an artifact:
-    /// a delegate, the local user, or anyone when `all_authors` is set.
+    /// Check whether `did` is a delegate or the local user.
     pub fn trusts(&self, did: &Did) -> bool {
-        self.all_authors || self.delegates.contains(did) || self.local == Some(did)
+        self.delegates.contains(did) || self.local == Some(did)
     }
 
-    /// Apply the trust rules to `artifact` in `release`: the release and the
-    /// artifact must both be authored by a trusted party, and neither its
+    /// Check whether `did` falls in `scope`.
+    pub fn admits(&self, scope: Scope, did: &Did) -> bool {
+        scope.admits(self.trusts(did))
+    }
+
+    /// Apply the trust rules to `artifact` in `release`: the release creator
+    /// and the artifact author must both fall in `scope`, and neither the
     /// author nor a delegate may have redacted it.
-    pub fn check(&self, release: &Release, artifact: &Artifact) -> Result<(), Untrusted> {
-        self.check_by(release.creator(), artifact)
+    pub fn check(
+        &self,
+        scope: Scope,
+        release: &Release,
+        artifact: &Artifact,
+    ) -> Result<(), Untrusted> {
+        self.check_by(scope, release.creator(), artifact)
     }
 
     /// [`Self::check`], given only the release's creator.
-    fn check_by(&self, creator: &Did, artifact: &Artifact) -> Result<(), Untrusted> {
-        if !self.trusts(creator) {
+    fn check_by(&self, scope: Scope, creator: &Did, artifact: &Artifact) -> Result<(), Untrusted> {
+        if !self.admits(scope, creator) {
             return Err(Untrusted::Creator(*creator));
         }
         // A redaction from a passing stranger must not block the check, or
@@ -86,7 +109,7 @@ impl<'a> Trust<'a> {
         if !redactions.is_empty() {
             return Err(Untrusted::Redacted(redactions));
         }
-        if !self.trusts(&artifact.author) {
+        if !self.admits(scope, &artifact.author) {
             return Err(Untrusted::Author(artifact.author));
         }
         Ok(())
@@ -94,8 +117,8 @@ impl<'a> Trust<'a> {
 }
 
 /// Only these parties' redactions and metadata writes take effect.
-/// `all_authors` does not widen this: it opens up who may register an
-/// artifact, not who may withdraw or annotate one.
+/// A [`Scope`] does not widen this: it decides whose releases and artifacts
+/// count, not who may withdraw or annotate one.
 pub fn is_author_or_delegate(did: &Did, author: &Did, delegates: &BTreeSet<Did>) -> bool {
     did == author || delegates.contains(did)
 }
@@ -170,54 +193,67 @@ mod tests {
     }
 
     /// Classify `artifact` in a release created by `creator`.
-    fn check(creator: u8, artifact: &Artifact, all_authors: bool) -> Result<(), Untrusted> {
+    fn check(creator: u8, artifact: &Artifact, scope: Scope) -> Result<(), Untrusted> {
         let delegates = delegates();
         let local = did(LOCAL);
-        Trust {
-            delegates: &delegates,
-            local: Some(&local),
-            all_authors,
-        }
-        .check_by(&did(creator), artifact)
+        Trust::new(&delegates, Some(&local)).check_by(scope, &did(creator), artifact)
     }
 
     #[test]
     fn delegate_registered_artifact_verifies() {
-        assert_eq!(check(DELEGATE, &artifact(DELEGATE, &[]), false), Ok(()));
+        assert_eq!(
+            check(DELEGATE, &artifact(DELEGATE, &[]), Scope::Trusted),
+            Ok(())
+        );
     }
 
     #[test]
     fn stranger_authored_artifact_is_rejected() {
         let artifact = artifact(STRANGER, &[]);
         assert_eq!(
-            check(DELEGATE, &artifact, false),
+            check(DELEGATE, &artifact, Scope::Trusted),
             Err(Untrusted::Author(did(STRANGER)))
         );
         // `--all-authors` is exactly the opt-in for this case.
-        assert_eq!(check(DELEGATE, &artifact, true), Ok(()));
+        assert_eq!(check(DELEGATE, &artifact, Scope::All), Ok(()));
     }
 
     #[test]
     fn stranger_created_release_is_rejected() {
         let artifact = artifact(DELEGATE, &[]);
         assert_eq!(
-            check(STRANGER, &artifact, false),
+            check(STRANGER, &artifact, Scope::Trusted),
             Err(Untrusted::Creator(did(STRANGER)))
         );
-        assert_eq!(check(STRANGER, &artifact, true), Ok(()));
+        assert_eq!(check(STRANGER, &artifact, Scope::All), Ok(()));
+    }
+
+    #[test]
+    fn untrusted_scope_applies_to_creator_and_author() {
+        let theirs = artifact(STRANGER, &[]);
+        assert_eq!(check(STRANGER, &theirs, Scope::Untrusted), Ok(()));
+        // Strict: a stranger's artifact in a delegate's release is out.
+        assert_eq!(
+            check(DELEGATE, &theirs, Scope::Untrusted),
+            Err(Untrusted::Creator(did(DELEGATE)))
+        );
+        assert_eq!(
+            check(STRANGER, &artifact(LOCAL, &[]), Scope::Untrusted),
+            Err(Untrusted::Author(did(LOCAL)))
+        );
     }
 
     #[test]
     fn own_artifact_verifies_without_all_authors() {
         // The local user is not a delegate here, but must still be able to
         // verify what they registered themselves.
-        assert_eq!(check(LOCAL, &artifact(LOCAL, &[]), false), Ok(()));
+        assert_eq!(check(LOCAL, &artifact(LOCAL, &[]), Scope::Trusted), Ok(()));
     }
 
     #[test]
     fn delegate_redaction_is_rejected() {
         let artifact = artifact(DELEGATE, &[(OTHER_DELEGATE, "compromised")]);
-        let err = check(DELEGATE, &artifact, false).unwrap_err();
+        let err = check(DELEGATE, &artifact, Scope::Trusted).unwrap_err();
         assert_eq!(
             err,
             Untrusted::Redacted(BTreeMap::from([(
@@ -227,14 +263,14 @@ mod tests {
         );
         // A redaction is a withdrawal by a trusted party; --all-authors
         // widens who may register an artifact, not who may withdraw one.
-        assert!(check(DELEGATE, &artifact, true).is_err());
+        assert!(check(DELEGATE, &artifact, Scope::All).is_err());
     }
 
     #[test]
     fn self_redaction_is_rejected() {
         let artifact = artifact(DELEGATE, &[(DELEGATE, "bad build")]);
         assert!(matches!(
-            check(DELEGATE, &artifact, false),
+            check(DELEGATE, &artifact, Scope::Trusted),
             Err(Untrusted::Redacted(_))
         ));
     }
@@ -244,7 +280,7 @@ mod tests {
         // Redacting is open to anyone on the network, so honouring an
         // untrusted redaction would let any peer veto a release.
         let artifact = artifact(DELEGATE, &[(STRANGER, "trust me")]);
-        assert_eq!(check(DELEGATE, &artifact, false), Ok(()));
+        assert_eq!(check(DELEGATE, &artifact, Scope::Trusted), Ok(()));
     }
 
     #[test]
@@ -253,7 +289,7 @@ mod tests {
             DELEGATE,
             &[(STRANGER, "noise"), (OTHER_DELEGATE, "real reason")],
         );
-        let Err(Untrusted::Redacted(reported)) = check(DELEGATE, &artifact, false) else {
+        let Err(Untrusted::Redacted(reported)) = check(DELEGATE, &artifact, Scope::Trusted) else {
             panic!("expected a redaction");
         };
         assert_eq!(

@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use radicle::identity::Did;
 
-use crate::trust::Trust;
+use crate::trust::{Scope, Trust};
 use crate::{Cid, Release, ReleaseId, METADATA_KEY_SIZE_BYTES};
 
 /// One artifact a watching node would seed.
@@ -33,7 +33,7 @@ pub struct Wanted {
 /// The trusted artifacts in a repository that a node is not seeding yet,
 /// newest release first.
 ///
-/// Trust is [`Trust::check`] with `all_authors: false` — the same rule
+/// Trust is [`Trust::check`] with [`Scope::Trusted`] — the same rule
 /// `verify` applies — so a release or artifact from a stranger is skipped,
 /// and a redaction by the artifact's author or by a delegate withdraws it.
 ///
@@ -60,7 +60,7 @@ pub fn wanted(
             if !seen.insert(*cid) {
                 continue;
             }
-            if trust.check(release, artifact).is_err() {
+            if trust.check(Scope::Trusted, release, artifact).is_err() {
                 continue;
             }
             if is_seeded(cid) {

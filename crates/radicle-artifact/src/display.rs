@@ -1131,7 +1131,7 @@ impl VerifyMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trust::Trust;
+    use crate::trust::{Scope, Trust};
     use std::str::FromStr;
 
     /// A valid CIDv1 (raw codec, sha2-256) for output-shape assertions.
@@ -1186,6 +1186,7 @@ mod tests {
             });
             let filters = Filters {
                 trust: Trust::new(&delegates, None),
+                scope: Scope::Trusted,
                 include_redacted: redacted,
             };
             let aliases = std::collections::HashMap::new();

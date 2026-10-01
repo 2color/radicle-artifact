@@ -1615,7 +1615,7 @@ mod test {
     use radicle::test;
     use url::Url;
 
-    use crate::trust::Trust;
+    use crate::trust::{Scope, Trust};
     use crate::{Cid, Filters, ReleaseCounts, Releases, METADATA_KEY_SIZE_BYTES};
 
     /// An additional signer for multi-user tests. `test::setup::Node::default`
@@ -2800,6 +2800,7 @@ mod test {
         let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
         let filters = Filters {
             trust: Trust::new(&delegates, None),
+            scope: Scope::Trusted,
             include_redacted: false,
         };
         let title = display::CommitTitle::title(&*repo, release.oid());
@@ -3193,11 +3194,8 @@ mod test {
         let delegates: BTreeSet<Did> = BTreeSet::new();
         let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
         let filters = Filters {
-            trust: Trust {
-                delegates: &delegates,
-                local: None,
-                all_authors: true,
-            },
+            trust: Trust::new(&delegates, None),
+            scope: Scope::All,
             include_redacted: false,
         };
         let shown = display::Release::new(id, &release, &aliases, filters, None, None);
@@ -3243,11 +3241,8 @@ mod test {
         let delegates: BTreeSet<Did> = BTreeSet::new();
         let aliases: HashMap<radicle::node::NodeId, radicle::node::Alias> = HashMap::new();
         let filters = Filters {
-            trust: Trust {
-                delegates: &delegates,
-                local: Some(&alice_did),
-                all_authors: true,
-            },
+            trust: Trust::new(&delegates, Some(&alice_did)),
+            scope: Scope::All,
             include_redacted: false,
         };
         let shown = display::Release::new(id, &release, &aliases, filters, None, None);
@@ -3959,15 +3954,12 @@ mod test {
         let delegates = BTreeSet::from([alice_did]);
         let mut releases = Releases::open(&repo).unwrap();
 
-        let filters = |redacted, all_authors, local| Filters {
-            trust: Trust {
-                delegates: &delegates,
-                local,
-                all_authors,
-            },
+        let filters = |redacted, scope, local| Filters {
+            trust: Trust::new(&delegates, local),
+            scope,
             include_redacted: redacted,
         };
-        let default = filters(false, false, None);
+        let default = filters(false, Scope::Trusted, None);
 
         // No artifacts.
         let oid = commit(&repo.backend, "empty");
@@ -3981,6 +3973,8 @@ mod test {
         r.register_artifact(test_cid(1), "bin".into(), &bob.signer)
             .unwrap();
         assert!(default.shows_release(&r));
+        // Untrusted applies to the creator too, so this release is hidden.
+        assert!(!filters(false, Scope::Untrusted, None).shows_release(&r));
         drop(r);
 
         // Non-delegate creator, delegate artifact: hidden unless the creator
@@ -3991,9 +3985,9 @@ mod test {
         r.register_artifact(test_cid(3), "bin".into(), &alice.signer)
             .unwrap();
         assert!(!default.shows_release(&r));
-        assert!(filters(false, true, None).trust.trusts(r.creator()));
-        assert!(filters(false, true, None).shows_release(&r));
-        assert!(filters(false, false, Some(&bob_did)).shows_release(&r));
+        assert!(filters(false, Scope::All, None).shows_release(&r));
+        assert!(filters(false, Scope::Untrusted, None).shows_release(&r));
+        assert!(filters(false, Scope::Trusted, Some(&bob_did)).shows_release(&r));
         drop(r);
 
         // Only a redacted delegate artifact: hidden unless redactions show.
@@ -4004,8 +3998,8 @@ mod test {
         r.redact(test_cid(2), "bad build".into(), &alice.signer)
             .unwrap();
         assert!(!default.shows_release(&r));
-        assert!(!filters(false, true, None).shows_release(&r));
-        assert!(filters(true, false, None).shows_release(&r));
+        assert!(!filters(false, Scope::All, None).shows_release(&r));
+        assert!(filters(true, Scope::Trusted, None).shows_release(&r));
     }
 
     #[test]
