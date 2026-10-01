@@ -90,6 +90,8 @@ struct NodeCtx {
     endpoint_id: EndpointId,
     /// Unix timestamp (seconds) when the node bound its socket.
     started_at_unix: i64,
+    /// Pkarr relays the endpoint publishes to.
+    pkarr_urls: Vec<url::Url>,
 }
 
 /// Run the node in the foreground until it receives a shutdown signal
@@ -157,6 +159,7 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
         endpoint: seeder.router.endpoint().clone(),
         endpoint_id,
         started_at_unix,
+        pkarr_urls: seeder.pkarr_urls.clone(),
     });
 
     // Subscribe before installing the signal handler: a signal that
@@ -334,12 +337,10 @@ async fn dispatch(cmd: Command, ctx: &NodeCtx, shutdown_tx: &broadcast::Sender<(
     match cmd {
         // Cheap liveness probe: touch no state, just ack.
         Command::Alive => ok_json(()),
-        Command::Status => {
-            match build_status(store, &ctx.endpoint, ctx.endpoint_id, ctx.started_at_unix).await {
-                Ok(status) => ok_json(status),
-                Err(e) => err_from_share::<Status>(e),
-            }
-        }
+        Command::Status => match build_status(ctx).await {
+            Ok(status) => ok_json(status),
+            Err(e) => err_from_share::<Status>(e),
+        },
         Command::Seed {
             rid,
             release,
@@ -889,12 +890,9 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
     ok_json(out)
 }
 
-async fn build_status(
-    store: &FsStore,
-    endpoint: &iroh::Endpoint,
-    endpoint_id: EndpointId,
-    started_at_unix: i64,
-) -> Result<Status, ShareError> {
+async fn build_status(ctx: &NodeCtx) -> Result<Status, ShareError> {
+    let store = &ctx.store;
+    let endpoint = &ctx.endpoint;
     let metrics = endpoint.metrics();
     // A blob shared across releases carries one tag per release; collapse to
     // distinct blobs so the count and byte total reflect what's on disk.
@@ -942,8 +940,8 @@ async fn build_status(
     // that can holepunch a direct path; flag it as advice.
     let relay_unreachable = !relay.relays.iter().any(|r| r.connected);
     Ok(Status {
-        endpoint_id,
-        started_at_unix,
+        endpoint_id: ctx.endpoint_id,
+        started_at_unix: ctx.started_at_unix,
         seeded: radicle_artifact_core::protocol::SeededStats {
             count,
             bytes_logical,
@@ -951,6 +949,10 @@ async fn build_status(
         connections,
         traffic,
         relay,
+        pkarr: Some(radicle_artifact_core::protocol::PkarrStats {
+            uri: ctx.endpoint_id.to_pkarr_uri(),
+            relays: ctx.pkarr_urls.clone(),
+        }),
         warnings: radicle_artifact_core::protocol::Warnings { relay_unreachable },
     })
 }

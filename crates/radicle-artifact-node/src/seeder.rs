@@ -67,6 +67,8 @@ pub struct Seeder {
     pub blobs: FsStore,
     /// The iroh protocol router serving blobs to peers.
     pub router: Router,
+    /// Pkarr relays the endpoint publishes to.
+    pub pkarr_urls: Vec<url::Url>,
 }
 
 /// Bootstrap the iroh seeder.
@@ -99,6 +101,8 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
 
     let preset = EndpointConfig::from_env()?;
     tracing::info!("iroh endpoint config: {preset}");
+    // The builder consumes the preset, so keep the URLs for `Status`.
+    let pkarr_urls = preset.pkarr_urls().to_vec();
     let endpoint = iroh::Endpoint::builder(preset)
         .secret_key(secret)
         .bind()
@@ -121,7 +125,11 @@ pub async fn bootstrap(home: &Path, secret: iroh::SecretKey) -> Result<Seeder, E
         .accept(iroh_blobs::ALPN, blobs_protocol)
         .spawn();
 
-    Ok(Seeder { blobs, router })
+    Ok(Seeder {
+        blobs,
+        router,
+        pkarr_urls,
+    })
 }
 
 /// Binary tag key for a `(rid, release, cid)` triple.

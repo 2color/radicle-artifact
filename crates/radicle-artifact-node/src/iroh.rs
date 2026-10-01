@@ -52,6 +52,11 @@ impl Default for EndpointConfig {
 }
 
 impl EndpointConfig {
+    /// Pkarr server URLs the endpoint publishes to and resolves from.
+    pub fn pkarr_urls(&self) -> &[url::Url] {
+        &self.pkarr_urls
+    }
+
     /// Build an [`EndpointConfig`] from the `IROH_RELAYS` and
     /// `IROH_PKARR_URLS` environment variables, falling back to the Radicle
     /// defaults when a variable is unset or empty. A value that is malformed, or

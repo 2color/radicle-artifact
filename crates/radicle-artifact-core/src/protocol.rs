@@ -417,6 +417,10 @@ pub struct Status {
     pub traffic: TrafficStats,
     /// Home-relay connectivity and measured latency.
     pub relay: RelayStats,
+    /// Pkarr key and the pkarr relays the node publishes to. `None` when the
+    /// node predates the field.
+    #[serde(default)]
+    pub pkarr: Option<PkarrStats>,
     /// Soft warnings rendered as advice to the user.
     pub warnings: Warnings,
 }
@@ -496,6 +500,18 @@ pub struct RelayHealth {
     /// Most recent connection error when disconnected; `None` when connected
     /// or before any failure was observed.
     pub last_error: Option<String>,
+}
+
+/// Pkarr identity of the node. Peers resolve the node's home relay through
+/// these pkarr relays.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PkarrStats {
+    /// The node's key as a `pk:<z32>` URI.
+    pub uri: String,
+    /// Pkarr relays (HTTP servers, not iroh relays) the node publishes to
+    /// and resolves from.
+    pub relays: Vec<Url>,
 }
 
 /// Soft warnings surfaced in `Status`, rendered as advice to the user.
@@ -712,6 +728,10 @@ mod tests {
             connections: ConnectionStats::default(),
             traffic: TrafficStats::default(),
             relay: RelayStats::default(),
+            pkarr: Some(PkarrStats {
+                uri: endpoint_id.to_pkarr_uri(),
+                relays: vec![Url::parse("https://dns.example.org/pkarr").unwrap()],
+            }),
             warnings: Warnings::default(),
         };
         assert_eq!(
@@ -736,9 +756,38 @@ mod tests {
                     "udpV4": false,
                     "udpV6": false,
                 },
+                "pkarr": {
+                    "uri": endpoint_id.to_pkarr_uri(),
+                    "relays": ["https://dns.example.org/pkarr"],
+                },
                 "warnings": {"relayUnreachable": false},
             })
         );
+    }
+
+    #[test]
+    fn status_without_pkarr_decodes() {
+        // A node that predates the `pkarr` field must still decode.
+        let endpoint_id = sample_endpoint_id();
+        let st: Status = serde_json::from_value(json!({
+            "endpointId": endpoint_id.to_string(),
+            "startedAtUnix": 0,
+            "seeded": {"count": 0, "bytesLogical": 0},
+            "connections": {
+                "active": 0,
+                "openedTotal": 0,
+                "closedTotal": 0,
+                "directTotal": 0,
+                "holepunchAttempts": 0,
+                "pathsDirect": 0,
+                "pathsRelayed": 0,
+            },
+            "traffic": {"outBytes": 0, "inBytes": 0},
+            "relay": {"relays": [], "preferred": null, "udpV4": false, "udpV6": false},
+            "warnings": {"relayUnreachable": false},
+        }))
+        .unwrap();
+        assert_eq!(st.pkarr, None);
     }
 
     #[test]
