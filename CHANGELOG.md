@@ -17,8 +17,8 @@ Update your code and scripts as follows. The sections below explain each change.
 | `stats --json`: `delegateHidden`, `otherHidden`                                      | `delegateRedacted`, `otherRedacted`                                          |
 | `verify --json`: `untrustedAuthor` when the release creator is untrusted             | `untrustedCreator`                                                           |
 | `ReleaseCounts::delegate_hidden`, `other_hidden`                                     | `delegate_redacted`, `other_redacted`                                        |
-| `Filters { delegates, local, all_authors, redacted }`                                | `Filters { trust: Trust { delegates, local, all_authors }, include_redacted }` |
-| `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` | `trust.check(release, artifact)`                                             |
+| `Filters { delegates, local, all_authors, redacted }`                                | `Filters { trust: Trust::new(delegates, local), scope, include_redacted }`   |
+| `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` | `trust.check(scope, release, artifact)`                                      |
 | `trust::Candidate`                                                                   | Removed from the public API                                                  |
 | `Release::has_unredacted_artifacts()`                                                | `filters.shows_release(&release)` or `release.is_fully_redacted(&delegates)` |
 | `artifact.metadata()`                                                                | `artifact.trusted_metadata(&delegates)`, which returns an owned map          |
@@ -65,12 +65,14 @@ This example prints the default `list` view:
 
 ```rust
 use radicle::identity::Did;
-use radicle_artifact::{trust::Trust, Filters, Releases};
+use radicle_artifact::trust::{Scope, Trust};
+use radicle_artifact::{Filters, Releases};
 
 let releases = Releases::open(&repo)?;
 let local = Did::from(*profile.id());
 let filters = Filters {
     trust: Trust::new(releases.delegates(), Some(&local)),
+    scope: Scope::Trusted,
     include_redacted: false,
 };
 
@@ -88,13 +90,18 @@ for entry in releases.list()? {
 
 ### `Trust` holds the trust rules
 
-The trust rules decide who may create a release, register an artifact, or withdraw one. They now live in the new `trust::Trust` type. `Filters` holds a `Trust` and keeps only the view option `include_redacted`.
+The trust rules decide who may create a release, register an artifact, or withdraw one. They now live in the new `trust::Trust` type. `Filters` holds a `Trust`, a `Scope`, and the view option `include_redacted`.
 
-- `Trust::new(&delegates, local)` trusts delegates and the local user, as `list` does by default.
-- `Trust::trusts(&did)` is true for a delegate or the local user, or for anyone when `all_authors` is set.
-- `Trust::check(release, artifact)` replaces `trust::classify`. `local` is now an `Option<&Did>`.
+- `Trust::new(&delegates, local)` trusts delegates and the local user.
+- `Trust::trusts(&did)` is true for a delegate or the local user.
+- `trust::Scope` replaces `all_authors`. It picks whose releases and artifacts count: `Trusted` (the default), `Untrusted` or `All`. The scope applies to release creators and artifact authors alike. It never changes who may withdraw an artifact.
+- `Trust::check(scope, release, artifact)` replaces `trust::classify`. `local` is now an `Option<&Did>`.
 - `trust::is_author_or_delegate(&did, &author, &delegates)` is true when `did` may withdraw the artifact or change its metadata: its author or a delegate. Use it to gate metadata edits.
 - `trust::withdrawals(&artifact, &delegates)` returns the redactions that count, from the author or a delegate.
+
+### `list --untrusted` and `show --untrusted`
+
+`--untrusted` shows only releases and artifacts by users who are neither a delegate nor you. A release must be created by such a user, and only their artifacts in it are listed. It conflicts with `--all-authors`.
 
 ### Metadata ignores untrusted writers
 
