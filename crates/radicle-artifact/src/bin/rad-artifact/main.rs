@@ -1300,7 +1300,7 @@ fn resolve_metadata_target(
         .ok_or(error::Metadata::UnknownCid { id, cid })?
         .author();
 
-    if !trust::may_amend(&local, &artifact_author, delegates) {
+    if !trust::is_author_or_delegate(&local, &artifact_author, delegates) {
         return Err(error::Metadata::NotAuthorized {
             local: Box::new(local),
             artifact_author: Box::new(artifact_author),
@@ -1568,7 +1568,7 @@ fn show_release(
             local: Some(local),
             all_authors,
         },
-        redacted,
+        include_redacted: redacted,
     };
     let shown = display::Releases::new(candidates.into_iter(), aliases, filters, true, repo, repo);
     if use_pretty(pretty, json) {
@@ -1617,7 +1617,7 @@ fn list_releases(
             local: Some(local),
             all_authors,
         },
-        redacted,
+        include_redacted: redacted,
     };
     let releases = display::Releases::new(iter, aliases, filters, false, repo, repo);
     if use_pretty(pretty, json) {
@@ -1746,7 +1746,7 @@ fn run_verify(
             local: Some(local),
             all_authors,
         };
-        match trust.classify(&release, artifact) {
+        match trust.check(&release, artifact) {
             Ok(()) => matched.push(display::VerifyMatch::new(
                 release_id,
                 &release,

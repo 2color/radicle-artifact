@@ -1387,7 +1387,7 @@ where
     /// never enter the COB log. Anyone may write, but
     /// [`Artifact::trusted_metadata`] reads only the writes of the
     /// artifact's author and the repository delegates. To gate edits, check
-    /// [`trust::may_amend`] for the signer first.
+    /// [`trust::is_author_or_delegate`] for the signer first.
     pub fn set_metadata<G>(
         &mut self,
         cid: Cid,
@@ -1409,8 +1409,8 @@ where
     /// Remove a metadata entry from an artifact.
     ///
     /// Only a removal by the artifact's author or a repository delegate takes
-    /// effect. To gate edits, check [`trust::may_amend`] for the signer first
-    /// (see [`Self::set_metadata`]).
+    /// effect. To gate edits, check [`trust::is_author_or_delegate`] for the
+    /// signer first (see [`Self::set_metadata`]).
     pub fn remove_metadata<G>(
         &mut self,
         cid: Cid,
@@ -2804,7 +2804,7 @@ mod test {
                 local: None,
                 all_authors: false,
             },
-            redacted: false,
+            include_redacted: false,
         };
         let title = display::CommitTitle::title(&*repo, release.oid());
         let shown = display::Release::new(id, &release, &aliases, filters, title, None);
@@ -3202,7 +3202,7 @@ mod test {
                 local: None,
                 all_authors: true,
             },
-            redacted: false,
+            include_redacted: false,
         };
         let shown = display::Release::new(id, &release, &aliases, filters, None, None);
         let detailed = shown.pretty(display::Style::plain(false));
@@ -3252,7 +3252,7 @@ mod test {
                 local: Some(&alice_did),
                 all_authors: true,
             },
-            redacted: false,
+            include_redacted: false,
         };
         let shown = display::Release::new(id, &release, &aliases, filters, None, None);
         let out = shown.pretty(display::Style::plain(false));
@@ -3969,7 +3969,7 @@ mod test {
                 local,
                 all_authors,
             },
-            redacted,
+            include_redacted: redacted,
         };
         let default = filters(false, false, None);
 

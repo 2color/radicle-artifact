@@ -33,7 +33,7 @@ pub struct Wanted {
 /// The trusted artifacts in a repository that a node is not seeding yet,
 /// newest release first.
 ///
-/// Trust is [`Trust::classify`] with `all_authors: false` — the same rule
+/// Trust is [`Trust::check`] with `all_authors: false` — the same rule
 /// `verify` applies — so a release or artifact from a stranger is skipped,
 /// and a redaction by the artifact's author or by a delegate withdraws it.
 ///
@@ -64,7 +64,7 @@ pub fn wanted(
             if !seen.insert(*cid) {
                 continue;
             }
-            if trust.classify(release, artifact).is_err() {
+            if trust.check(release, artifact).is_err() {
                 continue;
             }
             if is_seeded(cid) {

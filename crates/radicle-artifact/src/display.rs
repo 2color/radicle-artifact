@@ -1192,7 +1192,7 @@ mod tests {
                     local: None,
                     all_authors: false,
                 },
-                redacted,
+                include_redacted: redacted,
             };
             let aliases = std::collections::HashMap::new();
             Releases::new(all, &aliases, filters, false, &(), &())

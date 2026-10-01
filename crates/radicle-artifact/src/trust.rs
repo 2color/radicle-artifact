@@ -19,11 +19,10 @@ use serde_json::Value;
 
 use crate::{Artifact, MetadataWrite, Release};
 
-/// Why a release that registers a CID doesn't count as verification.
+/// Why [`Trust::check`] rejects an artifact in a release.
 ///
-/// Kept so a failed check can report the most useful reason instead of a
-/// flat "not found" — a redaction in particular is something the user
-/// needs to see.
+/// Callers can collect these to report the most useful reason. A
+/// redaction, for example, is something the user needs to see.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Untrusted {
     /// Redacted by the artifact's own author or by a delegate.
@@ -38,7 +37,7 @@ pub enum Untrusted {
 ///
 /// By default that is a repository delegate or the local user.
 /// `all_authors` opens it up to everyone who registers or creates, but
-/// never to who may withdraw — see [`may_amend`].
+/// never to who may withdraw — see [`is_author_or_delegate`].
 #[derive(Clone, Copy)]
 pub struct Trust<'a> {
     /// Delegates of the repository.
@@ -58,14 +57,14 @@ impl Trust<'_> {
     }
 
     /// Apply the trust rules to `artifact` in `release`: the release and the
-    /// artifact must both be authored by a trusted party, and no party
-    /// that [`may_amend`] the artifact may have redacted it.
-    pub fn classify(&self, release: &Release, artifact: &Artifact) -> Result<(), Untrusted> {
-        self.classify_by(release.creator(), artifact)
+    /// artifact must both be authored by a trusted party, and neither its
+    /// author nor a delegate may have redacted it.
+    pub fn check(&self, release: &Release, artifact: &Artifact) -> Result<(), Untrusted> {
+        self.check_by(release.creator(), artifact)
     }
 
-    /// [`Self::classify`], given only the release's creator.
-    fn classify_by(&self, creator: &Did, artifact: &Artifact) -> Result<(), Untrusted> {
+    /// [`Self::check`], given only the release's creator.
+    fn check_by(&self, creator: &Did, artifact: &Artifact) -> Result<(), Untrusted> {
         if !self.trusts(creator) {
             return Err(Untrusted::Creator(*creator));
         }
@@ -82,28 +81,27 @@ impl Trust<'_> {
     }
 }
 
-/// Check whether `did` may amend an artifact by `author` — withdraw it or
-/// change its metadata: only the author and the delegates may. `all_authors`
-/// does not widen this — it opens up who may register an artifact, not who
-/// may amend one.
-pub fn may_amend(did: &Did, author: &Did, delegates: &BTreeSet<Did>) -> bool {
+/// Only these parties' redactions and metadata writes take effect.
+/// `all_authors` does not widen this: it opens up who may register an
+/// artifact, not who may withdraw or annotate one.
+pub fn is_author_or_delegate(did: &Did, author: &Did, delegates: &BTreeSet<Did>) -> bool {
     did == author || delegates.contains(did)
 }
 
-/// The redactions of `artifact` that withdraw it: those from a party that
-/// [`may_amend`] it. Other redactions carry no authority.
+/// The redactions of `artifact` that withdraw it: those from its author or
+/// a delegate. Other redactions carry no authority.
 pub fn withdrawals(artifact: &Artifact, delegates: &BTreeSet<Did>) -> BTreeMap<Did, String> {
     artifact
         .redactions
         .iter()
-        .filter(|(did, _)| may_amend(did, &artifact.author, delegates))
+        .filter(|(did, _)| is_author_or_delegate(did, &artifact.author, delegates))
         .map(|(did, reason)| (*did, reason.clone()))
         .collect()
 }
 
 /// The metadata of `artifact` that holds: for each key, the last write from
-/// a party that [`may_amend`] it. Other writes carry no authority, or anyone
-/// on the network could overwrite a release's metadata.
+/// its author or a delegate. Other writes carry no authority, or anyone on
+/// the network could overwrite a release's metadata.
 pub fn metadata(artifact: &Artifact, delegates: &BTreeSet<Did>) -> BTreeMap<String, Value> {
     artifact
         .metadata
@@ -112,7 +110,7 @@ pub fn metadata(artifact: &Artifact, delegates: &BTreeSet<Did>) -> BTreeMap<Stri
             let (_, write) = writes
                 .iter()
                 .rev()
-                .find(|(did, _)| may_amend(did, &artifact.author, delegates))?;
+                .find(|(did, _)| is_author_or_delegate(did, &artifact.author, delegates))?;
             match write {
                 MetadataWrite::Set(value) => Some((key.clone(), value.clone())),
                 MetadataWrite::Removed => None,
@@ -168,7 +166,7 @@ mod tests {
             local: Some(&local),
             all_authors,
         }
-        .classify_by(&did(creator), artifact)
+        .check_by(&did(creator), artifact)
     }
 
     #[test]

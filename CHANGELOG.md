@@ -11,17 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Update your code and scripts as follows. The sections below explain each change.
 
-| Before                                                                 | After                                                          |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `rad-artifact list --empty`                                            | `rad-artifact list` (empty releases show by default)           |
-| `stats --json`: `delegateHidden`, `otherHidden`                        | `delegateRedacted`, `otherRedacted`                            |
-| `verify --json`: `untrustedAuthor` when the release creator is untrusted | `untrustedCreator`                                           |
-| `ReleaseCounts::delegate_hidden`, `other_hidden`                       | `delegate_redacted`, `other_redacted`                          |
-| `Filters { delegates, local, all_authors, redacted }`                  | `Filters { trust: Trust { delegates, local, all_authors }, redacted }` |
-| `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` | `trust.classify(release, artifact)`              |
-| `trust::Candidate`                                                     | Removed from the public API                                    |
-| `Release::has_unredacted_artifacts()`                                  | `filters.shows_release(&release)` or `release.is_fully_redacted(&delegates)` |
-| `artifact.metadata()`                                                  | `artifact.trusted_metadata(&delegates)`, which returns an owned map |
+| Before                                                                               | After                                                                        |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `rad-artifact list --empty`                                                          | `rad-artifact list` (empty releases show by default)                         |
+| `stats --json`: `delegateHidden`, `otherHidden`                                      | `delegateRedacted`, `otherRedacted`                                          |
+| `verify --json`: `untrustedAuthor` when the release creator is untrusted             | `untrustedCreator`                                                           |
+| `ReleaseCounts::delegate_hidden`, `other_hidden`                                     | `delegate_redacted`, `other_redacted`                                        |
+| `Filters { delegates, local, all_authors, redacted }`                                | `Filters { trust: Trust { delegates, local, all_authors }, include_redacted }` |
+| `trust::classify(&Candidate::new(release, artifact), delegates, local, all_authors)` | `trust.check(release, artifact)`                                             |
+| `trust::Candidate`                                                                   | Removed from the public API                                                  |
+| `Release::has_unredacted_artifacts()`                                                | `filters.shows_release(&release)` or `release.is_fully_redacted(&delegates)` |
+| `artifact.metadata()`                                                                | `artifact.trusted_metadata(&delegates)`, which returns an owned map          |
 
 ### Empty releases are normal releases
 
@@ -79,7 +79,7 @@ let filters = Filters {
         local: None,        // no local user to exempt,
         all_authors: false, // so only delegates are trusted
     },
-    redacted: false, // hide redacted artifacts
+    include_redacted: false,
 };
 
 for entry in releases.list()? {
@@ -100,19 +100,19 @@ for entry in releases.list()? {
 
 ### `Trust` holds the trust rules
 
-The trust rules decide who may create a release, register an artifact, or withdraw one. They now live in the new `trust::Trust` type. `Filters` holds a `Trust` and keeps only the view option `redacted`.
+The trust rules decide who may create a release, register an artifact, or withdraw one. They now live in the new `trust::Trust` type. `Filters` holds a `Trust` and keeps only the view option `include_redacted`, renamed from `redacted`.
 
 - `Trust::trusts(&did)` is true for a delegate or the local user, or for anyone when `all_authors` is set.
-- `Trust::classify(release, artifact)` replaces `trust::classify`. `local` is now an `Option<&Did>`.
-- `trust::may_amend(&did, &author, &delegates)` is true when `did` may withdraw the artifact or change its metadata: its author or a delegate.
-- `trust::withdrawals(&artifact, &delegates)` returns the redactions that count, from parties that pass `may_amend`.
+- `Trust::check(release, artifact)` replaces `trust::classify`. `local` is now an `Option<&Did>`.
+- `trust::is_author_or_delegate(&did, &author, &delegates)` is true when `did` may withdraw the artifact or change its metadata: its author or a delegate.
+- `trust::withdrawals(&artifact, &delegates)` returns the redactions that count, from the author or a delegate.
 
 ### Metadata ignores untrusted writers
 
 Before, only the CLI checked who may write metadata. A patched client could write metadata that every node showed. Now the library applies the same rule as for redactions: for each key, the last write from the artifact's author or a delegate wins. Writes from other users are recorded, but have no effect.
 
 - `Artifact::metadata` is renamed `Artifact::trusted_metadata(&delegates)`. It returns the metadata that holds. It takes the delegate set, because the delegate set is not part of the COB.
-- `trust::may_amend` now also tells whether `did`'s metadata writes take effect. Use it to gate metadata edits.
+- `trust::is_author_or_delegate` now also tells whether `did`'s metadata writes take effect. Use it to gate metadata edits.
 - `trust::metadata(&artifact, &delegates)` applies the rule.
 - The cache freshness token now holds a format version. Cached releases in the old format count as stale, and the next read rebuilds them from git.
 
