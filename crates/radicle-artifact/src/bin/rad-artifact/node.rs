@@ -27,7 +27,8 @@ use radicle_artifact_client::{self as client, sync::Client, ClientError};
 use radicle_artifact_core::cid as share;
 use radicle_artifact_core::keys::EndpointId;
 use radicle_artifact_core::protocol::{
-    Command as NodeMsg, ImportMode, RelayStats, SeedReceipt, SeededEntry, Status, UnseedReceipt,
+    Command as NodeMsg, ImportMode, PkarrStats, RelayStats, SeedReceipt, SeededEntry, Status,
+    UnseedReceipt,
 };
 use thiserror::Error;
 use url::Url;
@@ -711,6 +712,18 @@ fn print_status_pretty(s: &Status) {
         human_bytes(tr.in_bytes)
     );
     print_relay(&s.relay);
+    print_pkarr(s.pkarr.as_ref());
+}
+
+fn print_pkarr(p: Option<&PkarrStats>) {
+    let Some(p) = p else {
+        println!("Pkarr         unknown — restart the node to report it");
+        return;
+    };
+    println!("Pkarr         {}", p.uri);
+    for url in &p.relays {
+        println!("              ↳ publishes to {url}");
+    }
 }
 
 fn print_relay(r: &RelayStats) {

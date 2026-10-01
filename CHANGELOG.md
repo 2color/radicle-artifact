@@ -120,6 +120,16 @@ The new `Releases::list` returns an iterator over every release, newest first.
 
 Use `list` when you need releases in order, or only some of them, for example to paginate. Use `all` when you need every release and the order does not matter: it reads each release before it returns.
 
+### `node status` shows the pkarr URI and relays
+
+`rad-artifact node status` now prints the node's pkarr key as a [`pk:<z32>` URI](https://github.com/pubky/pkarr/blob/main/design/base.md), and each pkarr relay the node publishes to.
+
+This helps you debug iroh [address lookup](https://docs.iroh.computer/concepts/address-lookup#endpoint-announces-via-pkarr), which uses [pkarr](https://github.com/pubky/pkarr).
+
+To change the pkarr relays, set the [`IROH_PKARR_URLS`](docs/uri-scheme.md#discovery-is-not-in-the-url-or-the-cob) env var.
+
+Restart the node after you upgrade: a new `rad-artifact` cannot read the status of a node that is still on the old version.
+
 ## [0.20.0] - 2026-09-24
 
 ### Bucketed release counts
