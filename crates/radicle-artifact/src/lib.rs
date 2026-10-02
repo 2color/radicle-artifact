@@ -273,6 +273,14 @@ impl Artifact {
         self.attestations.contains(user)
     }
 
+    /// Check whether an attestation from `user` would count.
+    ///
+    /// The author vouches by registering, so their attestation is a no-op.
+    /// A redaction is permanent and bars the same user from attesting.
+    pub fn can_attest(&self, user: &Did) -> bool {
+        *user != self.author && !self.is_redacted_by(user)
+    }
+
     /// Get all redactions, keyed by the DID that issued them.
     pub fn redactions(&self) -> &BTreeMap<Did, String> {
         &self.redactions
@@ -554,10 +562,8 @@ impl Release {
             }
             Action::Attest { cid } => {
                 if let Some(artifact) = self.artifacts.get_mut(&cid) {
-                    // A prior redaction from this user supersedes any attestation.
-                    // The author implicitly vouches by creating the artifact;
-                    // a self-attestation is a no-op to avoid inflating counts.
-                    if user != artifact.author && !artifact.redactions.contains_key(&user) {
+                    // Self-attestation is a no-op to avoid inflating counts.
+                    if artifact.can_attest(&user) {
                         artifact.attestations.insert(user);
                     }
                 }

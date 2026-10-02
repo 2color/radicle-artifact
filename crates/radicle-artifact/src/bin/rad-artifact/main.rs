@@ -1154,11 +1154,12 @@ where
         .map_err(|err| error::Attest::Store { id, err })?;
     // Skip writes the COB would ignore. Best effort: the reducer stays the authority.
     if let Some(artifact) = release.artifact(&cid) {
-        if *artifact.author() == local {
-            return Err(error::Attest::Author { cid });
-        }
-        if artifact.is_redacted_by(&local) {
-            return Err(error::Attest::Redacted { cid });
+        if !artifact.can_attest(&local) {
+            return Err(if *artifact.author() == local {
+                error::Attest::Author { cid }
+            } else {
+                error::Attest::Redacted { cid }
+            });
         }
     }
     release
