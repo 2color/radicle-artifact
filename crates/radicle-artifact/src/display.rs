@@ -666,7 +666,7 @@ impl Release {
 
             rows.push(vec![
                 style.magenta(&cid_cell),
-                style.bold(&artifact.name),
+                artifact.display_name(style),
                 style.dim(&author),
                 seed,
                 locations_cell,
@@ -712,7 +712,7 @@ impl Release {
 
         for artifact in self.artifacts.iter() {
             s.push('\n');
-            // Artifact heading: name in bold with badges.
+            // Artifact heading: title and name, then badges.
             let mut badges = String::new();
             if self.seeding(artifact) {
                 badges.push_str(" 🌱");
@@ -728,7 +728,7 @@ impl Release {
                 format!(
                     "  {} {}{}",
                     style.cyan("▸"),
-                    style.bold(&artifact.name),
+                    artifact.display_name(style),
                     badges
                 ),
             );
@@ -828,6 +828,26 @@ struct Artifact {
     // Always emitted, empty when unset, like the sibling collections
     // (locations/attestations/redactions); see docs/adr/0001-json-casing.md.
     metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl Artifact {
+    /// The `title` metadata value, trimmed, when it is a non-empty string.
+    /// See `docs/adr/0002-artifact-title.md`.
+    fn title(&self) -> Option<&str> {
+        match self.metadata.get(crate::METADATA_KEY_TITLE)? {
+            serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim()),
+            _ => None,
+        }
+    }
+
+    /// The title in bold with the file name dimmed after it, or the bold
+    /// file name alone when there is no title.
+    fn display_name(&self, style: Style) -> String {
+        match self.title() {
+            Some(title) => format!("{}  {}", style.bold(title), style.dim(&self.name)),
+            None => style.bold(&self.name),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -1398,6 +1418,42 @@ mod tests {
             }),
             Some(ProgressUpdate::Message("exporting".into()))
         );
+    }
+
+    /// A non-empty string `title` shows before the file name; anything else
+    /// falls back to the file name alone.
+    #[test]
+    fn display_name_prefers_title_metadata() {
+        let did =
+            Did::from_str("did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp").unwrap();
+        let artifact = |title: Option<serde_json::Value>| Artifact {
+            cid: "bafy".to_string(),
+            author_alias: None,
+            author: did,
+            name: "app-x86_64-linux.tar.gz".to_string(),
+            locations: vec![],
+            attestations: vec![],
+            redactions: vec![],
+            metadata: title
+                .map(|t| BTreeMap::from([(crate::METADATA_KEY_TITLE.to_string(), t)]))
+                .unwrap_or_default(),
+        };
+        let style = Style::plain(false);
+
+        assert_eq!(
+            artifact(Some(serde_json::json!(" Linux build "))).display_name(style),
+            "Linux build  app-x86_64-linux.tar.gz"
+        );
+        for title in [
+            None,
+            Some(serde_json::json!("  ")),
+            Some(serde_json::json!(1)),
+        ] {
+            assert_eq!(
+                artifact(title).display_name(style),
+                "app-x86_64-linux.tar.gz"
+            );
+        }
     }
 
     #[test]

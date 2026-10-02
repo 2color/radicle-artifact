@@ -118,6 +118,10 @@ pub const MAX_METADATA_VALUE_LEN: usize = 8 * 1024;
 /// rename keep the old key and render their size as a raw integer.
 pub const METADATA_KEY_SIZE_BYTES: &str = "sizeBytes";
 
+/// Metadata key holding an artifact's human-friendly display name. Clients
+/// show it next to the file name; see `docs/adr/0002-artifact-title.md`.
+pub const METADATA_KEY_TITLE: &str = "title";
+
 /// The identifier for a given [`Release`] collaborative object.
 ///
 /// When a [`Release`] is created, through [`Releases::create`], the identifier
