@@ -1152,6 +1152,15 @@ where
     let mut release = releases
         .get_mut(&id)
         .map_err(|err| error::Attest::Store { id, err })?;
+    // Skip writes the COB would ignore. Best effort: the reducer stays the authority.
+    if let Some(artifact) = release.artifact(&cid) {
+        if *artifact.author() == local {
+            return Err(error::Attest::Author { cid });
+        }
+        if artifact.is_redacted_by(&local) {
+            return Err(error::Attest::Redacted { cid });
+        }
+    }
     release
         .attest(cid, signer)
         .map_err(|err| error::Attest::Store { id, err })?;
@@ -4023,6 +4032,12 @@ mod error {
         ResolveTarget(#[from] ResolveTarget),
         #[error(transparent)]
         Find(#[from] Find),
+        #[error("you registered artifact {cid}, which already counts as your attestation")]
+        Author { cid: Cid },
+        #[error(
+            "you redacted artifact {cid}, and a redaction is permanent, so you cannot attest it"
+        )]
+        Redacted { cid: Cid },
         #[error("failed to attest artifact in release {id}")]
         Store {
             id: ReleaseId,
