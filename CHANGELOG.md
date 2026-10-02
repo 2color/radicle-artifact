@@ -130,6 +130,18 @@ To change the pkarr relays, set the [`IROH_PKARR_URLS`](docs/uri-scheme.md#disco
 
 Restart the node after you upgrade: a new `rad-artifact` cannot read the status of a node that is still on the old version.
 
+### Artifact titles in `list` and `show`
+
+File names are often long. Set the `title` metadata key to give an artifact a short display name:
+
+```sh
+rad-artifact metadata set --revision v1.2.0 --cid <CID> title "Linux (x86_64)"
+```
+
+`rad-artifact list` and `show` now show the title in addition to the file name.
+
+The `--json` output does not change. [ADR 2](docs/adr/0002-artifact-title.md) defines the convention, so that all clients show the same label.
+
 ## [0.20.0] - 2026-09-24
 
 ### Bucketed release counts
