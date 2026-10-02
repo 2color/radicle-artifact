@@ -142,6 +142,54 @@ rad-artifact metadata set --revision v1.2.0 --cid <CID> title "Linux (x86_64)"
 
 The `--json` output does not change. [ADR 2](docs/adr/0002-artifact-title.md) defines the convention, so that all clients show the same label.
 
+### Added
+
+* `4fa92bb` add sorted, lazy release listing *<daniel@norman.life>*
+* `b3e60a5` show empty releases by default [**breaking**] *<daniel@norman.life>*
+* `77c6420` count empty releases as unredacted [**breaking**] *<daniel@norman.life>*
+* `027b983` move visibility rules into Filters [**breaking**] *<daniel@norman.life>*
+* `01325e3` add Trust::new and Filters::artifacts *<daniel@norman.life>*
+* `509b25d` add --untrusted to list and show *<daniel@norman.life>*
+* `c3ecc54` add EndpointId::to_pkarr_uri *<daniel@norman.life>*
+* `0b1e3bf` report pkarr key and relays in status *<daniel@norman.life>*
+* `6a5068d` show pkarr key and relays in node status *<daniel@norman.life>*
+* `735d7c2` show artifact title in list and show *<daniel@norman.life>*
+
+### Changed
+
+* `04064be` add list to cache benchmark *<daniel@norman.life>*
+* `ad7e016` cargo fmt *<daniel@norman.life>*
+* `e7bcc55` split Trust out of Filters *<daniel@norman.life>*
+* `b192fe7` share the amend rule across checks *<daniel@norman.life>*
+* `af0eecb` rename trust and filter APIs *<daniel@norman.life>*
+* `51a938c` replace all_authors with Scope *<daniel@norman.life>*
+* `e798b3c` add Artifact::can_attest *<daniel@norman.life>*
+
+### Fixed
+
+* `7dfdbb5` name untrusted release creator in verify *<daniel@norman.life>*
+* `c77f18d` show releases by trusted creators in list *<daniel@norman.life>*
+* `3eef000` ignore metadata writes from untrusted users *<daniel@norman.life>*
+* `358bf55` refuse no-op attestations in CLI *<daniel@norman.life>*
+
+### Docs
+
+* `f1b0dc3` update changelog *<daniel@norman.life>*
+* `46469f6` add release listing to changelog *<daniel@norman.life>*
+* `3c2e00c` rewrite unreleased changelog *<daniel@norman.life>*
+* `9fdc5d6` update README *<daniel@norman.life>*
+* `51e92cf` use current seeded tag format in comments *<daniel@norman.life>*
+* `a283224` tidy changelog *<daniel@norman.life>*
+* `4c7bb5c` add Scope and --untrusted to changelog *<daniel@norman.life>*
+* `a41c4b0` add ADR for artifact title metadata *<daniel@norman.life>*
+* `5cb0dde` add artifact titles to changelog *<daniel@norman.life>*
+
+### Other
+
+* `331b68e` drop flaky idempotent_create *<daniel@norman.life>*
+* `75e947e` upgrade iroh to 1.3.0 *<daniel@norman.life>*
+* `b1534d4` update dependencies *<daniel@norman.life>*
+
 ## [0.20.0] - 2026-09-24
 
 ### Bucketed release counts
