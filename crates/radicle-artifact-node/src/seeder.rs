@@ -461,14 +461,18 @@ pub async fn is_seeded_any(store: &Store, rid: &RepoId, cid: &Cid) -> Result<boo
     Ok(false)
 }
 
-/// Return every CID currently seeded under `rid`, mapped to its blob hash.
+/// Return every CID currently seeded under `rid`, mapped to its blob hash
+/// and the releases that seed it.
 ///
 /// Walks the `[SEEDED_TAG_V1][rid_bytes]` prefix and collapses the
 /// per-release tags: a CID seeded under several releases appears once, since
 /// all those tags point at the same blob. The hash rides along so callers
 /// can size each artifact without a second lookup. Decoding failures
 /// (corrupt tag names, unlikely since we write them ourselves) are skipped.
-pub async fn seeded_cids(store: &Store, rid: &RepoId) -> Result<HashMap<Cid, Hash>, Error> {
+pub async fn seeded_cids(
+    store: &Store,
+    rid: &RepoId,
+) -> Result<HashMap<Cid, (Hash, Vec<Oid>)>, Error> {
     let prefix = seeded_rid_prefix(rid);
     let mut stream = store
         .tags()
@@ -479,8 +483,11 @@ pub async fn seeded_cids(store: &Store, rid: &RepoId) -> Result<HashMap<Cid, Has
     let mut out = HashMap::new();
     while let Some(item) = stream.next().await {
         let info = item.map_err(|e| Error::Iroh(format!("seeded tag stream: {e}")))?;
-        if let Some((_, _, cid)) = parse_seeded_tag(info.name.as_ref()) {
-            out.insert(cid, info.hash);
+        if let Some((_, release, cid)) = parse_seeded_tag(info.name.as_ref()) {
+            out.entry(cid)
+                .or_insert_with(|| (info.hash, Vec::new()))
+                .1
+                .push(release);
         }
     }
     Ok(out)
@@ -650,7 +657,13 @@ mod tests {
 
             // Two distinct release tags, but the CID collapses to one entry.
             assert_eq!(all_seeded(&store).await.unwrap().len(), 2);
-            assert_eq!(seeded_cids(&store, &rid).await.unwrap().len(), 1);
+            let cids = seeded_cids(&store, &rid).await.unwrap();
+            assert_eq!(cids.len(), 1);
+            let (_, mut releases) = cids[&cid].clone();
+            releases.sort();
+            let mut expected = vec![rel_a, rel_b];
+            expected.sort();
+            assert_eq!(releases, expected);
 
             // Unseeding one release keeps the other's tag alive.
             untag_seeded(&store, &rid, &rel_a, &cid).await.unwrap();

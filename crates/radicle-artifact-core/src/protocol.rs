@@ -331,6 +331,10 @@ pub struct SeededEntry {
     /// unknown, never as missing.
     #[serde(default)]
     pub complete: Option<bool>,
+    /// Releases that seed this CID. One CID can belong to several releases
+    /// of the repository. Empty when the node predates the field.
+    #[serde(default)]
+    pub releases: Vec<Oid>,
 }
 
 /// Result of [`Command::Has`].
@@ -706,11 +710,24 @@ mod tests {
             cid,
             bytes: 1024,
             complete: Some(true),
+            releases: vec![sample_release()],
         };
         assert_eq!(
             serde_json::to_value(&entry).unwrap(),
-            json!({"cid": cid.to_string(), "bytes": 1024, "complete": true})
+            json!({
+                "cid": cid.to_string(),
+                "bytes": 1024,
+                "complete": true,
+                "releases": [SAMPLE_RELEASE],
+            })
         );
+
+        // An older node omits `releases`; it decodes as empty.
+        let old: SeededEntry = serde_json::from_value(
+            json!({"cid": cid.to_string(), "bytes": 1024, "complete": true}),
+        )
+        .unwrap();
+        assert!(old.releases.is_empty());
     }
 
     /// Fixed endpoint id for wire snapshots; derived from a pinned secret.

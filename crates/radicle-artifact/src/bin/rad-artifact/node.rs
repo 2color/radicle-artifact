@@ -790,6 +790,7 @@ mod tests {
             cid: cid(),
             bytes: 2048,
             complete: Some(true),
+            releases: Vec::new(),
         };
         assert_eq!(seeded_line(&entry), format!("{} (2.0 KiB)", cid()));
     }
@@ -800,6 +801,7 @@ mod tests {
             cid: cid(),
             bytes: 1024,
             complete: Some(false),
+            releases: Vec::new(),
         };
         assert_eq!(
             seeded_line(&entry),
@@ -815,6 +817,7 @@ mod tests {
             cid: cid(),
             bytes: 1024,
             complete: None,
+            releases: Vec::new(),
         };
         assert_eq!(
             seeded_line(&entry),

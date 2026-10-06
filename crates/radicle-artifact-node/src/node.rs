@@ -876,7 +876,7 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
         Err(e) => return err_from_share::<Vec<SeededEntry>>(e),
     };
     let mut out = Vec::with_capacity(cids.len());
-    for (cid, hash) in cids {
+    for (cid, (hash, releases)) in cids {
         let bytes = seeder::artifact_size_for(store, &cid, hash).await;
         // The tag says we mean to seed this; ask the store whether the
         // bytes are still there to back it up.
@@ -885,6 +885,7 @@ async fn list_seeded_response(store: &FsStore, rid: RepoId) -> String {
             cid,
             bytes,
             complete,
+            releases,
         });
     }
     ok_json(out)
@@ -1189,6 +1190,7 @@ mod tests {
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].cid, real_cid);
             assert_eq!(entries[0].bytes, payload.len() as u64);
+            assert_eq!(entries[0].releases, vec![release_a()]);
 
             // Status now reports one seeded artifact.
             let status = client.status().await.unwrap();
