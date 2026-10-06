@@ -65,7 +65,7 @@ radicle-artifact = { git = "https://radicle.norman.life/z4VYyJ9KuwMNkXGQnmKuGPGK
 1. **Tag:** Create a release tag or pick a commit. Push it to your Radicle remote (`git push rad`); see the note below. To attach a release to a tag, the tag must be a [canonical reference].
 2. **Build:** Build your release artifacts.
 3. **Register:** Register artifacts in a release with the `rad-artifact register <PATH>` command, which creates the release if it doesn't exist and records the artifact CID. The COB holds only signed discovery metadata, synced over the Radicle protocol, not the bytes.
-4. **Seed:** Upload artifacts to an HTTP server and add the location with `rad-artifact location add`, or seed directly over iroh-blobs by starting the local seeder node (`rad-artifact node start`) and seeding the file (`rad-artifact seed <PATH>`).
+4. **Seed:** Start the local seeder node (`rad-artifact node start`) and seed the file over iroh-blobs (`rad-artifact seed <PATH>`), which also adds its `radiroh://` location. Or upload artifacts to an HTTP server and add the location with `rad-artifact location add`.
 5. **Download:** Download artifacts to disk with `rad-artifact download`, or fetch them into the local store without writing a file using `rad-artifact fetch`. Both need the local artifact node running (`rad-artifact node start`), even for HTTP locations.
 6. **Verify:** Check a file you downloaded or rebuilt against the COB with `rad-artifact verify <PATH>`. It hashes the file and looks for an artifact with that CID, honoring the same delegate and redaction rules as `list`/`show`. Reads local storage only: no daemon, no network, no signer.
 7. **Attest:** Other delegates check out the release version, build the artifacts independently, `verify` the CIDs match, and attest. Note that `attest` records a signed claim and rehashes nothing itself, so run `verify` first.
@@ -73,13 +73,13 @@ radicle-artifact = { git = "https://radicle.norman.life/z4VYyJ9KuwMNkXGQnmKuGPGK
 
 > **Note:** A release is bound to a revision in your **Radicle storage**, not your working copy. Release operations resolve `<REVISION>` against Radicle storage, so the commit (or annotated tag) must already be there before you can register against it. Push it first with `git push rad --tags`. A tag name resolves only when the tag is a [canonical reference].
 
-See [CONTEXT.md](./CONTEXT.md) for a glossary of the project's terminology: Register, Seed, Add, Announce, and the drift states they produce.
+See [CONTEXT.md](./CONTEXT.md) for a glossary of the project's terminology: Register, Seed, Add, Announce, Trust, and the drift states they produce.
 
 ## How it works
 
 A **Release** is a Radicle [COB] (Collaborative Object) identified by a Release ID linked to a Git commit and optionally an annotated tag.
 
-Releases contain one or more **Artifacts**, each identified by a content identifier ([CID]) and a name string. Each artifact tracks the DID that originally added it (the artifact author), and only that DID can update the artifact's name. Users can help seed artifacts by adding location URLs for any artifact, enabling decentralized seeding.
+Releases contain one or more **Artifacts**, each identified by a content identifier ([CID]) and a name string. Each artifact tracks the DID that first registered it (the artifact author), and only that DID can update the artifact's name. Anyone can add a location to any artifact, so many parties can make its bytes available.
 
 Users can also **attest** to an artifact, recording that they independently verified the CID matches a build from the same commit. The author's own attestation is a no-op, because registering already implies it. They can also **redact** an artifact with a reason, signaling that it should not be used (e.g. due to a supply chain compromise or build reproducibility failure). Anyone can redact, but only a redaction by the artifact's author or a delegate withdraws it; other redactions are ignored, so no stranger can veto a release. Redaction is permanent: it supersedes any prior attestation from the same DID and prevents that DID from attesting again.
 
@@ -102,10 +102,10 @@ Release
 ├── timestamp: Timestamp              # creation time, from the root op
 └── artifacts: Map<CID, Artifact>
     └── Artifact
-        ├── author: Did               # user that added this artifact
+        ├── author: Did               # user that registered this artifact
         ├── name: String              # human-readable description (only author can update)
         ├── locations: Map<Did, Set<Url>>
-        ├── attestations: Set<Did>    # users that verified the CID
+        ├── attestations: Set<Did>    # users that attested to the CID
         ├── redactions: Map<Did, String> # users that flagged the artifact, with reason
         └── metadata: Map<String, Map<DID, Write>> # latest write per user per key; reads keep author/delegate writes
 ```
@@ -129,7 +129,7 @@ Everything else works without the Radicle node running: computing CIDs, reading 
 
 ## Collaboration and trust model
 
-All actions on a release are signed by the acting user's DID. Most actions — creating a release, adding an artifact, attesting, redacting, registering a location — are open to any user. The exceptions are renaming an artifact (constrained to the artifact's original author, enforced by the COB) and writing metadata (constrained to the artifact's author or a repository delegate). The COB records every metadata write, because nodes can disagree on the delegate set. Reads then keep only the writes from the author and the delegates, the same rule that applies to redactions.
+All actions on a release are signed by the acting user's DID. Most actions — creating a release, registering an artifact, attesting, redacting, adding a location — are open to any user. The exceptions are renaming an artifact (constrained to the artifact's original author, enforced by the COB) and writing metadata (constrained to the artifact's author or a repository delegate). The COB records every metadata write, because nodes can disagree on the delegate set. Reads then keep only the writes from the author and the delegates, the same rule that applies to redactions.
 
 Trust is inherited from the repository's delegate set. By default, commands consider only releases and artifacts authored by a delegate or by the local user. Contributions from other users are hidden. Pass `--all-authors` to widen the view, or `--untrusted` on `list` and `show` to see only contributions from other users. Targeting a specific release with `--release <id>` works regardless of who created it, but its artifacts by other users stay hidden without `--all-authors`.
 
@@ -144,7 +144,7 @@ Blobs are the common case: one binary, archive, or model file. [Collections](htt
 | Action             | Description                                                                       |
 | ------------------ | --------------------------------------------------------------------------------- |
 | `Create`           | Initialize a release for a git OID (`create`, or implicit on first `register`)    |
-| `RegisterArtifact` | Add an artifact (CID + name), or update name if author re-sends                   |
+| `RegisterArtifact` | Register an artifact (CID + name), or update name if author re-sends              |
 | `AddLocation`      | Add a discovery URL for an artifact                                               |
 | `RemoveLocation`   | Retract a previously added URL                                                    |
 | `Attest`           | Record independent verification of a CID                                          |
@@ -193,7 +193,7 @@ rad-artifact list [--pretty] [--all-authors | --untrusted] [--redacted] # list r
 rad-artifact stats [--json]                                      # count releases by creator and redaction
 rad-artifact cid <PATH>                                          # compute BLAKE3 CID
 rad-artifact verify <PATH> [--all-authors] [--json]              # check a local file against the registered artifacts
-rad-artifact locate <CID> [--releases]                           # find a CID's locations across all local repos
+rad-artifact locate <CID> [--releases]                           # locate a CID across all local repos
 rad-artifact fetch [<REVISION> --cid <CID>] [--url <URL>] [--seed] # fetch artifact into the store (interactive without args)
 rad-artifact download [<REVISION> --cid <CID>] [-o <PATH>] [--url <URL>] [--seed] [--offline] # download artifact to disk (interactive without args)
 ```
@@ -217,7 +217,7 @@ rad-artifact node logs [--follow] [-n <LINES>]                   # tail <home>/a
 ### Watching
 
 ```
-rad-artifact watch [RID...] [--budget <SIZE>] [--sweep <SECS>] [--dry-run]  # seed trusted artifacts as peers publish them
+rad-artifact watch [RID...] [--budget <SIZE>] [--sweep <SECS>] [--dry-run]  # seed trusted artifacts as peers register them
 ```
 
 ### Reconciling
@@ -250,7 +250,7 @@ The node never writes COB ops — every signed location write (`add_location`, `
 
 ## Watching for new artifacts
 
-`rad-artifact seed` seeds one artifact you name. `rad-artifact watch` keeps seeding whatever your trusted peers publish, so you can run a mirror: a machine that holds a copy of every artifact a repository's delegates release, and keeps the bytes reachable when the original seeder goes away.
+`rad-artifact seed` seeds one artifact you name. `rad-artifact watch` keeps seeding whatever your trusted peers register, so one machine can hold a copy of every artifact a repository's delegates release, and keep the bytes reachable when the original seeder goes away.
 
 ```
 $ rad-artifact watch --budget 50G
