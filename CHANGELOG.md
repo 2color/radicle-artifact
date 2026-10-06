@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### `ListSeeded` names the releases
+
+Each `SeededEntry` now has a `releases` field, which lists every release that seeds the CID. One CID can belong to more than one release. If the node is older and does not send the field, the list is empty.
+
+### Added
+
+* `ddd1c9d` list releases in SeededEntry *<daniel@norman.life>*
+
+### Docs
+
+* `4903e95` align CONTEXT.md with current terms *<daniel@norman.life>*
+
 ## [0.21.0] - 2026-10-02
 
 ### ⚠️ Breaking changes
