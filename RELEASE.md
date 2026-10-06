@@ -38,16 +38,23 @@ make changelog                 # prepends commit list under [Unreleased]
 $EDITOR CHANGELOG.md           # add prose summary, reorder, drop noise
 git commit -am "Update changelog"
 
-# 2. Cut the crate release with a clean working tree.
+# 2. Compile the whole workspace (all four crates) to catch breakage
+#    before the version bump.
+cargo build --workspace
+
+# 3. Run the whole test suite. Fix failures before you release.
+cargo test --workspace
+
+# 4. Cut the crate release with a clean working tree.
 #    This bumps Cargo.toml, rewrites the [Unreleased] header to the version,
 #    commits, tags `releases/X.Y.Z`, pushes, and publishes to crates.io.
 cargo release X.Y.Z --execute
 
-# 3. Build and upload binaries + install script
+# 5. Build and upload binaries + install script
 make build
 make upload
 
-# 4. Record each binary's CID and download URL in the release COB.
+# 6. Record each binary's CID and download URL in the release COB.
 #    Runs after upload so the announced URL is live.
 make register-artifacts
 ```
@@ -106,7 +113,7 @@ built on a macOS host — on Linux or CI, run `make build-linux` and do macOS
 builds separately on a Mac.
 
 The version comes from the workspace `Cargo.toml` via `cargo metadata`, so
-`cargo release` in step 2 is the only place it needs to be set. Both
+`cargo release` in step 4 is the only place it needs to be set. Both
 binaries are written to `target/release/` as:
 
 ```
