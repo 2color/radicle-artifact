@@ -205,7 +205,7 @@ Commands that take `--revision <REVISION>` or `<REVISION>` also accept `--releas
 ```
 rad-artifact node start [--foreground] [--force]                 # start the seeder daemon
 rad-artifact node stop                                           # graceful shutdown
-rad-artifact node status [--json]                                # endpoint id, seeded count, disk, traffic
+rad-artifact node status [--json]                                # endpoint id, version, seeded count, disk, traffic
 rad-artifact node list [--json]                                  # list CIDs the node is seeding for this repo
 rad-artifact node seed <PATH> [--release <ID>] [--reference] [--no-location]  # compute CID from PATH, seed, add location
 rad-artifact node unseed --cid <CID> [--release <ID>]            # stop seeding + retract your radiroh:// locations

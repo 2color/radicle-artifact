@@ -411,6 +411,10 @@ pub struct DownloadReceipt {
 pub struct Status {
     /// Endpoint id the node is serving on, as a canonical `radiroh://<base32>` URL.
     pub endpoint_id: EndpointId,
+    /// Version of the running `rad-artifact-node`. `None` when the node
+    /// predates the field.
+    #[serde(default)]
+    pub version: Option<String>,
     /// Unix timestamp (seconds) when the node bound its socket.
     pub started_at_unix: i64,
     /// Aggregated tag-level stats.
@@ -740,6 +744,7 @@ mod tests {
         let endpoint_id = sample_endpoint_id();
         let st = Status {
             endpoint_id,
+            version: Some("0.0.0".into()),
             started_at_unix: 0,
             seeded: SeededStats::default(),
             connections: ConnectionStats::default(),
@@ -755,6 +760,7 @@ mod tests {
             serde_json::to_value(&st).unwrap(),
             json!({
                 "endpointId": endpoint_id.to_string(),
+                "version": "0.0.0",
                 "startedAtUnix": 0,
                 "seeded": {"count": 0, "bytesLogical": 0},
                 "connections": {
@@ -783,8 +789,8 @@ mod tests {
     }
 
     #[test]
-    fn status_without_pkarr_decodes() {
-        // A node that predates the `pkarr` field must still decode.
+    fn status_without_optional_fields_decodes() {
+        // A node that predates the `pkarr` and `version` fields must still decode.
         let endpoint_id = sample_endpoint_id();
         let st: Status = serde_json::from_value(json!({
             "endpointId": endpoint_id.to_string(),
@@ -805,6 +811,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(st.pkarr, None);
+        assert_eq!(st.version, None);
     }
 
     #[test]

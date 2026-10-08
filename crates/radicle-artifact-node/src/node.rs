@@ -942,6 +942,7 @@ async fn build_status(ctx: &NodeCtx) -> Result<Status, ShareError> {
     let relay_unreachable = !relay.relays.iter().any(|r| r.connected);
     Ok(Status {
         endpoint_id: ctx.endpoint_id,
+        version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         started_at_unix: ctx.started_at_unix,
         seeded: radicle_artifact_core::protocol::SeededStats {
             count,

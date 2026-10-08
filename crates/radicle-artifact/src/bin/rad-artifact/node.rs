@@ -687,6 +687,10 @@ fn print_status_pretty(s: &Status) {
     // truncation here is hostile.
     let uptime = humanize_uptime(s.started_at_unix);
     println!("Node          {} (started {uptime})", s.endpoint_id);
+    match &s.version {
+        Some(v) => println!("Version       {v}"),
+        None => println!("Version       unknown — restart the node to report it"),
+    }
     println!(
         "Seeded        {} artifacts · {}",
         s.seeded.count,
