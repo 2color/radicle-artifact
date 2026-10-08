@@ -114,6 +114,7 @@ if [ -z "$VERSION" ]; then
 fi
 
 NEED_INSTALL=false
+INSTALLED=false
 
 if command -v rad-artifact >/dev/null 2>&1; then
   INSTALLED_VER=$(rad-artifact --version 2>/dev/null | awk '{print $2}') || INSTALLED_VER="0.0.0"
@@ -160,6 +161,7 @@ if [ "$NEED_INSTALL" = true ]; then
       mv "$tmp" "$INSTALL_DIR/$BIN"
       trap - EXIT
     done
+    INSTALLED=true
 
     # Verify the shell will actually resolve to the binary we just installed.
     # `hash -r` clears any cached path for rad-artifact from this shell.
@@ -188,6 +190,16 @@ fi
 if [ -x "$INSTALL_DIR/rad-artifact" ] && [ ! -e "$INSTALL_DIR/rad-art" ]; then
   ln -s rad-artifact "$INSTALL_DIR/rad-art"
   info "Linked rad-art → rad-artifact"
+fi
+
+# ── 4. Running node ──────────────────────────────────────────────────
+# A node that answers now started before the upgrade, so it still runs
+# the old binary. We only print a hint: the user may run the node in the
+# foreground or under a service manager, and a restart can need the key
+# passphrase.
+if [ "$INSTALLED" = true ] && "$INSTALL_DIR/rad-artifact" node status >/dev/null 2>&1; then
+  warn "A node is running the previous version. Restart it to use $VERSION:"
+  warn "  rad-artifact node stop && rad-artifact node start"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────
