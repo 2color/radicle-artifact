@@ -14,6 +14,9 @@ rust-version.workspace = true
 blake3 = "1"
 cid = { version = "0.11", features = ["serde"] }
 dunce = "1"
+# radicle 0.25.1 uses indexmap without "std" and relied on serde_json to
+# enable it. Remove once radicle enables the feature itself.
+indexmap = { version = "2", features = ["std"] }
 # `key` gives EndpointId/SecretKey with pure-crypto deps only — no
 # tokio/quinn/networking. iroh re-exports these same types, so the node
 # crate needs no conversion at the iroh boundary.

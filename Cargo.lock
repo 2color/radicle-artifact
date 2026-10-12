@@ -3661,6 +3661,7 @@ dependencies = [
  "blake3",
  "cid",
  "dunce",
+ "indexmap",
  "iroh-base",
  "multibase",
  "multihash",
