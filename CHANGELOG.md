@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+This release upgrade the iroh dependency which includes security fixes that iroh released after 1.3. You do not need to change your configuration.
+
+### Changed
+
+* `6fc7b90` bump iroh 1.3.0 -> 1.4.1 *<daniel@norman.life>*
+
+### Fixed
+
+* `bf4f4a3` bump rustls to 0.23.46 *<daniel@norman.life>*
+
 ## [0.23.1] - 2026-10-12
 
 ### Changed
