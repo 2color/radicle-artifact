@@ -58,8 +58,8 @@ audit:
 	cargo audit
 
 # Draft the changelog section for the upcoming release. Prepends a new
-# [Unreleased] block with the commit list since the last tag via git-cliff,
-# then opens $EDITOR for hand-written prose.
+# [Unreleased] block with the commit list since the last tag via git-cliff.
+# Then edit CHANGELOG.md to add hand-written prose.
 changelog:
 	@command -v git-cliff >/dev/null 2>&1 || \
 	    (echo "git-cliff not found. Install with: cargo install git-cliff" && exit 1)

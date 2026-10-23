@@ -1,6 +1,6 @@
 # Releasing rad-artifact
 
-A release has two halves:
+A release has three parts:
 
 1. **The crates** — `cargo release` bumps the shared workspace version,
    tags `releases/X.Y.Z` (once, from the `radicle-artifact` crate), pushes
@@ -12,11 +12,15 @@ A release has two halves:
 2. **The binaries** — the `Makefile` builds cross-platform binaries
    (`rad-artifact` and `rad-artifact-node`) and `scp`s them to
    `files.radicle.dev` alongside the one-line install script.
+3. **The artifacts** — `rad-artifact` records each binary's CID and download
+   URL in the release COB, using your Radicle key.
 
 ## Prerequisites
 
 - [`cargo-release`](https://github.com/crate-ci/cargo-release) — crate release automation
 - [`git-cliff`](https://git-cliff.org/) — changelog drafting
+- [`cargo-audit`](https://github.com/rustsec/rustsec/tree/main/cargo-audit) — dependency vulnerability scan: `cargo install cargo-audit`
+- A git signing key. `release.toml` signs the release commit and tag.
 - Rust toolchain with cross-compilation targets:
   ```sh
   rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl
@@ -32,30 +36,34 @@ A release has two halves:
 ## Full release flow
 
 ```sh
-# 1. Draft the commit list for the upcoming release, then hand-edit prose.
-#    Commit whenever — this can happen well before release day.
+# Draft the commit list for the upcoming release, then hand-edit prose.
+# You can commit at any time, well before release day.
 make changelog                 # prepends commit list under [Unreleased]
 $EDITOR CHANGELOG.md           # add prose summary, reorder, drop noise
-git commit -am "Update changelog"
+git commit -am "docs: update changelog"
 
-# 2. Compile the whole workspace (all four crates) to catch breakage
-#    before the version bump.
+# Check the dependency tree for known vulnerabilities (RustSec).
+make audit
+
+# Compile the whole workspace (all four crates) to catch breakage
+# before the version bump.
 cargo build --workspace
 
-# 3. Run the whole test suite. Fix failures before you release.
+# Run the whole test suite. Fix failures before you release.
 cargo test --workspace
 
-# 4. Cut the crate release with a clean working tree.
-#    This bumps Cargo.toml, rewrites the [Unreleased] header to the version,
-#    commits, tags `releases/X.Y.Z`, pushes, and publishes to crates.io.
+# Cut the crate release with a clean working tree.
+# This bumps Cargo.toml, rewrites the [Unreleased] header to the version,
+# commits, tags `releases/X.Y.Z`, pushes, and publishes to crates.io.
+# Or: cargo release patch|minor|major --execute
 cargo release X.Y.Z --execute
 
-# 5. Build and upload binaries + install script
+# Build and upload binaries + install script
 make build
 make upload
 
-# 6. Record each binary's CID and download URL in the release COB.
-#    Runs after upload so the announced URL is live.
+# Record each binary's CID and download URL in the release COB.
+# Runs after upload so the announced URL is live.
 make register-artifacts
 ```
 
@@ -66,8 +74,8 @@ to dry-run.
 ## Changelog
 
 The changelog is written by hand, using an auto-generated commit list as a
-starting point. `CHANGELOG.md` always has an `## [Unreleased]` section at
-the top that accumulates prose between releases; `cargo release` rewrites
+starting point. `make changelog` adds an `## [Unreleased]` section at the
+top of `CHANGELOG.md`, where you write prose before the release. `cargo release` rewrites
 that header to `## [X.Y.Z] - YYYY-MM-DD` at release time (via
 `pre-release-replacements` in `release.toml`) and folds the rewrite into
 the release commit.
@@ -85,8 +93,8 @@ entries, and `git cliff --unreleased` with no `--tag` emits the heading
 as `## [Unreleased]`, which is exactly what the replacement regex matches.
 After running it, open `CHANGELOG.md` in your editor to add a prose
 summary, reorder entries, and drop noise, keeping the auto-generated
-commit list below the prose. Commit the result whenever — it doesn't need
-to happen at release time.
+commit list below the prose. You can commit the result at any time — it
+does not need to happen at release time.
 
 To preview the commit list without writing the file:
 `git cliff --unreleased`.
@@ -96,9 +104,6 @@ runs. If commits land after you've already prepended, either add them to
 the existing `[Unreleased]` section by hand, or delete that section and
 re-run `--prepend` to regenerate with the full list (you'll need to
 re-paste your prose).
-
-After the release, add a fresh empty `## [Unreleased]` heading back to the
-top of `CHANGELOG.md` so the next cycle has something to accumulate under.
 
 ## Build
 
@@ -113,7 +118,7 @@ built on a macOS host — on Linux or CI, run `make build-linux` and do macOS
 builds separately on a Mac.
 
 The version comes from the workspace `Cargo.toml` via `cargo metadata`, so
-`cargo release` in step 4 is the only place it needs to be set. Both
+the `cargo release` step is the only place it needs to be set. Both
 binaries are written to `target/release/` as:
 
 ```
@@ -145,11 +150,12 @@ Public URLs:
 https://files.radicle.dev/releases/radicle-artifact/install
 https://files.radicle.dev/releases/radicle-artifact/latest
 https://files.radicle.dev/releases/radicle-artifact/<version>/rad-artifact_<version>_<target-triple>
+https://files.radicle.dev/releases/radicle-artifact/<version>/rad-artifact-node_<version>_<target-triple>
 ```
 
 Per-version directories preserve historical releases automatically. The
-`latest` pointer is uploaded **after** the binaries, so there's never a
-window where `latest` advertises a version whose binaries aren't yet on disk.
+`latest` pointer is uploaded **after** the binaries, so `latest` never points
+to a version whose binaries are not on the server yet.
 
 Re-running `make upload` at the same version overwrites that version's files
 but leaves other versions untouched.
