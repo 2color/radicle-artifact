@@ -1655,8 +1655,8 @@ fn list_releases(
 
 /// Report repository-wide figures.
 ///
-/// The delegate set is resolved here and handed to `counts`, so the
-/// figures use the same trust view as `list` in the same working copy.
+/// `counts` takes trust from [`Releases::delegates`], as `list` does, so
+/// both commands use the same trust view in the same working copy.
 fn run_stats(
     command::Stats { pretty, json }: command::Stats,
     releases: &Releases<Repository>,
