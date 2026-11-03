@@ -12,4 +12,9 @@ ignore = [
     # Radicle identities are Ed25519 and this workspace performs no RSA
     # private-key operations, so the vulnerable code path is never entered.
     "RUSTSEC-2023-0071",
+
+    # crypto-bigint 0.5 is pulled in transitively by
+    # ssh-agent-lib -> ssh-key -> p256. Radicle uses Ed25519 only, so the
+    # p256 code path is never entered.
+    "RUSTSEC-2026-0387",
 ]
