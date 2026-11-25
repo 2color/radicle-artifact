@@ -14,7 +14,7 @@ env:
   CARGO_TERM_COLOR: "always"
 
 _docker: &docker
-  docker#v5.11.0:
+  docker#v5.14.0:
     image: "$RUST_IMAGE"
     environment:
       - CARGO_TERM_COLOR
@@ -45,7 +45,7 @@ steps:
     # silently excludes them.
     command: cargo test --all-features
     plugins:
-      - docker#v5.11.0:
+      - docker#v5.14.0:
           image: "$RUST_IMAGE"
           environment:
             - CARGO_TERM_COLOR
@@ -72,7 +72,7 @@ steps:
     plugins:
       ## separate target dir so this runs in parallel with clippy and test;
       ## RUSTDOCFLAGS can't go in the shared template
-      - docker#v5.11.0:
+      - docker#v5.14.0:
           image: "$RUST_IMAGE"
           environment:
             - CARGO_TERM_COLOR
