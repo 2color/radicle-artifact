@@ -148,11 +148,9 @@ pub async fn run(home: &Path, secret: iroh::SecretKey) -> Result<(), NodeError> 
 
     // One Downloader on the seeder endpoint, reused across all fetches so
     // the connection pool is shared (no per-fetch endpoint bind).
-    let downloader = Downloader::new_with_opts(
-        seeder.blobs.as_ref(),
-        seeder.router.endpoint(),
-        fetch::pool_options(),
-    );
+    let downloader = Downloader::builder(seeder.blobs.as_ref(), seeder.router.endpoint())
+        .pool_options(fetch::pool_options())
+        .build();
     let ctx = Arc::new(NodeCtx {
         store: seeder.blobs.clone(),
         downloader,

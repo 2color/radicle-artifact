@@ -82,10 +82,9 @@ fn fetch_http(agent: &ureq::Agent, url: &Url, dest: &mut dyn Write) -> Result<()
 
 /// Build an iroh connection pool with our connect-timeout override.
 pub(crate) fn pool_options() -> PoolOptions {
-    PoolOptions {
-        connect_timeout: CONNECT_TIMEOUT,
-        ..PoolOptions::default()
-    }
+    let mut opts = PoolOptions::default();
+    opts.connect_timeout = CONNECT_TIMEOUT;
+    opts
 }
 
 /// Run a multi-provider iroh download into `store` using a caller-supplied
